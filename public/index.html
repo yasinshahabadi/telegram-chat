@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>گفتگوی گروه</title>
+  
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#17212b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { height: 100dvh; display: flex; flex-direction: column; background-color: #0e1621; overflow: hidden; }
+    #chat-messages { overflow-y: auto; overflow-x: hidden; scroll-behavior: auto; }
+    #chat-messages::-webkit-scrollbar { width: 4px; }
+    #chat-messages::-webkit-scrollbar-thumb { background: #242f3d; border-radius: 4px; }
+
+    .bubble-in { background-color: #182533; border-radius: 16px 16px 16px 4px; }
+    .bubble-out { background-color: #2b5278; border-radius: 16px 16px 4px 16px; }
+    .reply-quote { border-right: 3px solid #50a2e9; background-color: rgba(0, 0, 0, 0.25); }
+
+    @keyframes tgHighlight {
+      0% { background-color: rgba(80, 162, 233, 0.45); transform: scale(1.02); }
+      50% { background-color: rgba(80, 162, 233, 0.25); }
+      100% { background-color: transparent; transform: scale(1); }
+    }
+    .tg-highlight { animation: tgHighlight 1.5s ease-out; border-radius: 16px; }
+
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      height: 12px; width: 12px; border-radius: 50%; background: #50a2e9; cursor: pointer;
+    }
+  </style>
+</head>
+<body class="text-white select-none font-sans">
+
+  <div class="max-w-3xl w-full mx-auto flex-1 flex flex-col h-full overflow-hidden shadow-2xl bg-[#0e1621] relative">
+
+    <!-- منوی مودال تلگرام -->
+    <div id="context-menu-modal" class="fixed inset-0 z-50 hidden bg-black/50 backdrop-blur-[2px] flex items-center justify-center p-4 select-none" onclick="closeContextMenu()">
+      <div class="bg-[#182533] border border-gray-700/80 rounded-2xl w-64 shadow-2xl overflow-hidden flex flex-col transform transition-all duration-150 scale-95" onclick="event.stopPropagation()">
+        
+        <div class="flex items-center justify-between px-3 py-2.5 bg-[#1e2c3d] border-b border-gray-700/60">
+          <button onclick="sendReaction('❤️')" class="hover:scale-125 active:scale-95 transition text-lg">❤️</button>
+          <button onclick="sendReaction('👍')" class="hover:scale-125 active:scale-95 transition text-lg">👍</button>
+          <button onclick="sendReaction('👎')" class="hover:scale-125 active:scale-95 transition text-lg">👎</button>
+          <button onclick="sendReaction('🔥')" class="hover:scale-125 active:scale-95 transition text-lg">🔥</button>
+          <button onclick="sendReaction('🥰')" class="hover:scale-125 active:scale-95 transition text-lg">🥰</button>
+          <button onclick="sendReaction('👏')" class="hover:scale-125 active:scale-95 transition text-lg">👏</button>
+          <button onclick="sendReaction('😁')" class="hover:scale-125 active:scale-95 transition text-lg">😁</button>
+        </div>
+
+        <div id="ctx-read-status" class="px-4 py-2.5 text-xs text-gray-300 flex items-center gap-2 border-b border-gray-700/40 font-mono">
+          <span id="ctx-read-icon" class="text-blue-400 font-bold">✓✓</span>
+          <span id="ctx-read-time">در انتظار خوانده شدن</span>
+        </div>
+
+        <div class="py-1 flex flex-col text-sm text-gray-200">
+          <button onclick="ctxReply()" class="px-4 py-2.5 hover:bg-white/5 active:bg-white/10 flex items-center gap-3 text-right">
+            <span>↩️</span> <span>پاسخ (Reply)</span>
+          </button>
+          <button onclick="ctxPin()" class="px-4 py-2.5 hover:bg-white/5 active:bg-white/10 flex items-center gap-3 text-right">
+            <span>📌</span> <span>سنجاق کردن (Pin)</span>
+          </button>
+          <button id="ctx-edit-btn" onclick="ctxEdit()" class="hidden px-4 py-2.5 hover:bg-white/5 active:bg-white/10 flex items-center gap-3 text-right">
+            <span>✏️</span> <span>ویرایش (Edit)</span>
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- دکمه شناور پرش به پایین -->
+    <button id="scroll-bottom-btn" onclick="scrollToBottom()" 
+            class="hidden absolute bottom-16 right-4 z-20 w-11 h-11 rounded-full bg-[#182533]/90 backdrop-blur-md border border-gray-700/80 shadow-2xl flex items-center justify-center text-white hover:bg-[#242f3d] active:scale-95 transition duration-200">
+      <svg class="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
+      <span id="unread-floating-badge" class="hidden absolute -top-1.5 -right-1.5 bg-[#50a2e9] text-white text-[11px] font-bold min-w-[20px] h-5 rounded-full px-1 flex items-center justify-center shadow transition-all duration-200">0</span>
+    </button>
+
+    <!-- پلیر ویدیویی -->
+    <div id="video-player-modal" class="fixed inset-0 bg-black z-50 hidden flex flex-col justify-between select-none">
+      <div class="p-3 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between text-white z-20">
+        <div class="flex items-center gap-3">
+          <button onclick="closeVideoPlayer()" class="p-1.5 hover:bg-white/10 rounded-full transition">
+            <svg class="w-6 h-6 rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+          </button>
+          <div>
+            <div id="vplayer-title" class="text-sm font-bold truncate">ویدیو</div>
+            <div id="vplayer-time" class="text-[10px] text-gray-300"></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <a id="vplayer-download-btn" href="#" class="p-2 hover:bg-white/10 rounded-full text-white transition" title="دانلود ویدیو">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          </a>
+        </div>
+      </div>
+      <div class="relative flex-1 flex items-center justify-center overflow-hidden" onclick="toggleVideoPlay()">
+        <video id="vplayer-video" class="max-w-full max-h-full object-contain" playsinline preload="none"></video>
+        <button id="vplayer-center-btn" class="absolute w-16 h-16 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white text-2xl transition shadow-xl pointer-events-none">▶</button>
+      </div>
+      <div class="p-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-2 z-20">
+        <div id="vplayer-caption" class="text-xs text-white/90 text-right px-1"></div>
+        <div class="flex items-center gap-3 text-xs text-white">
+          <input type="range" id="vplayer-seek" min="0" max="100" value="0" class="flex-1 h-1 bg-white/30 rounded-lg appearance-none cursor-pointer">
+          <span id="vplayer-time-display" class="text-[11px] font-mono shrink-0">00:00 / 00:00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- لایت‌باکس عکس -->
+    <div id="lightbox" class="fixed inset-0 bg-black/95 z-50 hidden flex flex-col justify-between p-4">
+      <div class="flex justify-between items-center text-white p-2">
+        <button onclick="document.getElementById('lightbox').classList.add('hidden')" class="p-2 hover:bg-white/10 rounded-full text-lg">✕</button>
+        <a id="lightbox-download" href="#" class="p-2 hover:bg-white/10 rounded-full text-white text-lg flex items-center gap-1.5" title="دانلود عکس">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        </a>
+      </div>
+      <div class="flex-1 flex items-center justify-center p-2 overflow-hidden" onclick="document.getElementById('lightbox').classList.add('hidden')">
+        <img id="lightbox-img" src="" class="max-w-full max-h-full rounded-lg shadow-2xl object-contain">
+      </div>
+      <div class="h-6"></div>
+    </div>
+
+    <!-- صفحه ورود -->
+    <div id="auth-screen" class="fixed inset-0 bg-[#0e1621] z-40 flex flex-col items-center justify-center p-6 text-center">
+      <div class="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-4 text-3xl font-bold shadow-lg">💬</div>
+      <h2 class="text-xl font-bold mb-2">ورود به گفتگوی گروه</h2>
+      <p id="status-text" class="text-gray-400 text-sm mb-6">جهت احراز هویت، دکمه زیر را بزنید.</p>
+      <button id="login-btn" class="bg-blue-600 active:bg-blue-700 px-6 py-3.5 rounded-xl font-bold w-full max-w-xs transition shadow-md">ورود از طریق تلگرام</button>
+    </div>
+
+    <!-- هدر با دکمه‌های کامل -->
+    <header class="bg-[#17212b] px-3.5 py-2.5 flex justify-between items-center border-b border-gray-800/80 shrink-0 z-10">
+      <div class="flex items-center gap-2.5">
+        <div class="relative w-9 h-9 rounded-full overflow-hidden bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-white text-sm shrink-0 border border-blue-400/20 shadow">
+          <img id="user-avatar" src="" alt="" class="w-full h-full object-cover hidden" 
+               onload="this.classList.remove('hidden'); document.getElementById('user-avatar-initial').classList.add('hidden');" 
+               onerror="this.classList.add('hidden'); document.getElementById('user-avatar-initial').classList.remove('hidden');">
+          <span id="user-avatar-initial">👤</span>
+        </div>
+        <div class="flex flex-col">
+          <span id="user-display-name" class="font-bold text-xs truncate max-w-[130px] sm:max-w-[200px]">در حال بارگذاری...</span>
+          <div id="online-status" class="text-[10px] text-yellow-400 font-medium">در حال اتصال...</div>
+        </div>
+      </div>
+      
+      <div class="flex items-center gap-2">
+        <div id="typing-text" class="text-xs text-blue-400 italic hidden animate-pulse"></div>
+        <button id="pwa-install-btn" class="hidden bg-blue-600/90 active:bg-blue-700 text-xs px-2.5 py-1.5 rounded-lg font-medium flex items-center gap-1 shadow"><span>📲</span><span>نصب</span></button>
+        
+        <button id="notif-btn" class="bg-[#242f3d] text-xs px-2.5 py-1.5 rounded-lg flex items-center gap-1 border border-gray-700"><span id="notif-icon">🔔</span><span id="notif-label">اعلان</span></button>
+
+        <button id="logout-btn" onclick="logout()" title="خروج از حساب" 
+                class="bg-[#242f3d] hover:bg-red-950/60 border border-gray-700 hover:border-red-500/60 p-2 rounded-lg text-xs flex items-center justify-center transition shadow shrink-0 active:scale-95">
+          <svg class="w-4 h-4 text-gray-300 hover:text-red-400 transition" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+            <line x1="12" y1="2" x2="12" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- نوار پیام پین‌شده -->
+    <div id="pinned-bar" class="hidden bg-[#17212b]/95 border-b border-blue-500/30 px-3.5 py-2 flex items-center justify-between z-10 backdrop-blur cursor-pointer select-none" onclick="scrollToPinned()">
+      <div class="flex items-center gap-2.5 overflow-hidden">
+        <span class="text-blue-400 text-sm">📌</span>
+        <div class="overflow-hidden text-right border-r-2 border-blue-400 pr-2">
+          <div class="text-[11px] font-bold text-blue-400">پیام سنجاق شده</div>
+          <div id="pinned-text" class="text-xs text-gray-200 truncate max-w-xs sm:max-w-md">متن پیام...</div>
+        </div>
+      </div>
+      <button onclick="event.stopPropagation(); unpinMessage();" class="text-gray-400 hover:text-white p-1 text-xs">✕</button>
+    </div>
+
+    <!-- بنر اعلان -->
+    <div id="notif-banner" class="hidden bg-blue-950/80 border-b border-blue-800/50 p-2 text-center text-xs flex items-center justify-between px-4 shrink-0">
+      <span class="text-blue-200">جهت دریافت پیام‌ها در حالت بسته، اعلان را فعال کنید:</span>
+      <button id="banner-enable-btn" class="bg-blue-600 px-3 py-1 rounded-md text-[11px] font-bold">فعال‌سازی</button>
+    </div>
+
+    <!-- لیست پیام‌ها -->
+    <main id="chat-messages" class="flex-1 p-3 space-y-2.5 flex flex-col"></main>
+
+    <!-- نوار ریپلای -->
+    <div id="reply-bar" class="hidden bg-[#17212b] border-t border-gray-800 px-4 py-2 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-2.5 overflow-hidden">
+        <div class="text-blue-400 text-base">↩️</div>
+        <div class="border-r-2 border-blue-400 pr-2 overflow-hidden">
+          <div id="reply-bar-name" class="text-xs font-bold text-blue-400 truncate">نام کاربر</div>
+          <div id="reply-bar-text" class="text-[11px] text-gray-300 truncate max-w-xs sm:max-w-md">متن پیام</div>
+        </div>
+      </div>
+      <button id="cancel-reply-btn" class="text-gray-400 hover:text-white p-1 text-sm font-bold">✕</button>
+    </div>
+
+    <!-- نوار ادیت -->
+    <div id="edit-bar" class="hidden bg-[#17212b] border-t border-yellow-600/50 px-4 py-2 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-2.5 overflow-hidden">
+        <div class="text-yellow-400 text-base">✏️</div>
+        <div class="border-r-2 border-yellow-400 pr-2 overflow-hidden">
+          <div class="text-xs font-bold text-yellow-400 truncate">ویرایش پیام</div>
+          <div id="edit-bar-text" class="text-[11px] text-gray-300 truncate max-w-xs sm:max-w-md">متن فعلی</div>
+        </div>
+      </div>
+      <button onclick="cancelEdit()" class="text-gray-400 hover:text-white p-1 text-sm font-bold">✕</button>
+    </div>
+
+    <!-- پیش‌نمایش فایل انتخابی -->
+    <div id="file-preview-bar" class="hidden bg-[#17212b] border-t border-gray-800 px-4 py-2 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-2 overflow-hidden">
+        <span class="text-lg">📎</span>
+        <div class="overflow-hidden">
+          <div id="file-preview-name" class="text-xs font-bold text-blue-300 truncate max-w-xs">نام فایل</div>
+          <div id="file-preview-size" class="text-[10px] text-gray-400">حجم</div>
+        </div>
+      </div>
+      <button id="cancel-file-btn" class="text-red-400 hover:text-red-300 p-1 text-sm font-bold">✕</button>
+    </div>
+
+    <!-- لودینگ آپلود -->
+    <div id="upload-progress" class="hidden bg-blue-900/60 px-4 py-1 text-[11px] text-blue-200 text-center flex items-center justify-center gap-2 shrink-0">
+      <span class="animate-spin text-sm">⏳</span><span>در حال ارسال مدیا به تلگرام...</span>
+    </div>
+
+    <!-- باکس ورودی پیام -->
+    <footer class="bg-[#17212b] p-2.5 flex items-center gap-2 border-t border-gray-800/80 shrink-0">
+      <input id="file-input" type="file" class="hidden" accept="image/*,video/*,audio/*,.pdf,.zip,.doc,.docx,.txt">
+      
+      <button id="attach-btn" class="text-gray-400 hover:text-blue-400 p-2 text-lg transition flex items-center justify-center" title="ارسال فایل">
+        📎
+      </button>
+
+      <input id="message-input" type="text" placeholder="پیام..." autocomplete="off"
+             class="flex-1 bg-[#242f3d] rounded-2xl px-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 text-white placeholder-gray-400">
+      
+      <button id="send-btn" class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition shadow-md">
+        <svg class="w-5 h-5 text-white -scale-x-100" fill="currentColor" viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+      </button>
+    </footer>
+
+  </div>
+
+  <script>
+    const MAX_SIZE = 20 * 1024 * 1024;
+    const TG_COLORS = ['#e5823d', '#4fae4e', '#50a2e9', '#e55b8a', '#a66ed8', '#00bfa5', '#e5a83d'];
+    function getUserColor(name) {
+      let hash = 0;
+      for (let i = 0; i < (name || '').length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+      return TG_COLORS[Math.abs(hash) % TG_COLORS.length];
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024; const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatTime(secs) {
+      if (isNaN(secs) || secs <= 0) return '0:00';
+      const m = Math.floor(secs / 60); const s = Math.floor(secs % 60);
+      return `${m}:${s < 10 ? '0' : ''}${s}`;
+    }
+
+    // تبدیل کلید VAPID به Uint8Array
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+      const rawData = window.atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+      }
+      return outputArray;
+    }
+
+    let deferredPrompt = null;
+    const installBtn = document.getElementById('pwa-install-btn');
+    window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; installBtn.classList.remove('hidden'); });
+    installBtn.onclick = async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        if ((await deferredPrompt.userChoice).outcome === 'accepted') installBtn.classList.add('hidden');
+        deferredPrompt = null;
+      }
+    };
+
+    let swRegistration = null;
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then(reg => {
+        swRegistration = reg;
+      });
+    }
+
+    window.addEventListener('focus', () => { document.title = 'گفتگوی گروه'; });
+
+    const notifBtn = document.getElementById('notif-btn');
+    function updateNotifUI() {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'granted') {
+        notifBtn.className = 'bg-green-900/40 border border-green-600/40 text-green-400 text-xs px-2.5 py-1.5 rounded-lg flex items-center gap-1';
+        document.getElementById('notif-label').innerText = 'فعال';
+        document.getElementById('notif-banner').classList.add('hidden');
+      } else {
+        notifBtn.className = 'bg-yellow-900/40 border border-yellow-600/40 text-yellow-400 text-xs px-2.5 py-1.5 rounded-lg flex items-center gap-1 animate-pulse';
+        document.getElementById('notif-banner').classList.remove('hidden');
+      }
+    }
+
+    // فعال‌سازی وب‌پوش واقعی و ثبت در سرور
+    async function requestNotifPermission() {
+      if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+        alert('مرورگر شما از نوتیفیکیشن وب پشتیبانی نمی‌کند.');
+        return;
+      }
+      const perm = await Notification.requestPermission();
+      updateNotifUI();
+      if (perm !== 'granted') return;
+
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const vapidRes = await fetch('/api/vapid-public-key');
+        const { publicKey } = await vapidRes.json();
+        if (!publicKey) return;
+
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey)
+          });
+        }
+
+        const subJson = sub.toJSON();
+        await fetch('/api/push-subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            endpoint: sub.endpoint,
+            p256dh: subJson.keys.p256dh,
+            auth: subJson.keys.auth,
+            sessionToken: authToken
+          })
+        });
+      } catch (err) {
+        console.error('Push sub error:', err);
+      }
+    }
+
+    notifBtn.onclick = requestNotifPermission;
+    document.getElementById('banner-enable-btn').onclick = requestNotifPermission;
+    updateNotifUI();
+
+    function getHardwareFingerprint() {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl');
+      const debugInfo = gl ? gl.getExtension('WEBGL_debug_renderer_info') : null;
+      const renderer = gl && debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : 'default';
+      const raw = [navigator.userAgent, navigator.hardwareConcurrency, screen.width + 'x' + screen.height, renderer].join('|');
+      let hash = 0; for (let i = 0; i < raw.length; i++) hash = Math.imul(31, hash) + raw.charCodeAt(i) | 0;
+      return 'DEVICE_' + Math.abs(hash);
+    }
+
+    const fingerprint = getHardwareFingerprint();
+    let authToken = localStorage.getItem('chat_token');
+    if (!authToken) {
+      authToken = Math.random().toString(36).substring(2) + Date.now().toString(36);
+      localStorage.setItem('chat_token', authToken);
+    }
+
+    let currentUser = null, ws = null, authPollingTimer = null;
+    const seenMessageIds = new Set();
+    const unreadIncomingIds = new Set();
+    const messageStore = new Map();
+    
+    let oldestTimestamp = Infinity, newestTimestamp = 0, hasMoreOlder = true, isLoadingOlder = false;
+    let unreadCount = 0, isPolling = false, activeReply = null, selectedFile = null, editingMessageId = null;
+    let activePinnedMsgId = null;
+    let sepFadeStarted = false;
+
+    async function logout() {
+      if (!confirm('آیا مطمئن هستید که می‌خواهید از حساب خود خارج شوید؟')) return;
+      try {
+        if (authToken) {
+          await fetch('/api/auth/logout', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionToken: authToken })
+          });
+        }
+      } catch (e) {}
+
+      localStorage.removeItem('chat_token');
+      localStorage.removeItem('tg_last_seen_time');
+      if (ws) { ws.close(); ws = null; }
+      currentUser = null;
+      location.reload();
+    }
+
+    function markAsReadDirectly(msgId) {
+      if (!msgId) return;
+      unreadIncomingIds.add(msgId);
+      sendReadReceipts();
+    }
+
+    const unreadObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const el = entry.target;
+          if (el.dataset.unread === 'true') {
+            el.dataset.unread = 'false';
+            unreadObserver.unobserve(el);
+
+            if (unreadCount > 0) updateUnreadBadge(unreadCount - 1);
+
+            const msgId = el.dataset.id;
+            if (msgId) {
+              markAsReadDirectly(msgId);
+            }
+          }
+        }
+      });
+    }, { root: document.getElementById('chat-messages'), threshold: 0.3 });
+
+    const fileInput = document.getElementById('file-input');
+    document.getElementById('attach-btn').onclick = () => fileInput.click();
+    fileInput.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (file.size > MAX_SIZE) {
+        alert(`❌ حجم فایل بیش از ۲۰ مگابایت است.`);
+        fileInput.value = ''; selectedFile = null; return;
+      }
+      selectedFile = file;
+      document.getElementById('file-preview-name').innerText = file.name;
+      document.getElementById('file-preview-size').innerText = formatBytes(file.size);
+      document.getElementById('file-preview-bar').classList.remove('hidden');
+      document.getElementById('message-input').focus();
+    };
+    document.getElementById('cancel-file-btn').onclick = () => {
+      selectedFile = null; fileInput.value = ''; document.getElementById('file-preview-bar').classList.add('hidden');
+    };
+
+    function renderUserProfile(user) {
+      const fullName = user.full_name || user.username || 'کاربر';
+      document.getElementById('user-display-name').innerText = fullName;
+      document.getElementById('user-avatar-initial').innerText = fullName.charAt(0).toUpperCase();
+      if (user.telegram_id) document.getElementById('user-avatar').src = `/api/avatar?userId=${user.telegram_id}`;
+    }
+
+    async function checkAuth() {
+      try {
+        const res = await fetch('/api/auth/verify-device', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionToken: authToken, fingerprint })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          if (authPollingTimer) clearInterval(authPollingTimer);
+          currentUser = data.user;
+          renderUserProfile(currentUser);
+          document.getElementById('auth-screen').classList.add('hidden');
+          connectWebSocket();
+          startSmartPolling();
+        } else if (data.status === 'hardware_mismatch') {
+          alert('خطای امنیتی: دستگاه با مشخصات اولیه همخوانی ندارد.');
+        }
+      } catch (e) {}
+    }
+
+    document.getElementById('login-btn').onclick = () => {
+      window.open(`https://t.me/chattransfer26_bot?start=auth_${authToken}`, '_blank');
+      if (!authPollingTimer) authPollingTimer = setInterval(checkAuth, 2500);
+    };
+
+    function connectWebSocket() {
+      if (ws && ws.readyState === WebSocket.OPEN) return;
+      ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
+
+      ws.onopen = () => {
+        document.getElementById('online-status').className = 'text-[10px] text-green-400 font-medium';
+        document.getElementById('online-status').innerText = 'آنلاین';
+        ws.send(JSON.stringify({ type: 'identify', userName: currentUser.full_name, userId: currentUser.id, tgId: currentUser.telegram_id }));
+        initialLoadMessages();
+        sendPresenceUpdate(true);
+      };
+
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'new_message') processIncomingMessage(data.message);
+        
+        if (data.type === 'user_kicked') {
+          if (currentUser && (currentUser.id === data.userId || currentUser.telegram_id === data.tgId)) {
+            alert('دسترسی شما توسط مدیر لغو شد.');
+            localStorage.removeItem('chat_token');
+            location.reload();
+          }
+        }
+
+        if (data.type === 'messages_read' && Array.isArray(data.messageIds)) {
+          data.messageIds.forEach(id => {
+            const tickEl = document.getElementById(`ticks-${id}`);
+            if (tickEl) { tickEl.innerHTML = '✓✓'; tickEl.className = 'text-blue-300 font-bold'; }
+            const stored = messageStore.get(id);
+            if (stored) { stored.is_read = 1; stored.read_at = data.readAt; }
+
+            if (activeContextMsgId === id) {
+              const readIcon = document.getElementById('ctx-read-icon');
+              const readTime = document.getElementById('ctx-read-time');
+              if (readIcon && readTime) {
+                readIcon.innerText = '✓✓';
+                readIcon.className = 'text-blue-400 font-bold';
+                const rDate = new Date(data.readAt);
+                readTime.innerText = `read at ${rDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+              }
+            }
+          });
+        }
+
+        if (data.type === 'reaction_updated') {
+          const stored = messageStore.get(data.messageId);
+          if (stored) stored.reactions = data.reactions;
+          renderReactions(data.messageId, data.reactions);
+        }
+
+        if (data.type === 'message_edited') {
+          let mId = data.messageId;
+          if (data.tgMsgId) {
+            const row = document.querySelector(`[data-tg-id="${data.tgMsgId}"]`);
+            if (row) mId = row.dataset.id;
+          }
+          if (mId) {
+            const stored = messageStore.get(mId);
+            if (stored) { stored.text = data.text; stored.is_edited = 1; }
+            const textEl = document.getElementById(`msg-text-${mId}`);
+            if (textEl) {
+              textEl.innerText = data.text;
+              const edLabel = document.getElementById(`edited-badge-${mId}`);
+              if (edLabel) edLabel.classList.remove('hidden');
+            }
+          }
+        }
+
+        if (data.type === 'message_pinned') renderPinnedBar(data.message);
+        if (data.type === 'message_unpinned') document.getElementById('pinned-bar').classList.add('hidden');
+
+        if (data.type === 'online_users') document.getElementById('online-status').innerText = `${data.users.length} کاربر آنلاین`;
+        if (data.type === 'typing') {
+          const typ = document.getElementById('typing-text');
+          typ.innerText = `${data.userName} در حال نوشتن...`;
+          typ.classList.remove('hidden');
+          setTimeout(() => typ.classList.add('hidden'), 2500);
+        }
+      };
+
+      ws.onclose = () => {
+        document.getElementById('online-status').className = 'text-[10px] text-yellow-400 font-medium';
+        document.getElementById('online-status').innerText = 'اتصال مجدد...';
+        setTimeout(connectWebSocket, 2000);
+      };
+    }
+
+    function sendPresenceUpdate(isOnline) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "presence", status: isOnline ? "online" : "offline" }));
+    }
+
+    function sendReadReceipts() {
+      if (document.visibilityState !== 'visible' || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (unreadIncomingIds.size > 0) {
+        ws.send(JSON.stringify({ type: "mark_read", messageIds: Array.from(unreadIncomingIds) }));
+        unreadIncomingIds.clear();
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      const isVisible = document.visibilityState === 'visible';
+      sendPresenceUpdate(isVisible);
+      if (isVisible) {
+        fetchNewMessages(); sendReadReceipts();
+        if (!ws || ws.readyState !== WebSocket.OPEN) connectWebSocket();
+        document.title = 'گفتگوی گروه';
+      }
+    });
+    window.addEventListener('focus', () => { sendPresenceUpdate(true); sendReadReceipts(); });
+    window.addEventListener('blur', () => sendPresenceUpdate(false));
+
+    async function initialLoadMessages() {
+      try {
+        const res = await fetch('/api/messages?limit=35');
+        const data = await res.json();
+        const msgs = data.messages || [];
+        const box = document.getElementById('chat-messages');
+        box.innerHTML = '';
+        seenMessageIds.clear();
+        messageStore.clear();
+
+        if (data.pinned) renderPinnedBar(data.pinned);
+        if (!Array.isArray(msgs) || msgs.length === 0) return;
+
+        let firstUnreadFound = false, unreadCountOnStart = 0;
+
+        msgs.forEach(msg => {
+          messageStore.set(msg.id, msg);
+          if (msg.timestamp < oldestTimestamp) oldestTimestamp = msg.timestamp;
+          if (msg.timestamp > newestTimestamp) newestTimestamp = msg.timestamp;
+
+          const isUnread = (Number(msg.is_read) === 0) && (currentUser && msg.sender_name !== currentUser.full_name);
+
+          if (isUnread && !firstUnreadFound) {
+            firstUnreadFound = true;
+            const sep = document.createElement('div');
+            sep.id = 'unread-separator';
+            sep.className = 'my-3 py-1.5 px-4 bg-[#182533]/90 backdrop-blur border-y border-blue-500/20 text-center text-xs text-[#50a2e9] font-medium select-none flex items-center justify-center gap-2 shadow sticky top-0 z-10 transition-all duration-700';
+            sep.innerHTML = `<span>پیام‌های خوانده‌نشده</span>`;
+            box.appendChild(sep);
+          }
+
+          if (isUnread) unreadCountOnStart++;
+          appendMessage(msg, false, isUnread);
+        });
+
+        requestAnimationFrame(() => {
+          const sep = document.getElementById('unread-separator');
+          if (sep) {
+            sep.scrollIntoView({ behavior: 'auto', block: 'start' });
+            updateUnreadBadge(unreadCountOnStart);
+          } else {
+            box.scrollTop = box.scrollHeight;
+          }
+        });
+      } catch (e) {}
+    }
+
+    async function loadOlderMessages() {
+      if (isLoadingOlder || !hasMoreOlder || oldestTimestamp === Infinity) return;
+      isLoadingOlder = true;
+
+      const box = document.getElementById('chat-messages');
+      const loader = document.createElement('div');
+      loader.id = 'history-loader';
+      loader.className = 'text-center py-2 text-[11px] text-gray-400 select-none';
+      loader.innerText = 'در حال بارگذاری پیام‌های قبلی...';
+      box.prepend(loader);
+
+      const prevHeight = box.scrollHeight;
+
+      try {
+        const res = await fetch(`/api/messages?before=${oldestTimestamp}&limit=25`);
+        const data = await res.json();
+        const olderMsgs = data.messages || [];
+        loader.remove();
+
+        if (!Array.isArray(olderMsgs) || olderMsgs.length === 0) { hasMoreOlder = false; return; }
+        if (olderMsgs.length < 25) hasMoreOlder = false;
+
+        const fragment = document.createDocumentFragment();
+        olderMsgs.forEach(msg => {
+          if (!seenMessageIds.has(msg.id)) {
+            messageStore.set(msg.id, msg);
+            if (msg.timestamp < oldestTimestamp) oldestTimestamp = msg.timestamp;
+            const isUnread = (Number(msg.is_read) === 0) && (currentUser && msg.sender_name !== currentUser.full_name);
+            fragment.appendChild(createMessageRow(msg, isUnread));
+          }
+        });
+
+        box.prepend(fragment);
+        box.scrollTop = box.scrollHeight - prevHeight;
+      } catch (e) {
+        loader.remove();
+      } finally {
+        isLoadingOlder = false;
+      }
+    }
+
+    function triggerSeparatorFade() {
+      if (sepFadeStarted) return;
+      const sep = document.getElementById('unread-separator');
+      if (!sep) return;
+      sepFadeStarted = true;
+      setTimeout(() => {
+        const el = document.getElementById('unread-separator');
+        if (el) {
+          el.style.opacity = '0'; el.style.maxHeight = '0'; el.style.padding = '0'; el.style.margin = '0';
+          setTimeout(() => el.remove(), 700);
+        }
+      }, 3000);
+    }
+
+    const chatBox = document.getElementById('chat-messages');
+    chatBox.addEventListener('scroll', () => {
+      triggerSeparatorFade();
+      if (chatBox.scrollTop < 50 && !isLoadingOlder && hasMoreOlder) loadOlderMessages();
+
+      const isAtBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < 70;
+      const scrollBtn = document.getElementById('scroll-bottom-btn');
+      if (isAtBottom) {
+        if (unreadCount === 0) scrollBtn.classList.add('hidden');
+      } else {
+        scrollBtn.classList.remove('hidden');
+      }
+    });
+
+    function scrollToBottom() { chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: 'smooth' }); }
+
+    function updateUnreadBadge(count) {
+      unreadCount = Math.max(0, count);
+      const badge = document.getElementById('unread-floating-badge');
+      const scrollBtn = document.getElementById('scroll-bottom-btn');
+      const isAtBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < 70;
+
+      if (unreadCount > 0) {
+        badge.innerText = unreadCount > 99 ? '+99' : String(unreadCount);
+        badge.classList.remove('hidden');
+        scrollBtn.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+        if (isAtBottom) scrollBtn.classList.add('hidden');
+      }
+    }
+
+    async function fetchNewMessages() {
+      if (isPolling || !currentUser) return;
+      isPolling = true;
+      try {
+        const endpoint = newestTimestamp > 0 ? `/api/messages?since=${newestTimestamp}` : '/api/messages?limit=35';
+        const res = await fetch(endpoint);
+        if (res.ok) {
+          const data = await res.json();
+          const msgs = data.messages || [];
+          if (Array.isArray(msgs)) msgs.forEach(processIncomingMessage);
+        }
+      } catch (e) {} finally { isPolling = false; }
+    }
+
+    function startSmartPolling() { setInterval(fetchNewMessages, 3000); }
+
+    function processIncomingMessage(msg) {
+      if (!msg || !msg.id) return;
+      messageStore.set(msg.id, msg);
+      if (msg.timestamp > newestTimestamp) newestTimestamp = msg.timestamp;
+      
+      if (!seenMessageIds.has(msg.id)) {
+        const isAtBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < 100;
+        const isUnread = (Number(msg.is_read) === 0) && (currentUser && msg.sender_name !== currentUser.full_name);
+
+        appendMessage(msg, true, isUnread && !isAtBottom);
+
+        if (isUnread) {
+          if (document.visibilityState === 'visible' && isAtBottom) {
+            markAsReadDirectly(msg.id);
+            chatBox.scrollTop = chatBox.scrollHeight;
+          } else {
+            updateUnreadBadge(unreadCount + 1);
+          }
+        } else {
+          chatBox.scrollTop = chatBox.scrollHeight;
+        }
+      }
+    }
+
+    let activeContextMsgId = null;
+
+    function openContextMenu(e, msgId) {
+      e.preventDefault();
+      e.stopPropagation();
+      activeContextMsgId = msgId;
+
+      const msg = messageStore.get(msgId);
+      if (!msg) return;
+
+      const isMe = currentUser && msg.sender_name === currentUser.full_name;
+      const readIcon = document.getElementById('ctx-read-icon');
+      const readTime = document.getElementById('ctx-read-time');
+
+      if (Number(msg.is_read) === 1) {
+        readIcon.innerText = '✓✓';
+        readIcon.className = 'text-blue-400 font-bold';
+        const rDate = msg.read_at ? new Date(msg.read_at) : new Date(msg.timestamp);
+        const timeStr = rDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        readTime.innerText = `read at ${timeStr}`;
+      } else {
+        readIcon.innerText = '✓';
+        readIcon.className = 'text-gray-400 font-bold';
+        readTime.innerText = 'در انتظار خوانده شدن';
+      }
+
+      const editBtn = document.getElementById('ctx-edit-btn');
+      if (isMe && !msg.media_type) editBtn.classList.remove('hidden');
+      else editBtn.classList.add('hidden');
+
+      document.getElementById('context-menu-modal').classList.remove('hidden');
+    }
+
+    function closeContextMenu() {
+      document.getElementById('context-menu-modal').classList.add('hidden');
+      activeContextMsgId = null;
+    }
+
+    function sendReaction(emoji) {
+      if (!activeContextMsgId || !ws) return;
+      ws.send(JSON.stringify({ type: "toggle_reaction", messageId: activeContextMsgId, emoji }));
+      closeContextMenu();
+    }
+
+    function ctxReply() {
+      if (!activeContextMsgId) return;
+      const msg = messageStore.get(activeContextMsgId);
+      if (msg) setReplyTarget(msg);
+      closeContextMenu();
+    }
+
+    function ctxPin() {
+      if (!activeContextMsgId || !ws) return;
+      ws.send(JSON.stringify({ type: "pin_message", messageId: activeContextMsgId }));
+      closeContextMenu();
+    }
+
+    function ctxEdit() {
+      if (!activeContextMsgId) return;
+      const msg = messageStore.get(activeContextMsgId);
+      if (msg) {
+        editingMessageId = msg.id;
+        document.getElementById('edit-bar-text').innerText = msg.text;
+        document.getElementById('edit-bar').classList.remove('hidden');
+        document.getElementById('reply-bar').classList.add('hidden');
+        activeReply = null;
+        const input = document.getElementById('message-input');
+        input.value = msg.text;
+        input.focus();
+      }
+      closeContextMenu();
+    }
+
+    function cancelEdit() {
+      editingMessageId = null;
+      document.getElementById('edit-bar').classList.add('hidden');
+      document.getElementById('message-input').value = '';
+    }
+
+    function renderPinnedBar(msg) {
+      if (!msg) return;
+      activePinnedMsgId = msg.id;
+      document.getElementById('pinned-text').innerText = `${msg.sender_name}: ${msg.text || (msg.media_type ? `[${msg.media_type}]` : 'پیام')}`;
+      document.getElementById('pinned-bar').classList.remove('hidden');
+    }
+
+    function scrollToPinned() {
+      if (activePinnedMsgId) scrollToTargetMessage(activePinnedMsgId);
+    }
+
+    function unpinMessage() {
+      if (ws) ws.send(JSON.stringify({ type: "unpin_message" }));
+      document.getElementById('pinned-bar').classList.add('hidden');
+    }
+
+    function renderReactions(msgId, rxJson) {
+      const container = document.getElementById(`reactions-${msgId}`);
+      if (!container) return;
+
+      let rx = {};
+      try { rx = JSON.parse(rxJson || "{}"); } catch (e) {}
+
+      let html = '';
+      for (const [emoji, users] of Object.entries(rx)) {
+        if (users && users.length > 0) {
+          const isMyRx = currentUser && users.includes(currentUser.full_name);
+          html += `
+            <button onclick="event.stopPropagation(); ws.send(JSON.stringify({type:'toggle_reaction', messageId:'${msgId}', emoji:'${emoji}'}))" 
+                    class="px-2 py-0.5 rounded-full text-xs flex items-center gap-1 transition shadow-sm ${isMyRx ? 'bg-blue-600/40 border border-blue-400 text-white' : 'bg-[#182533] border border-gray-700/80 text-gray-300'}">
+              <span>${emoji}</span>
+              <span class="text-[10px] font-bold font-mono">${users.length}</span>
+            </button>
+          `;
+        }
+      }
+      container.innerHTML = html;
+    }
+
+    function setReplyTarget(msg) {
+      activeReply = { id: msg.id, name: msg.sender_name, text: msg.text || (msg.media_type ? `[${msg.media_type}]` : 'پیام'), tgMsgId: msg.tg_msg_id || null };
+      document.getElementById('reply-bar-name').innerText = activeReply.name;
+      document.getElementById('reply-bar-text').innerText = activeReply.text;
+      document.getElementById('reply-bar').classList.remove('hidden');
+      document.getElementById('edit-bar').classList.add('hidden');
+      editingMessageId = null;
+      document.getElementById('message-input').focus();
+    }
+    document.getElementById('cancel-reply-btn').onclick = () => { activeReply = null; document.getElementById('reply-bar').classList.add('hidden'); };
+
+    function scrollToTargetMessage(targetId) {
+      if (!targetId) return;
+      let targetEl = document.getElementById(`msg-${targetId}`);
+      if (!targetEl && targetId.startsWith('tg_')) targetEl = document.querySelector(`[data-tg-id="${targetId.replace('tg_', '')}"]`);
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetEl.classList.remove('tg-highlight');
+        void targetEl.offsetWidth;
+        targetEl.classList.add('tg-highlight');
+      }
+    }
+
+    function openLightbox(src, fileName) {
+      const realName = fileName || 'photo.jpg';
+      document.getElementById('lightbox-img').src = src;
+      const dl = document.getElementById('lightbox-download');
+      dl.href = `${src}&download=1&name=${encodeURIComponent(realName)}`;
+      dl.download = realName;
+      document.getElementById('lightbox').classList.remove('hidden');
+    }
+
+    const vModal = document.getElementById('video-player-modal');
+    const vVideo = document.getElementById('vplayer-video');
+    const vCenterBtn = document.getElementById('vplayer-center-btn');
+    const vSeek = document.getElementById('vplayer-seek');
+    const vTimeDisplay = document.getElementById('vplayer-time-display');
+
+    function openVideoPlayer(src, senderName, timeStr, caption, fileName) {
+      const realName = fileName || 'video.mp4';
+      document.getElementById('vplayer-title').innerText = senderName || 'ویدیو';
+      document.getElementById('vplayer-time').innerText = timeStr || '';
+      document.getElementById('vplayer-caption').innerText = caption || '';
+      
+      const dl = document.getElementById('vplayer-download-btn');
+      dl.href = `${src}&download=1&name=${encodeURIComponent(realName)}`;
+      dl.download = realName;
+
+      vVideo.src = src;
+      vVideo.load();
+      vModal.classList.remove('hidden');
+      vCenterBtn.innerText = '▶';
+    }
+
+    function closeVideoPlayer() {
+      vVideo.pause();
+      vVideo.src = '';
+      vModal.classList.add('hidden');
+    }
+
+    function toggleVideoPlay() {
+      if (vVideo.paused) {
+        vVideo.play();
+        vCenterBtn.innerText = '⏸';
+        setTimeout(() => vCenterBtn.classList.add('opacity-0'), 800);
+      } else {
+        vVideo.pause();
+        vCenterBtn.innerText = '▶';
+        vCenterBtn.classList.remove('opacity-0');
+      }
+    }
+
+    vVideo.ontimeupdate = () => {
+      if (vVideo.duration) {
+        vSeek.value = (vVideo.currentTime / vVideo.duration) * 100;
+        vTimeDisplay.innerText = `${formatTime(vVideo.currentTime)} / ${formatTime(vVideo.duration)}`;
+      }
+    };
+    vSeek.oninput = () => { if (vVideo.duration) vVideo.currentTime = (vSeek.value / 100) * vVideo.duration; };
+
+    const activeAudios = new Map();
+    function toggleAudio(id, src) {
+      let item = activeAudios.get(id);
+      const btn = document.getElementById(`audio-btn-${id}`);
+      const seek = document.getElementById(`audio-seek-${id}`);
+      const timeTxt = document.getElementById(`audio-time-${id}`);
+
+      if (!item) {
+        const audio = new Audio(src);
+        audio.preload = 'none';
+        item = { audio, isPlaying: false };
+        activeAudios.set(id, item);
+        audio.ontimeupdate = () => {
+          if (audio.duration) {
+            seek.value = (audio.currentTime / audio.duration) * 100;
+            timeTxt.innerText = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+          }
+        };
+        audio.onended = () => { item.isPlaying = false; btn.innerText = '▶'; };
+        seek.oninput = () => { if (audio.duration) audio.currentTime = (seek.value / 100) * audio.duration; };
+      }
+
+      activeAudios.forEach((val, k) => {
+        if (k !== id && val.isPlaying) { val.audio.pause(); val.isPlaying = false; document.getElementById(`audio-btn-${k}`).innerText = '▶'; }
+      });
+
+      if (item.isPlaying) { item.audio.pause(); item.isPlaying = false; btn.innerText = '▶'; }
+      else { item.audio.play(); item.isPlaying = true; btn.innerText = '⏸'; }
+    }
+
+    function createMessageRow(msg, isUnread = false) {
+      seenMessageIds.add(msg.id);
+      const isMe = currentUser && msg.sender_name === currentUser.full_name;
+      const row = document.createElement('div');
+      row.id = `msg-${msg.id}`;
+      row.dataset.id = msg.id;
+      row.dataset.timestamp = msg.timestamp;
+      if (isUnread) row.dataset.unread = 'true';
+      if (msg.tg_msg_id) row.setAttribute('data-tg-id', msg.tg_msg_id);
+      
+      row.className = `group flex flex-col ${isMe ? 'items-start' : 'items-end'} transition duration-300 w-full relative`;
+
+      const nameColor = getUserColor(msg.sender_name);
+      const timeStr = new Date(msg.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+      let replySnippetHtml = '';
+      if (msg.reply_to_name) {
+        replySnippetHtml = `
+          <div class="reply-quote rounded pr-2 py-1 mb-1.5 cursor-pointer text-right hover:opacity-90 active:scale-[0.99] transition select-none" 
+               onclick="event.stopPropagation(); scrollToTargetMessage('${escapeHtml(msg.reply_to_id || '')}')">
+            <div class="text-[11px] font-bold" style="color: ${getUserColor(msg.reply_to_name)}">${escapeHtml(msg.reply_to_name)}</div>
+            <div class="text-[11px] text-gray-300 truncate max-w-[200px] sm:max-w-xs">${escapeHtml(msg.reply_to_text || '')}</div>
+          </div>
+        `;
+      }
+
+      const isRead = Number(msg.is_read) === 1;
+      const ticksHtml = isMe ? `<span id="ticks-${msg.id}" class="${isRead ? 'text-blue-300 font-bold' : 'text-gray-400 font-bold'}">${isRead ? '✓✓' : '✓'}</span>` : '';
+      const editedHtml = `<span id="edited-badge-${msg.id}" class="text-[9px] text-gray-400 ${msg.is_edited ? '' : 'hidden'}">edited</span>`;
+
+      let mediaHtml = '', isFrameless = false;
+      if (msg.media_type && msg.media_file_id) {
+        const mediaUrl = `/api/media?fileId=${msg.media_file_id}`;
+        const fileName = msg.media_file_name || (msg.media_type === 'video' ? 'video.mp4' : 'photo.jpg');
+
+        if (msg.media_type === 'photo') {
+          isFrameless = !msg.text;
+          mediaHtml = `
+            <div class="relative overflow-hidden cursor-pointer ${isFrameless ? 'rounded-[16px]' : 'rounded-lg mb-1'}" onclick="event.stopPropagation(); openLightbox('${mediaUrl}', '${escapeHtml(fileName)}')">
+              <img src="${mediaUrl}" class="w-full max-h-80 object-cover rounded-[16px]" loading="lazy">
+              ${isFrameless ? `<div class="absolute bottom-2 right-2 bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full flex items-center gap-1 text-[10px] text-white select-none"><span>${timeStr}</span>${editedHtml}${ticksHtml}</div>` : ''}
+            </div>
+          `;
+        } else if (msg.media_type === 'video') {
+          isFrameless = !msg.text;
+          const thumbUrl = msg.media_thumb_id ? `/api/media?fileId=${msg.media_thumb_id}` : null;
+          const durationStr = msg.media_duration ? formatTime(msg.media_duration) : '0:32';
+
+          mediaHtml = `
+            <div class="relative overflow-hidden cursor-pointer ${isFrameless ? 'rounded-[16px]' : 'rounded-lg mb-1'} w-64 sm:w-72 max-w-[78vw] aspect-[4/5] bg-black/60 shrink-0" 
+                 onclick="event.stopPropagation(); openVideoPlayer('${mediaUrl}', '${escapeHtml(msg.sender_name)}', '${timeStr}', '${escapeHtml(msg.text)}', '${escapeHtml(fileName)}')">
+              ${thumbUrl ? `<img src="${thumbUrl}" class="w-full h-full object-cover rounded-[16px]" loading="lazy">` : `<video src="${mediaUrl}#t=0.001" preload="metadata" playsinline muted class="w-full h-full object-cover rounded-[16px] pointer-events-none"></video>`}
+              <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div class="w-14 h-14 rounded-full bg-black/55 backdrop-blur-md flex items-center justify-center text-white text-2xl shadow-2xl transition group-hover:scale-110">▶</div>
+              </div>
+              <div class="absolute top-2 left-2 bg-black/50 backdrop-blur-md px-2 py-0.5 rounded-full text-[10px] text-white/90 font-mono select-none pointer-events-none">${durationStr} • ${formatBytes(msg.media_file_size)}</div>
+              ${isFrameless ? `<div class="absolute bottom-2 right-2 bg-black/50 backdrop-blur-md px-2 py-0.5 rounded-full flex items-center gap-1 text-[10px] text-white select-none pointer-events-none"><span>${timeStr}</span>${editedHtml}${ticksHtml}</div>` : ''}
+            </div>
+          `;
+        } else if (msg.media_type === 'audio') {
+          const audioFileName = msg.media_file_name || 'audio.mp3';
+          mediaHtml = `
+            <div class="p-2.5 bg-black/25 rounded-2xl flex items-center gap-3 min-w-[230px] sm:min-w-[270px]" onclick="event.stopPropagation()">
+              <button id="audio-btn-${msg.id}" onclick="toggleAudio('${msg.id}', '${mediaUrl}')" class="w-11 h-11 rounded-full bg-blue-500 hover:bg-blue-600 flex items-center justify-center text-white text-base shadow shrink-0 transition">▶</button>
+              <div class="flex-1 flex flex-col gap-1 overflow-hidden">
+                <div class="text-xs font-bold text-[#50a2e9] truncate">${escapeHtml(audioFileName)}</div>
+                <input type="range" id="audio-seek-${msg.id}" min="0" max="100" value="0" class="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                <div id="audio-time-${msg.id}" class="text-[10px] text-gray-400 font-mono">0:00 / 0:00</div>
+              </div>
+              <a href="${mediaUrl}&download=1&name=${encodeURIComponent(audioFileName)}" download="${escapeHtml(audioFileName)}" class="p-1.5 text-gray-400 hover:text-white transition shrink-0" title="دانلود">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              </a>
+            </div>
+          `;
+        } else if (msg.media_type === 'document') {
+          const docName = msg.media_file_name || 'document.pdf';
+          mediaHtml = `
+            <a href="${mediaUrl}&download=1&name=${encodeURIComponent(docName)}" download="${escapeHtml(docName)}" onclick="event.stopPropagation()"
+               class="p-2.5 bg-black/25 hover:bg-black/35 rounded-2xl flex items-center justify-between gap-3 text-xs transition border border-white/5">
+              <div class="flex items-center gap-2.5 overflow-hidden">
+                <div class="w-10 h-10 rounded-xl bg-blue-600/30 flex items-center justify-center text-blue-400 text-xl shrink-0">📄</div>
+                <div class="overflow-hidden">
+                  <div class="font-bold text-white truncate max-w-[150px] sm:max-w-xs">${escapeHtml(docName)}</div>
+                  <div class="text-[10px] text-gray-400">${formatBytes(msg.media_file_size)}</div>
+                </div>
+              </div>
+              <div class="text-blue-400 text-lg shrink-0 pl-1">⬇️</div>
+            </a>
+          `;
+        }
+      }
+
+      const textHtml = msg.text ? `<div id="msg-text-${msg.id}" class="text-[13px] leading-relaxed text-white break-words dir-auto ${mediaHtml ? 'mt-1.5' : ''}">${escapeHtml(msg.text)}</div>` : '';
+      const bottomTimeBarHtml = isFrameless ? '' : `
+        <div class="flex items-center justify-start gap-1 text-[10px] text-gray-400 mt-1 select-none font-sans">
+          <span>${timeStr}</span>
+          ${editedHtml}
+          ${ticksHtml}
+        </div>
+      `;
+
+      const bubblePadding = isFrameless ? 'p-0.5' : 'p-2.5 px-3';
+      const bubbleHtml = `
+        <div id="bubble-${msg.id}" onclick="openContextMenu(event, '${msg.id}')" oncontextmenu="openContextMenu(event, '${msg.id}')" 
+             class="relative max-w-[85%] sm:max-w-[72%] ${bubblePadding} text-xs shadow-md text-right cursor-pointer hover:opacity-95 ${isMe ? 'bubble-out' : 'bubble-in'} transition-transform duration-150">
+          ${(!isMe && !isFrameless) ? `<div class="font-bold text-[11px] mb-1" style="color: ${nameColor}">${escapeHtml(msg.sender_name)}</div>` : ''}
+          ${replySnippetHtml}
+          ${mediaHtml}
+          ${textHtml}
+          ${bottomTimeBarHtml}
+        </div>
+      `;
+
+      const bubbleRow = document.createElement('div');
+      bubbleRow.className = `flex items-center gap-2 ${isMe ? 'justify-start' : 'justify-end'} w-full relative`;
+      const emptySpacer = `<div class="flex-1 self-stretch cursor-pointer min-h-[30px]" onclick="openContextMenu(event, '${msg.id}')" oncontextmenu="openContextMenu(event, '${msg.id}')"></div>`;
+
+      if (isMe) {
+        const myInitial = (currentUser.full_name || 'ک').charAt(0).toUpperCase();
+        const myColor = getUserColor(currentUser.full_name);
+        const myAvatarHtml = `
+          <div class="w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center font-bold text-xs text-white shadow" style="background-color: ${myColor}">
+            <img src="/api/avatar?userId=${currentUser.telegram_id || ''}" class="w-full h-full object-cover hidden" onload="this.classList.remove('hidden'); if(this.nextElementSibling) this.nextElementSibling.classList.add('hidden');" onerror="this.classList.add('hidden');">
+            <span>${myInitial}</span>
+          </div>
+        `;
+        bubbleRow.innerHTML = myAvatarHtml + bubbleHtml + emptySpacer;
+      } else {
+        const initial = (msg.sender_name || 'ک').charAt(0).toUpperCase();
+        const avatarHtml = `
+          <div class="w-8 h-8 rounded-full overflow-hidden shrink-0 flex items-center justify-center font-bold text-xs text-white shadow" style="background-color: ${nameColor}">
+            <img src="/api/avatar?userId=${msg.sender_id || ''}" class="w-full h-full object-cover hidden" onload="this.classList.remove('hidden'); if(this.nextElementSibling) this.nextElementSibling.classList.add('hidden');" onerror="this.classList.add('hidden');">
+            <span>${initial}</span>
+          </div>
+        `;
+        bubbleRow.innerHTML = emptySpacer + bubbleHtml + avatarHtml;
+      }
+
+      const rxContainer = document.createElement('div');
+      rxContainer.id = `reactions-${msg.id}`;
+      rxContainer.className = `flex flex-wrap gap-1 mt-1 ${isMe ? 'pr-10' : 'pl-10'}`;
+
+      row.appendChild(bubbleRow);
+      row.appendChild(rxContainer);
+
+      setTimeout(() => {
+        renderReactions(msg.id, msg.reactions);
+        attachSwipeToReply(msg.id, msg);
+      }, 10);
+
+      if (isUnread) unreadObserver.observe(row);
+      return row;
+    }
+
+    function attachSwipeToReply(msgId, msg) {
+      const bubble = document.getElementById(`bubble-${msgId}`);
+      if (!bubble) return;
+
+      let startX = 0, startY = 0, diffX = 0, isDragging = false;
+
+      bubble.addEventListener('touchstart', (e) => {
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        diffX = 0; isDragging = false;
+        bubble.style.transition = 'none';
+      }, { passive: true });
+
+      bubble.addEventListener('touchmove', (e) => {
+        const currentX = e.touches[0].clientX;
+        const currentY = e.touches[0].clientY;
+        const deltaX = currentX - startX;
+        const deltaY = currentY - startY;
+
+        if (Math.abs(deltaX) > Math.abs(deltaY) && deltaX < 0) {
+          isDragging = true;
+          diffX = Math.max(deltaX, -65);
+          bubble.style.transform = `translateX(${diffX}px)`;
+        }
+      }, { passive: true });
+
+      bubble.addEventListener('touchend', () => {
+        bubble.style.transition = 'transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1)';
+        bubble.style.transform = 'translateX(0px)';
+
+        if (isDragging && diffX <= -45) {
+          if (navigator.vibrate) navigator.vibrate(30);
+          setReplyTarget(msg);
+        }
+      });
+    }
+
+    function appendMessage(msg, isNewIncoming = false, isUnread = false) {
+      const box = document.getElementById('chat-messages');
+      const row = createMessageRow(msg, isUnread);
+      box.appendChild(row);
+      if (isNewIncoming && msg.timestamp > newestTimestamp) newestTimestamp = msg.timestamp;
+    }
+
+    function escapeHtml(text) { return (text || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
+
+    async function send() {
+      const input = document.getElementById('message-input');
+      const text = input.value.trim();
+
+      if (editingMessageId) {
+        if (!text) return;
+        ws.send(JSON.stringify({ type: "edit_message", messageId: editingMessageId, newText: text }));
+        cancelEdit();
+        return;
+      }
+
+      if (selectedFile) {
+        if (selectedFile.size > MAX_SIZE) { alert('حجم بیش از ۲۰ مگابایت است.'); return; }
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('caption', text);
+        formData.append('sessionToken', authToken);
+        if (activeReply) formData.append('replyTo', JSON.stringify(activeReply));
+
+        document.getElementById('upload-progress').classList.remove('hidden');
+        document.getElementById('send-btn').disabled = true;
+
+        try {
+          const res = await fetch('/api/upload', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (data.status !== 'ok') alert('خطا: ' + (data.message || 'ناموفق'));
+        } catch (err) { alert('خطا در شبکه.'); } finally {
+          document.getElementById('upload-progress').classList.add('hidden');
+          document.getElementById('send-btn').disabled = false;
+          selectedFile = null; fileInput.value = ''; document.getElementById('file-preview-bar').classList.add('hidden');
+          input.value = ''; activeReply = null; document.getElementById('reply-bar').classList.add('hidden');
+        }
+        return;
+      }
+
+      if (!text) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) { alert('در حال اتصال مجدد...'); return; }
+
+      ws.send(JSON.stringify({ type: 'chat_message', text, replyTo: activeReply }));
+      input.value = '';
+      activeReply = null;
+      document.getElementById('reply-bar').classList.add('hidden');
+    }
+
+    document.getElementById('send-btn').onclick = send;
+    let typingCooldown = false;
+    document.getElementById('message-input').onkeydown = (e) => {
+      if (e.key === 'Enter') send();
+      else if (!typingCooldown && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'typing' }));
+        typingCooldown = true;
+        setTimeout(() => { typingCooldown = false; }, 2000);
+      }
+    };
+
+    checkAuth();
+  </script>
+</body>
+</html>

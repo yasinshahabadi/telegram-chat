@@ -1,0 +1,30 @@
+name = "telegram-chat-app"
+main = "src/index.js"
+compatibility_date = "2024-04-01"
+
+# این بخش فایل‌های صفحه وب را به اشتراک می‌گذارد
+assets = { directory = "./public" }
+
+[[d1_databases]]
+binding = "DB"
+database_name = "chat-db"
+database_id = "6b53e474-18eb-4be4-87cf-6fda96db3cf1"
+
+[durable_objects]
+bindings = [
+  { name = "CHAT_ROOM", class_name = "ChatRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]
+
+# حذف خودکار پیام‌ها بعد ۲۴ ساعت (هر ساعت چک میکند)
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+TELEGRAM_GROUP_ID = "-5585398377"
+ADMIN_TELEGRAM_ID = "122623127"
+VAPID_PUBLIC_KEY = "BEEXyE39QFlJqr1CROfgLdO2NdM_KT8aN7s4iU_ORi2IdBgh0dxARlf1jR_6AsNnsP1btCz6qUpKH84shXRgdxQ"
+VAPID_SUBJECT = "mailto:admin@chat-app.com"
