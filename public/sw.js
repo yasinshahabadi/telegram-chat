@@ -1,47 +1,69 @@
-self.addEventListener('install', (event) => {
+// public/sw.js
+
+self.addEventListener('install', event => {
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', event => {
   event.waitUntil(self.clients.claim());
 });
 
-// دریافت نوتیفیکیشن از سیستم‌عامل در پس‌زمینه (حتی هنگام بسته بودن برنامه)
-self.addEventListener('push', (event) => {
-  let data = {};
-  try {
-    data = event.data ? event.data.json() : {};
-  } catch (e) {
-    data = { body: event.data ? event.data.text() : 'پیام جدید دریافت شد' };
-  }
+self.addEventListener('push', event => {
+  if (!event.data) return;
 
-  const title = data.title || 'گفتگوی گروه';
-  const options = {
-    body: data.body || '',
-    icon: '/icon.svg',
-    badge: '/icon.svg',
-    silent: false,
-    vibrate: [200, 100, 200],
-    tag: 'chat-group-message',
-    renotify: true,
-    data: { url: data.url || '/' }
-  };
+  event.waitUntil(
+    (async () => {
+      try {
+        // ۱. بررسی تمام پنجره‌ها و تب‌های باز برنامه
+        const clientList = await self.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true
+        });
 
-  event.waitUntil(self.registration.showNotification(title, options));
+        // ۲. آیا تبی از چت وجود دارد که کاربر هم‌اکنون در حال مشاهده و تعامل با آن باشد؟
+        const isAppFocused = clientList.some(client => client.focused);
+
+        // ۳. اگر کاربر هم‌اکنون درون صفحه چت است، نوتیفیکیشن سیستمی نمایش داده نشود
+        if (isAppFocused) {
+          return;
+        }
+
+        // ۴. اگر کاربر در صفحه نیست (صفحه در پس‌زمینه است یا مرورگر بسته است)، اعلان نمایش داده شود
+        const data = event.data.json();
+        const title = data.title || 'پیام جدید';
+        const options = {
+          body: data.body || 'شما یک پیام جدید دارید',
+          icon: '/icon-192.png',
+          badge: '/badge-72.png',
+          vibrate: [200, 100, 200],
+          data: { url: data.url || '/' },
+          tag: 'chat-group-message',
+          renotify: true
+        };
+
+        await self.registration.showNotification(title, options);
+      } catch (err) {
+        console.error('Push notification error:', err);
+      }
+    })()
+  );
 });
 
-// باز کردن برنامه هنگام لمس نوتیفیکیشن
-self.addEventListener('notificationclick', (event) => {
+self.addEventListener('notificationclick', event => {
   event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/';
+
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
+      // اگر تب باز وجود دارد، روی همان فوکوس کن
       for (const client of clientList) {
         if (client.url && 'focus' in client) {
           return client.focus();
         }
       }
+      // در غیر این صورت یک پنجره جدید باز کن
       if (self.clients.openWindow) {
-        return self.clients.openWindow('/');
+        return self.clients.openWindow(targetUrl);
       }
     })
   );
