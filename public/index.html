@@ -472,7 +472,7 @@
     }
 
     document.getElementById('login-btn').onclick = () => {
-      window.open(`https://t.me/chattransfer26_bot?start=auth_${authToken}`, '_blank');
+      window.open(`https://t.me/chattransfer_test_bot?start=auth_${authToken}`, '_blank');
       if (!authPollingTimer) authPollingTimer = setInterval(checkAuth, 2500);
     };
 
