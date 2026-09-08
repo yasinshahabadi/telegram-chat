@@ -291,8 +291,13 @@
 
     let swRegistration = null;
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').then(reg => {
+      navigator.serviceWorker.register('/sw.js', {
+        updateViaCache: 'none'
+      }).then(reg => {
         swRegistration = reg;
+        return reg.update();
+      }).catch(err => {
+        console.error('Service worker registration error:', err);
       });
     }
 
@@ -311,43 +316,75 @@
       }
     }
 
-    // فعال‌سازی وب‌پوش واقعی و ثبت در سرور
-    async function requestNotifPermission() {
-      if (!('Notification' in window) || !('serviceWorker' in navigator)) {
-        alert('مرورگر شما از نوتیفیکیشن وب پشتیبانی نمی‌کند.');
-        return;
+    // فعال‌سازی وب‌پوش واقعی و ثبت/همگام‌سازی آن در سرور
+    async function syncPushSubscription(createIfMissing = false) {
+      if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+        return false;
       }
-      const perm = await Notification.requestPermission();
-      updateNotifUI();
-      if (perm !== 'granted') return;
+
+      if (Notification.permission !== 'granted') return false;
 
       try {
         const reg = await navigator.serviceWorker.ready;
-        const vapidRes = await fetch('/api/vapid-public-key');
+        const vapidRes = await fetch('/api/vapid-public-key', { cache: 'no-store' });
+        if (!vapidRes.ok) throw new Error(`VAPID key request failed: ${vapidRes.status}`);
+
         const { publicKey } = await vapidRes.json();
-        if (!publicKey) return;
+        if (!publicKey) throw new Error('VAPID public key is missing');
 
         let sub = await reg.pushManager.getSubscription();
-        if (!sub) {
+
+        // Creating a new subscription is done only from the explicit permission action.
+        if (!sub && createIfMissing) {
           sub = await reg.pushManager.subscribe({
             userVisibleOnly: true,
             applicationServerKey: urlBase64ToUint8Array(publicKey)
           });
         }
 
+        if (!sub) return false;
+
         const subJson = sub.toJSON();
-        await fetch('/api/push-subscribe', {
+        if (!subJson.endpoint || !subJson.keys?.p256dh || !subJson.keys?.auth) {
+          throw new Error('Invalid push subscription');
+        }
+
+        const response = await fetch('/api/push-subscribe', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            endpoint: sub.endpoint,
+            endpoint: subJson.endpoint,
             p256dh: subJson.keys.p256dh,
             auth: subJson.keys.auth,
             sessionToken: authToken
           })
         });
+
+        if (!response.ok) {
+          throw new Error(`Push subscription registration failed: ${response.status}`);
+        }
+
+        return true;
       } catch (err) {
-        console.error('Push sub error:', err);
+        console.error('Push subscription sync error:', err);
+        return false;
+      }
+    }
+
+    async function requestNotifPermission() {
+      if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+        alert('مرورگر شما از نوتیفیکیشن وب پشتیبانی نمی‌کند.');
+        return;
+      }
+
+      try {
+        const perm = await Notification.requestPermission();
+        updateNotifUI();
+        if (perm === 'granted') {
+          await syncPushSubscription(true);
+        }
+      } catch (err) {
+        console.error('Notification permission error:', err);
       }
     }
 
@@ -462,6 +499,7 @@
           if (authPollingTimer) clearInterval(authPollingTimer);
           currentUser = data.user;
           renderUserProfile(currentUser);
+          void syncPushSubscription(false);
           document.getElementById('auth-screen').classList.add('hidden');
           connectWebSocket();
           startSmartPolling();
@@ -579,13 +617,17 @@
       const isVisible = document.visibilityState === 'visible';
       sendPresenceUpdate(isVisible);
       if (isVisible) {
-        fetchNewMessages(); sendReadReceipts();
+        fetchNewMessages();
+        sendReadReceipts();
+        void syncPushSubscription(false);
         if (!ws || ws.readyState !== WebSocket.OPEN) connectWebSocket();
         document.title = 'گفتگوی گروه';
       }
     });
     window.addEventListener('focus', () => { sendPresenceUpdate(true); sendReadReceipts(); });
     window.addEventListener('blur', () => sendPresenceUpdate(false));
+    window.addEventListener('online', () => { void syncPushSubscription(false); fetchNewMessages(); });
+    window.addEventListener('pageshow', () => { void syncPushSubscription(false); });
 
     async function initialLoadMessages() {
       try {
