@@ -78,6 +78,7 @@
     .card-title {
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 10px;
       font-size: 19px;
       color: var(--text);
@@ -88,7 +89,7 @@
 
     .badge {
       display: inline-block;
-      padding: 3px 10px;
+      padding: 4px 12px;
       font-size: 12px;
       font-weight: bold;
       border-radius: 20px;
@@ -109,26 +110,31 @@
       align-items: center;
       justify-content: space-between;
       direction: ltr;
+      gap: 12px;
     }
 
     .cmd-text {
       font-family: 'Courier New', Courier, monospace;
       color: #5af;
       font-weight: 600;
-      font-size: 14px;
+      font-size: 13.5px;
+      word-break: break-all;
+      white-space: pre-wrap;
     }
 
     .copy-btn {
       background-color: #2b394a;
       border: none;
       color: #fff;
-      padding: 6px 14px;
+      padding: 8px 16px;
       border-radius: 6px;
       cursor: pointer;
       font-size: 12px;
       transition: background 0.2s;
       font-family: inherit;
       direction: rtl;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .copy-btn:hover {
@@ -204,140 +210,120 @@
   
   <header>
     <h1>🚀 راهنمای سریع و خط‌مشی پروژه Telegram-Chat</h1>
-    <p>مرجع گام‌به‌گام برای توسعه بدون ریسک، دیپلوی ایمن و بازگردانی سریع هنگام بروز مشکل</p>
+    <p>دستورات آماده با پیشوند NPX سازگار با تمام نسخه‌های ویندوز و CMD</p>
   </header>
 
   <div class="grid">
 
-    <!-- بخش ۱: دستورات روزمره -->
+    <!-- بخش ۱: دستورات روزمره با NPX مستقیم -->
     <div class="card">
       <div class="card-title">
-        <span>⚡ دستورات سریع ترمینال (یک کلیک تا اجرا)</span>
-        <span class="badge badge-primary">Package Scripts</span>
+        <span>⚡ دستورات مستقیم ترمینال (آماده کپی و اجرا با NPX)</span>
+        <span class="badge badge-primary">بدون نیاز به نصب جهانی</span>
       </div>
 
-      <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 12px;">این دستورات در فایل <code>package.json</code> تعریف شده‌اند و تمام کارهای پیچیده را به صورت خودکار انجام می‌دهند:</p>
+      <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 12px;">
+        تمامی دستورات زیر مستقیماً با پیشوند <code>npx</code> تنظیم شده‌اند تا با کلیک روی «کپی دستور» و پیست در ترمینال، بدون مواجهه با ارور <i>is not recognized</i> اجرا شوند:
+      </p>
 
       <div>
-        <strong>۱. استقرار نهایی روی نسخه اصلی (با بکاپ‌گیری خودکار دیتابیس):</strong>
-        <p style="color: var(--text-muted); font-size: 13px;">این دستور ابتدا یک فایل بکاپ کامل از دیتابیس فعلی در پوشه <code>backups</code> می‌گیرد، سپس کدها را به سرور اصلی کلودفلر می‌فرستد.</p>
+        <strong>۱. استقرار نهایی روی نسخه اصلی (با بکاپ‌گیری خودکار دیتابیس D1):</strong>
+        <p style="color: var(--text-muted); font-size: 13px;">ابتدا یک نسخه پشتیبان از دیتابیس در پوشه <code>backups</code> می‌گیرد و سپس برنامه را دیپلوی می‌کند.</p>
         <div class="cmd-box">
-          <span class="cmd-text">npm run deploy:prod</span>
-          <button class="copy-btn" onclick="copyText('npm run deploy:prod')">کپی دستور</button>
+          <span class="cmd-text" id="cmd1">npx wrangler d1 export chat-db --remote --output=./backups/latest-backup.sql && npx wrangler deploy</span>
+          <button class="copy-btn" onclick="copyById('cmd1')">کپی دستور</button>
         </div>
       </div>
 
       <div style="margin-top: 16px;">
-        <strong>۲. استقرار در محیط آزمایشی (بدون کوچک‌ترین ریسک برای نسخه اصلی):</strong>
-        <p style="color: var(--text-muted); font-size: 13px;">کدها فقط روی ساب‌دامین و دیتابیس آزمایشی مستقر می‌شوند و کاربران اصلی متوجه هیچ تغییری نخواهند شد.</p>
+        <strong>۲. استقرار در محیط آزمایشی (Staging - بدون دست‌زدن به نسخه اصلی):</strong>
+        <p style="color: var(--text-muted); font-size: 13px;">برنامه را منحصراً روی ساب‌دامین استیجینگ و دیتابیس آزمایشی <code>chat-db-staging</code> مستقر می‌کند.</p>
         <div class="cmd-box">
-          <span class="cmd-text">npm run deploy:staging</span>
-          <button class="copy-btn" onclick="copyText('npm run deploy:staging')">کپی دستور</button>
+          <span class="cmd-text" id="cmd2">npx wrangler deploy --env staging</span>
+          <button class="copy-btn" onclick="copyById('cmd2')">کپی دستور</button>
         </div>
       </div>
 
       <div style="margin-top: 16px;">
-        <strong>۳. بازگشت آنی به نسخه قبل در صورت خرابی (Workers Rollback):</strong>
-        <p style="color: var(--text-muted); font-size: 13px;">اگر کدی دیپلوی شد و کار نکرد، این دستور در کمتر از ۱ ثانیه سرور کلودفلر را به آخرین نسخه پایدار قبلی برمی‌گرداند.</p>
+        <strong>۳. بازگشت آنی به نسخه سالم قبلی در صورت بروز باگ (Workers Rollback):</strong>
+        <p style="color: var(--text-muted); font-size: 13px;">اگر کد جدید کار نکرد، در ۱ ثانیه سرور کلودفلر را به آخرین نسخه پایدار برمی‌گرداند.</p>
         <div class="cmd-box">
-          <span class="cmd-text">npm run rollback:prod</span>
-          <button class="copy-btn" onclick="copyText('npm run rollback:prod')">کپی دستور</button>
+          <span class="cmd-text" id="cmd3">npx wrangler rollback</span>
+          <button class="copy-btn" onclick="copyById('cmd3')">کپی دستور</button>
         </div>
       </div>
 
       <div style="margin-top: 16px;">
-        <strong>۴. گرفتن بکاپ لحظه‌ای دستی از دیتابیس D1:</strong>
+        <strong>۴. گرفتن بکاپ دستی از دیتابیس اصلی D1:</strong>
+        <p style="color: var(--text-muted); font-size: 13px;">فایل بکاپ را داخل پوشه <code>backups/latest-backup.sql</code> ذخیره می‌کند.</p>
         <div class="cmd-box">
-          <span class="cmd-text">npm run backup:prod</span>
-          <button class="copy-btn" onclick="copyText('npm run backup:prod')">کپی دستور</button>
+          <span class="cmd-text" id="cmd4">npx wrangler d1 export chat-db --remote --output=./backups/latest-backup.sql</span>
+          <button class="copy-btn" onclick="copyById('cmd4')">کپی دستور</button>
         </div>
       </div>
     </div>
 
-    <!-- بخش ۲: چرخه کار روزمره با GitHub Desktop -->
+    <!-- بخش ۲: فرآیند امن توسعه با GitHub Desktop -->
     <div class="card">
       <div class="card-title">
-        <span>🔄 فرآیند امن توسعه با GitHub Desktop</span>
-        <span class="badge badge-success">گام‌به‌گام تصویری</span>
+        <span>🔄 فرآیند مرحله به مرحله در GitHub Desktop</span>
+        <span class="badge badge-success">محیط گرافیکی</span>
       </div>
 
       <div class="step-item">
         <div class="step-num">۱</div>
         <div class="step-content">
-          <strong>شاخه آزمایشی بسازید (New Branch)</strong>
-          <p>در بالای GitHub Desktop روی <b>Current Branch</b> کلیک کنید، دکمه <b>New Branch</b> را بزنید و نامی مثل <code>feature/notification-fix</code> انتخاب کنید. شاخه اصلی (<code>main</code>) دست‌نخورده باقی می‌ماند.</p>
+          <strong>ایجاد شاخه جدید (New Branch)</strong>
+          <p>در بالای GitHub Desktop روی <b>Current Branch</b> کلیک کرده و دکمه <b>New Branch</b> را بزنید. نامی مانند <code>feature/new-feature</code> انتخاب کنید تا نسخه اصلی (<code>main</code>) امن بماند.</p>
         </div>
       </div>
 
       <div class="step-item">
         <div class="step-num">۲</div>
         <div class="step-content">
-          <strong>تغییرات را در محیط آزمایشی تست کنید</strong>
-          <p>کدها را ویرایش کرده و دستور <code>npm run deploy:staging</code> را بزنید. لینک آزمایشی را در مرورگر باز کنید و همه چیز (ارسال پیام، نوتیفیکیشن و...) را بررسی کنید.</p>
+          <strong>تست در محیط Staging</strong>
+          <p>کدها را تغییر دهید و دستور شماره ۲ (<code>npx wrangler deploy --env staging</code>) را اجرا کنید. در آدرس استیجینگ همه چیز را تست کنید.</p>
         </div>
       </div>
 
       <div class="step-item">
         <div class="step-num">۳</div>
         <div class="step-content">
-          <strong>در صورت شکست: شاخه را حذف کنید (Discard & Delete)</strong>
-          <p>اگر آزمایش‌ها خوب پیش نرفت، به شاخه اصلی سوییچ کنید و شاخه آزمایشی را پاک کنید. هیچ باگی به سرور و دیتابیس اصلی شما سرایت نکرده است.</p>
+          <strong>اگر آزمایش شکست خورد (پاک‌سازی بدون ریسک):</strong>
+          <p>در GitHub Desktop به شاخه <code>main</code> بازگردید و شاخه آزمایشی را حذف (Delete) کنید. سایت و دیتابیس اصلی شما دست‌نخورده باقی می‌ماند.</p>
         </div>
       </div>
 
       <div class="step-item">
         <div class="step-num">۴</div>
         <div class="step-content">
-          <strong>در صورت موفقیت: ادغام با شاخه اصلی (Merge to Main)</strong>
-          <p>در GitHub Desktop به شاخه <code>main</code> برگردید. از منوی بالا روی <b>Branch</b> و سپس <b>Merge into current branch...</b> بزنید و شاخه آزمایشی را انتخاب کنید. در نهایت دستور <code>npm run deploy:prod</code> را در ترمینال اجرا کنید.</p>
+          <strong>اگر موفق بود: ارتقا به نسخه اصلی (Merge & Deploy)</strong>
+          <p>در GitHub Desktop به شاخه <code>main</code> بروید. از منوی بالا گزینه <b>Branch > Merge into current branch...</b> را انتخاب کرده و شاخه آزمایشی را ادغام کنید. سپس دستور شماره ۱ را در ترمینال بزنید.</p>
         </div>
       </div>
     </div>
 
-    <!-- بخش ۳: جعبه کمک‌های اولیه (وقتی همه چیز خراب شد) -->
+    <!-- بخش ۳: جعبه کمک‌های اولیه -->
     <div class="card">
       <div class="card-title">
-        <span>🚨 جعبه کمک‌های اولیه (بازگردانی اضطراری)</span>
-        <span class="badge badge-danger">Rollback Guide</span>
+        <span>🚨 جعبه کمک‌های اولیه (وقتی همه‌چیز خراب شد)</span>
+        <span class="badge badge-danger">Rollback Tools</span>
       </div>
 
-      <p style="color: var(--text-muted); font-size: 14px;">اگر مشکلی پیش آمد، بسته به این که مشکل کجاست از راه‌حل مربوطه استفاده کنید:</p>
-
-      <div class="alert alert-danger" style="margin-top: 14px;">
-        <strong>الف) کدها خراب شده ولی هنوز دیپلوی نکرده‌اید:</strong><br>
-        در GitHub Desktop در ستون چپ (Changes)، روی فایل‌ها راست‌کلیک کرده و <b>Discard all changes</b> را بزنید تا همه‌چیز فوراً به حالت اول برگردد.
+      <div class="alert alert-danger" style="margin-top: 8px;">
+        <strong>الف) کدها روی سیستم شما بهم ریخته ولی هنوز Commit نکرده‌اید:</strong><br>
+        در GitHub Desktop در ستون سمت چپ (تب Changes)، روی فایل‌ها راست‌کلیک کرده و گزینه <b>Discard all changes</b> را بزنید تا فایل‌ها به حالت اول برگردند.
       </div>
 
       <div class="alert alert-warning">
-        <strong>ب) کد به سرور ارسال شده و سایت اصلی بالا نمی‌آید:</strong><br>
-        بلافاصله در ترمینال دستور <code>npm run rollback:prod</code> را بزنید تا کلودفلر در ۱ ثانیه به نسخه قبلی برگردد.
+        <strong>ب) سایت اصلی پس از دیپلوی بالا نمی‌آید:</strong><br>
+        دستور شماره ۳ (<code>npx wrangler rollback</code>) را در ترمینال بزنید تا کلودفلر فوراً به نسخه قبلی سوئیچ کند.
       </div>
 
       <div class="alert alert-success">
-        <strong>ج) دیتابیس خراب شده یا داده‌ها نامعتبر شده‌اند:</strong><br>
-        فایل بکاپی که در پوشه <code>backups</code> وجود دارد را با دستور زیر بازگردانی کنید:
+        <strong>ج) دیتابیس پاک شده یا داده‌ها نامعتبر شده‌اند:</strong><br>
+        با دستور زیر آخرین فایل بکاپ را به دیتابیس برگردانید:
         <div class="cmd-box" style="margin-top: 8px;">
-          <span class="cmd-text">npx wrangler d1 execute chat-db --remote --file=./backups/latest-backup.sql</span>
-          <button class="copy-btn" onclick="copyText('npx wrangler d1 execute chat-db --remote --file=./backups/latest-backup.sql')">کپی</button>
+          <span class="cmd-text" id="cmdRestore">npx wrangler d1 execute chat-db --remote --file=./backups/latest-backup.sql</span>
+          <button class="copy-btn" onclick="copyById('cmdRestore')">کپی</button>
         </div>
-      </div>
-    </div>
-
-  </div>
-
-  <footer>
-    پروژه Telegram-Chat &copy; 2026 | Cloudflare Workers + D1 Database + GitHub Desktop
-  </footer>
-
-</div>
-
-<script>
-  function copyText(text) {
-    navigator.clipboard.writeText(text).then(() => {
-      alert('دستور در حافظه کپی شد: \n' + text);
-    });
-  }
-</script>
-
-</body>
-</html>
