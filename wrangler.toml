@@ -46,5 +46,5 @@ bindings = [
 [env.staging.vars]
 TELEGRAM_GROUP_ID = "-5585398377"
 ADMIN_TELEGRAM_ID = "122623127"
-VAPID_PUBLIC_KEY = "BEEXyE39QFlJqr1CROfgLdO2NdM_KT8aN7s4iU_ORi2IdBgh0dxARlf1jR_6AsNnsP1btCz6qUpKH84shXRgdxQ"
+VAPID_PUBLIC_KEY = "BJ_ltjqvDnRdJ6XtE2sCl9T4y1huuvBWQ-Hbz53bwwRKVdvzA2-QNoLRANmpUbx6zdt91Df7_LAVUhC4OxyAocU"
 VAPID_SUBJECT = "mailto:admin@chat-app.com"
