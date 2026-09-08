@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>دفترچه راهنمای جامع مدیریت و توسعه Telegram-Chat</title>
+  <style>
+    :root {
+      --bg-main: #0e1621;
+      --bg-card: #17212b;
+      --bg-code: #0b1118;
+      --border: #242f3d;
+      --accent: #2ea6ff;
+      --accent-hover: #1f85d4;
+      --success: #31b545;
+      --warning: #f5a623;
+      --danger: #e53935;
+      --text: #f5f5f5;
+      --text-muted: #8b9baa;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Tahoma, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-main);
+      color: var(--text);
+      line-height: 1.7;
+      padding: 24px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      max-width: 950px;
+      width: 100%;
+    }
+
+    header {
+      text-align: center;
+      padding: 30px 20px;
+      background: linear-gradient(180deg, #1b2733 0%, var(--bg-card) 100%);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      margin-bottom: 24px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    }
+
+    header h1 {
+      font-size: 26px;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+
+    header p {
+      color: var(--text-muted);
+      font-size: 15px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+    }
+
+    .card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 24px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 19px;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+      margin-bottom: 18px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: bold;
+      border-radius: 20px;
+      color: #fff;
+    }
+    .badge-primary { background-color: var(--accent); }
+    .badge-success { background-color: var(--success); }
+    .badge-warning { background-color: var(--warning); color: #000; }
+    .badge-danger { background-color: var(--danger); }
+
+    .cmd-box {
+      background-color: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin: 12px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      direction: ltr;
+    }
+
+    .cmd-text {
+      font-family: 'Courier New', Courier, monospace;
+      color: #5af;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .copy-btn {
+      background-color: #2b394a;
+      border: none;
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: background 0.2s;
+      font-family: inherit;
+      direction: rtl;
+    }
+
+    .copy-btn:hover {
+      background-color: var(--accent);
+    }
+
+    .step-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .step-num {
+      background-color: var(--border);
+      color: var(--accent);
+      min-width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 14px;
+      margin-top: 3px;
+    }
+
+    .step-content strong {
+      color: #fff;
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    .step-content p {
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .alert {
+      padding: 14px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+      margin-top: 14px;
+      border-right: 4px solid;
+    }
+    .alert-warning {
+      background-color: rgba(245, 166, 35, 0.1);
+      border-color: var(--warning);
+      color: #ffd080;
+    }
+    .alert-danger {
+      background-color: rgba(229, 57, 53, 0.1);
+      border-color: var(--danger);
+      color: #ff9d9b;
+    }
+    .alert-success {
+      background-color: rgba(49, 181, 69, 0.1);
+      border-color: var(--success);
+      color: #9fe2a7;
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 30px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  
+  <header>
+    <h1>🚀 راهنمای سریع و خط‌مشی پروژه Telegram-Chat</h1>
+    <p>مرجع گام‌به‌گام برای توسعه بدون ریسک، دیپلوی ایمن و بازگردانی سریع هنگام بروز مشکل</p>
+  </header>
+
+  <div class="grid">
+
+    <!-- بخش ۱: دستورات روزمره -->
+    <div class="card">
+      <div class="card-title">
+        <span>⚡ دستورات سریع ترمینال (یک کلیک تا اجرا)</span>
+        <span class="badge badge-primary">Package Scripts</span>
+      </div>
+
+      <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 12px;">این دستورات در فایل <code>package.json</code> تعریف شده‌اند و تمام کارهای پیچیده را به صورت خودکار انجام می‌دهند:</p>
+
+      <div>
+        <strong>۱. استقرار نهایی روی نسخه اصلی (با بکاپ‌گیری خودکار دیتابیس):</strong>
+        <p style="color: var(--text-muted); font-size: 13px;">این دستور ابتدا یک فایل بکاپ کامل از دیتابیس فعلی در پوشه <code>backups</code> می‌گیرد، سپس کدها را به سرور اصلی کلودفلر می‌فرستد.</p>
+        <div class="cmd-box">
+          <span class="cmd-text">npm run deploy:prod</span>
+          <button class="copy-btn" onclick="copyText('npm run deploy:prod')">کپی دستور</button>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <strong>۲. استقرار در محیط آزمایشی (بدون کوچک‌ترین ریسک برای نسخه اصلی):</strong>
+        <p style="color: var(--text-muted); font-size: 13px;">کدها فقط روی ساب‌دامین و دیتابیس آزمایشی مستقر می‌شوند و کاربران اصلی متوجه هیچ تغییری نخواهند شد.</p>
+        <div class="cmd-box">
+          <span class="cmd-text">npm run deploy:staging</span>
+          <button class="copy-btn" onclick="copyText('npm run deploy:staging')">کپی دستور</button>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <strong>۳. بازگشت آنی به نسخه قبل در صورت خرابی (Workers Rollback):</strong>
+        <p style="color: var(--text-muted); font-size: 13px;">اگر کدی دیپلوی شد و کار نکرد، این دستور در کمتر از ۱ ثانیه سرور کلودفلر را به آخرین نسخه پایدار قبلی برمی‌گرداند.</p>
+        <div class="cmd-box">
+          <span class="cmd-text">npm run rollback:prod</span>
+          <button class="copy-btn" onclick="copyText('npm run rollback:prod')">کپی دستور</button>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <strong>۴. گرفتن بکاپ لحظه‌ای دستی از دیتابیس D1:</strong>
+        <div class="cmd-box">
+          <span class="cmd-text">npm run backup:prod</span>
+          <button class="copy-btn" onclick="copyText('npm run backup:prod')">کپی دستور</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- بخش ۲: چرخه کار روزمره با GitHub Desktop -->
+    <div class="card">
+      <div class="card-title">
+        <span>🔄 فرآیند امن توسعه با GitHub Desktop</span>
+        <span class="badge badge-success">گام‌به‌گام تصویری</span>
+      </div>
+
+      <div class="step-item">
+        <div class="step-num">۱</div>
+        <div class="step-content">
+          <strong>شاخه آزمایشی بسازید (New Branch)</strong>
+          <p>در بالای GitHub Desktop روی <b>Current Branch</b> کلیک کنید، دکمه <b>New Branch</b> را بزنید و نامی مثل <code>feature/notification-fix</code> انتخاب کنید. شاخه اصلی (<code>main</code>) دست‌نخورده باقی می‌ماند.</p>
+        </div>
+      </div>
+
+      <div class="step-item">
+        <div class="step-num">۲</div>
+        <div class="step-content">
+          <strong>تغییرات را در محیط آزمایشی تست کنید</strong>
+          <p>کدها را ویرایش کرده و دستور <code>npm run deploy:staging</code> را بزنید. لینک آزمایشی را در مرورگر باز کنید و همه چیز (ارسال پیام، نوتیفیکیشن و...) را بررسی کنید.</p>
+        </div>
+      </div>
+
+      <div class="step-item">
+        <div class="step-num">۳</div>
+        <div class="step-content">
+          <strong>در صورت شکست: شاخه را حذف کنید (Discard & Delete)</strong>
+          <p>اگر آزمایش‌ها خوب پیش نرفت، به شاخه اصلی سوییچ کنید و شاخه آزمایشی را پاک کنید. هیچ باگی به سرور و دیتابیس اصلی شما سرایت نکرده است.</p>
+        </div>
+      </div>
+
+      <div class="step-item">
+        <div class="step-num">۴</div>
+        <div class="step-content">
+          <strong>در صورت موفقیت: ادغام با شاخه اصلی (Merge to Main)</strong>
+          <p>در GitHub Desktop به شاخه <code>main</code> برگردید. از منوی بالا روی <b>Branch</b> و سپس <b>Merge into current branch...</b> بزنید و شاخه آزمایشی را انتخاب کنید. در نهایت دستور <code>npm run deploy:prod</code> را در ترمینال اجرا کنید.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- بخش ۳: جعبه کمک‌های اولیه (وقتی همه چیز خراب شد) -->
+    <div class="card">
+      <div class="card-title">
+        <span>🚨 جعبه کمک‌های اولیه (بازگردانی اضطراری)</span>
+        <span class="badge badge-danger">Rollback Guide</span>
+      </div>
+
+      <p style="color: var(--text-muted); font-size: 14px;">اگر مشکلی پیش آمد، بسته به این که مشکل کجاست از راه‌حل مربوطه استفاده کنید:</p>
+
+      <div class="alert alert-danger" style="margin-top: 14px;">
+        <strong>الف) کدها خراب شده ولی هنوز دیپلوی نکرده‌اید:</strong><br>
+        در GitHub Desktop در ستون چپ (Changes)، روی فایل‌ها راست‌کلیک کرده و <b>Discard all changes</b> را بزنید تا همه‌چیز فوراً به حالت اول برگردد.
+      </div>
+
+      <div class="alert alert-warning">
+        <strong>ب) کد به سرور ارسال شده و سایت اصلی بالا نمی‌آید:</strong><br>
+        بلافاصله در ترمینال دستور <code>npm run rollback:prod</code> را بزنید تا کلودفلر در ۱ ثانیه به نسخه قبلی برگردد.
+      </div>
+
+      <div class="alert alert-success">
+        <strong>ج) دیتابیس خراب شده یا داده‌ها نامعتبر شده‌اند:</strong><br>
+        فایل بکاپی که در پوشه <code>backups</code> وجود دارد را با دستور زیر بازگردانی کنید:
+        <div class="cmd-box" style="margin-top: 8px;">
+          <span class="cmd-text">npx wrangler d1 execute chat-db --remote --file=./backups/latest-backup.sql</span>
+          <button class="copy-btn" onclick="copyText('npx wrangler d1 execute chat-db --remote --file=./backups/latest-backup.sql')">کپی</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    پروژه Telegram-Chat &copy; 2026 | Cloudflare Workers + D1 Database + GitHub Desktop
+  </footer>
+
+</div>
+
+<script>
+  function copyText(text) {
+    navigator.clipboard.writeText(text).then(() => {
+      alert('دستور در حافظه کپی شد: \n' + text);
+    });
+  }
+</script>
+
+</body>
+</html>
