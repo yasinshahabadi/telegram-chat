@@ -28,3 +28,23 @@ TELEGRAM_GROUP_ID = "-5585398377"
 ADMIN_TELEGRAM_ID = "122623127"
 VAPID_PUBLIC_KEY = "BEEXyE39QFlJqr1CROfgLdO2NdM_KT8aN7s4iU_ORi2IdBgh0dxARlf1jR_6AsNnsP1btCz6qUpKH84shXRgdxQ"
 VAPID_SUBJECT = "mailto:admin@chat-app.com"
+
+# --- محیط آزمایشی کاملاً مستقل ---
+[env.staging]
+name = "telegram-chat-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "chat-db-staging"
+database_id = "1ecf41a0-8348-439c-b062-10b3cce3e99f"
+
+[env.staging.durable_objects]
+bindings = [
+  { name = "CHAT_ROOM", class_name = "ChatRoom" }
+]
+
+[env.staging.vars]
+TELEGRAM_GROUP_ID = "-5585398377"
+ADMIN_TELEGRAM_ID = "122623127"
+VAPID_PUBLIC_KEY = "BEEXyE39QFlJqr1CROfgLdO2NdM_KT8aN7s4iU_ORi2IdBgh0dxARlf1jR_6AsNnsP1btCz6qUpKH84shXRgdxQ"
+VAPID_SUBJECT = "mailto:admin@chat-app.com"
