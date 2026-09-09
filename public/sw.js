@@ -1,5 +1,26 @@
 // public/sw.js
 
+const DEFAULT_ICON = '/icon.svg';
+
+function buildTargetUrl(data, action = 'open') {
+  try {
+    const url = new URL(data.url || '/', self.location.origin);
+    if (data.messageId) url.searchParams.set('messageId', data.messageId);
+    if (action !== 'open') url.searchParams.set('notificationAction', action);
+    return url.pathname + url.search + url.hash;
+  } catch (e) {
+    return '/';
+  }
+}
+
+function isSameOrigin(url) {
+  try {
+    return new URL(url, self.location.origin).origin === self.location.origin;
+  } catch (e) {
+    return false;
+  }
+}
+
 self.addEventListener('install', event => {
   event.waitUntil(self.skipWaiting());
 });
@@ -14,36 +35,43 @@ self.addEventListener('push', event => {
       try {
         const data = event.data ? event.data.json() : {};
         const title = data.title || 'پیام جدید';
+        const messageId = data.messageId || crypto.randomUUID();
 
-        // Do not notify while the chat page is actually visible.
-        // A hidden/locked Android PWA is intentionally NOT treated as visible.
         const clientList = await self.clients.matchAll({
           type: 'window',
           includeUncontrolled: true
         });
+        const isAppVisible = clientList.some(client => client.visibilityState === 'visible');
+        if (isAppVisible) return;
 
-        const isAppVisible = clientList.some(client => {
-          return client.visibilityState === 'visible';
-        });
+        const icon = isSameOrigin(data.senderAvatarUrl) ? data.senderAvatarUrl : DEFAULT_ICON;
+        const mediaUrl = isSameOrigin(data.mediaUrl) ? data.mediaUrl : null;
+        const isImage = data.mediaType === 'photo' && !!mediaUrl;
 
-        if (isAppVisible) {
-          return;
-        }
-
-        const messageId = data.messageId || crypto.randomUUID();
         const options = {
           body: data.body || 'شما یک پیام جدید دارید',
-          icon: '/icon.svg',
-          badge: '/icon.svg',
+          icon,
+          badge: DEFAULT_ICON,
           silent: false,
           vibrate: [200, 100, 200],
           tag: `chat-message-${messageId}`,
           renotify: true,
+          dir: 'rtl',
+          lang: 'fa',
           data: {
             url: data.url || '/',
-            messageId
-          }
+            messageId,
+            senderName: data.senderName || '',
+            mediaType: data.mediaType || null,
+            mediaUrl
+          },
+          actions: [
+            { action: 'reply', title: 'پاسخ' },
+            { action: 'read', title: 'خوانده شد' }
+          ]
         };
+
+        if (isImage) options.image = mediaUrl;
 
         await self.registration.showNotification(title, options);
       } catch (err) {
@@ -56,8 +84,9 @@ self.addEventListener('push', event => {
 self.addEventListener('notificationclick', event => {
   event.notification.close();
 
-  const targetUrl =
-    (event.notification.data && event.notification.data.url) || '/';
+  const data = event.notification.data || {};
+  const action = event.action || 'open';
+  const targetUrl = buildTargetUrl(data, action);
 
   event.waitUntil(
     self.clients.matchAll({
@@ -71,6 +100,9 @@ self.addEventListener('notificationclick', event => {
           'focus' in client
         ) {
           await client.focus();
+          if ('navigate' in client) {
+            try { await client.navigate(targetUrl); } catch (e) {}
+          }
           return client;
         }
       }
@@ -78,7 +110,6 @@ self.addEventListener('notificationclick', event => {
       if (self.clients.openWindow) {
         return self.clients.openWindow(targetUrl);
       }
-
       return undefined;
     })
   );

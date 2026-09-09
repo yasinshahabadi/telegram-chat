@@ -333,7 +333,6 @@
         if (!publicKey) throw new Error('VAPID public key is missing');
 
         let sub = await reg.pushManager.getSubscription();
-
         // Creating a new subscription is done only from the explicit permission action.
         if (!sub && createIfMissing) {
           sub = await reg.pushManager.subscribe({
@@ -522,8 +521,7 @@
         document.getElementById('online-status').className = 'text-[10px] text-green-400 font-medium';
         document.getElementById('online-status').innerText = 'آنلاین';
         ws.send(JSON.stringify({ type: 'identify', userName: currentUser.full_name, userId: currentUser.id, tgId: currentUser.telegram_id }));
-        initialLoadMessages();
-        sendPresenceUpdate(true);
+        initialLoadMessages().then(handleNotificationNavigation);
       };
 
       ws.onmessage = (e) => {
@@ -628,6 +626,42 @@
     window.addEventListener('blur', () => sendPresenceUpdate(false));
     window.addEventListener('online', () => { void syncPushSubscription(false); fetchNewMessages(); });
     window.addEventListener('pageshow', () => { void syncPushSubscription(false); });
+
+    async function handleNotificationNavigation() {
+      const params = new URLSearchParams(window.location.search);
+      const messageId = params.get('messageId');
+      const action = params.get('notificationAction') || 'open';
+      if (!messageId) return;
+
+      let message = messageStore.get(messageId);
+      if (!message) {
+        try {
+          const res = await fetch(`/api/messages?id=${encodeURIComponent(messageId)}`);
+          if (res.ok) {
+            const data = await res.json();
+            message = data.messages?.[0] || null;
+            if (message) messageStore.set(message.id, message);
+          }
+        } catch (e) {}
+      }
+
+      if (!message) return;
+
+      requestAnimationFrame(() => scrollToTargetMessage(messageId));
+
+      if (action === 'reply') {
+        setReplyTarget(message);
+      }
+
+      if (action === 'read' || action === 'reply' || action === 'open') {
+        markAsReadDirectly(messageId);
+      }
+
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('messageId');
+      cleanUrl.searchParams.delete('notificationAction');
+      window.history.replaceState({}, document.title, cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+    }
 
     async function initialLoadMessages() {
       try {
