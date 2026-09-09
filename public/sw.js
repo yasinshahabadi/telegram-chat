@@ -66,8 +66,7 @@ self.addEventListener('push', event => {
             mediaUrl
           },
           actions: [
-            { action: 'reply', title: 'پاسخ' },
-            { action: 'read', title: 'خوانده شد' }
+            { action: 'reply', title: 'پاسخ' }
           ]
         };
 
@@ -88,29 +87,45 @@ self.addEventListener('notificationclick', event => {
   const action = event.action || 'open';
   const targetUrl = buildTargetUrl(data, action);
 
-  event.waitUntil(
-    self.clients.matchAll({
+  event.waitUntil((async () => {
+    const clientList = await self.clients.matchAll({
       type: 'window',
       includeUncontrolled: true
-    }).then(async clientList => {
-      for (const client of clientList) {
-        if (
-          client.url &&
-          client.url.startsWith(self.location.origin) &&
-          'focus' in client
-        ) {
-          await client.focus();
-          if ('navigate' in client) {
-            try { await client.navigate(targetUrl); } catch (e) {}
-          }
-          return client;
-        }
+    });
+
+    for (const client of clientList) {
+      if (
+        !client.url ||
+        !client.url.startsWith(self.location.origin) ||
+        !('focus' in client)
+      ) continue;
+
+      await client.focus();
+
+      // Reply is intentionally handled through postMessage when the PWA is
+      // already open. This avoids relying on client.navigate(), which can make
+      // an action look identical to a normal notification click on Android.
+      if (action === 'reply' && 'postMessage' in client) {
+        client.postMessage({
+          type: 'notification-action',
+          action: 'reply',
+          messageId: data.messageId || null
+        });
+        return client;
       }
 
-      if (self.clients.openWindow) {
-        return self.clients.openWindow(targetUrl);
+      // Normal notification click: open/focus the exact message.
+      if (action === 'open' && 'navigate' in client) {
+        try { await client.navigate(targetUrl); } catch (e) {}
       }
-      return undefined;
-    })
-  );
+      return client;
+    }
+
+    // If the PWA is not open, opening the action-specific URL lets the page
+    // complete the reply flow after it has initialized.
+    if (self.clients.openWindow) {
+      return self.clients.openWindow(targetUrl);
+    }
+    return undefined;
+  })());
 });

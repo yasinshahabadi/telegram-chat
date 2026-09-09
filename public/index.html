@@ -303,6 +303,18 @@
 
     window.addEventListener('focus', () => { document.title = 'گفتگوی گروه'; });
 
+    // Handle notification actions directly from the Service Worker when the
+    // PWA is already open. Reply is intentionally handled without navigation
+    // so it cannot fall back to the normal notification-click behavior.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', event => {
+        const data = event.data || {};
+        if (data.type === 'notification-action' && data.action === 'reply' && data.messageId) {
+          void handleNotificationAction(data.messageId, 'reply');
+        }
+      });
+    }
+
     const notifBtn = document.getElementById('notif-btn');
     function updateNotifUI() {
       if (!('Notification' in window)) return;
@@ -627,10 +639,7 @@
     window.addEventListener('online', () => { void syncPushSubscription(false); fetchNewMessages(); });
     window.addEventListener('pageshow', () => { void syncPushSubscription(false); });
 
-    async function handleNotificationNavigation() {
-      const params = new URLSearchParams(window.location.search);
-      const messageId = params.get('messageId');
-      const action = params.get('notificationAction') || 'open';
+    async function handleNotificationAction(messageId, action = 'open') {
       if (!messageId) return;
 
       let message = messageStore.get(messageId);
@@ -650,12 +659,25 @@
       requestAnimationFrame(() => scrollToTargetMessage(messageId));
 
       if (action === 'reply') {
+        // Explicitly activate the existing reply UI instead of merely
+        // navigating/highlighting the message.
         setReplyTarget(message);
       }
 
-      if (action === 'read' || action === 'reply' || action === 'open') {
+      // Opening/replying to a notification also means the message has been
+      // viewed, so keep the existing read-receipt behavior.
+      if (action === 'reply' || action === 'open') {
         markAsReadDirectly(messageId);
       }
+    }
+
+    async function handleNotificationNavigation() {
+      const params = new URLSearchParams(window.location.search);
+      const messageId = params.get('messageId');
+      const action = params.get('notificationAction') || 'open';
+      if (!messageId) return;
+
+      await handleNotificationAction(messageId, action);
 
       const cleanUrl = new URL(window.location.href);
       cleanUrl.searchParams.delete('messageId');
