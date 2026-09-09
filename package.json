@@ -1,4 +1,16 @@
 {
+  "name": "telegram-chat-app",
+  "version": "1.0.0",
+  "description": "my chat program using telegram groups and manage by telBots",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "backup:prod": "npx wrangler d1 export chat-db --remote --output=./backups/latest-backup.sql",
+    "deploy:staging": "npx wrangler deploy --env staging",
+    "deploy:prod": "npm run backup:prod && npx wrangler deploy",
+    "rollback:prod": "npx wrangler rollback"
+  },
   "dependencies": {
     "@block65/webcrypto-web-push": "^2.0.0"
   }

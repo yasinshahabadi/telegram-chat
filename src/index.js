@@ -14,48 +14,98 @@ function escapeXml(str) {
 }
 
 // تابع ارسال وب‌پوش به تمامی اعضای مشترک از طریق سرورهای گوگل/اپل
-async function dispatchWebPush(env, { title, body, senderUserId = null }) {
-  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return;
+const PUSH_TTL_SECONDS = 60 * 60 * 24 * 28;
+async function dispatchWebPush(env, {
+  title,
+  body,
+  senderUserId = null,
+  messageId = null,
+  senderName = '',
+  senderAvatarUrl = null,
+  mediaType = null,
+  mediaUrl = null
+}) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) {
+    console.error("Web Push is not configured: missing VAPID keys");
+    return;
+  }
 
   const vapid = {
     subject: env.VAPID_SUBJECT || "mailto:admin@chat-app.com",
     publicKey: env.VAPID_PUBLIC_KEY,
     privateKey: env.VAPID_PRIVATE_KEY
   };
-
   try {
-    const query = senderUserId 
-      ? "SELECT * FROM push_subscriptions WHERE user_id != ? OR user_id IS NULL" 
+    const query = senderUserId
+      ? "SELECT * FROM push_subscriptions WHERE user_id != ? OR user_id IS NULL"
       : "SELECT * FROM push_subscriptions";
-    
-    const stmt = senderUserId 
-      ? env.DB.prepare(query).bind(senderUserId) 
+
+    const stmt = senderUserId
+      ? env.DB.prepare(query).bind(senderUserId)
       : env.DB.prepare(query);
 
     const { results: subs } = await stmt.all();
     if (!subs || subs.length === 0) return;
 
-    for (const sub of subs) {
+    const payloadData = JSON.stringify({
+      title,
+      body,
+      url: '/',
+      messageId: messageId || crypto.randomUUID(),
+      senderName,
+      senderAvatarUrl,
+      mediaType,
+      mediaUrl
+    });
+    const sendOne = async (sub) => {
+      if (!sub.endpoint || !sub.p256dh || !sub.auth) return;
+
       try {
         const pushSub = {
           endpoint: sub.endpoint,
-          keys: { p256dh: sub.p256dh, auth: sub.auth }
+          keys: {
+            p256dh: sub.p256dh,
+            auth: sub.auth
+          }
         };
-
         const payload = await buildPushPayload({
-          data: JSON.stringify({ title, body, url: '/' }),
-          options: { ttl: 60 }
+          data: payloadData,
+          options: {
+            // Keep the message at the push service while the device is offline.
+            ttl: PUSH_TTL_SECONDS,
+            // Chat messages should be delivered promptly when the device reconnects.
+            urgency: "high"
+          }
         }, pushSub, vapid);
 
-        const res = await fetch(sub.endpoint, payload);
-        // اگر سابسکرایب باطل یا منقضی شده بود از دیتابیس حذف شود
-        if (res.status === 410 || res.status === 404) {
-          await env.DB.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").bind(sub.endpoint).run();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        let res;
+        try {
+          res = await fetch(sub.endpoint, { ...payload, signal: controller.signal });
+        } finally {
+          clearTimeout(timeoutId);
         }
+
+        if (res.status === 404 || res.status === 410) {
+          await env.DB
+            .prepare("DELETE FROM push_subscriptions WHERE endpoint = ?")
+            .bind(sub.endpoint)
+            .run();
+          return;
+        }
+        if (!res.ok) {
+          console.error("Push service error:", res.status, await res.text().catch(() => ""));
+          return;
+        }
+        console.log("Push sent:", res.status);
       } catch (e) {
         console.error("Push dispatch single error:", e);
       }
-    }
+    };
+
+    // Send to all devices in parallel so a slow endpoint cannot block the others.
+    await Promise.allSettled(subs.map(sendOne));
   } catch (err) {
     console.error("Push dispatch all error:", err);
   }
@@ -257,7 +307,16 @@ export default {
         ctx.waitUntil(dispatchWebPush(env, {
           title: `🌐 وب: ${user.full_name}`,
           body: caption || `[ارسال ${mediaType}]`,
-          senderUserId: user.id
+          senderUserId: user.id,
+          messageId: msgId,
+          senderName: user.full_name,
+          senderAvatarUrl: user.telegram_id
+            ? `/api/avatar?userId=${encodeURIComponent(user.telegram_id)}`
+            : null,
+          mediaType,
+          mediaUrl: (mediaType === 'photo' || mediaType === 'video') && fileId
+            ? `/api/media?fileId=${encodeURIComponent(mediaType === 'video' && thumbId ? thumbId : fileId)}`
+            : null
         }));
 
         return Response.json({ status: "ok", fileId });
@@ -338,12 +397,16 @@ export default {
     // ۱۰. دریافت پیام‌ها
     if (url.pathname === "/api/messages") {
       try {
+        const messageId = url.searchParams.get("id");
         const since = url.searchParams.get("since");
         const before = url.searchParams.get("before");
         const limit = Math.min(Number(url.searchParams.get("limit")) || 35, 50);
 
         let results;
-        if (since && !isNaN(Number(since))) {
+        if (messageId) {
+          const message = await env.DB.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1").bind(messageId).first();
+          results = message ? [message] : [];
+        } else if (since && !isNaN(Number(since))) {
           const stmt = await env.DB.prepare(
             "SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?"
           ).bind(Number(since), limit).all();
@@ -680,7 +743,16 @@ async function handleTelegramUpdate(update, env, ctx) {
         // ارسال اعلان واقعی به گوشی‌های بسته هنگام ارسال پیام در تلگرام
         ctx.waitUntil(dispatchWebPush(env, {
           title: `📱 تلگرام: ${senderName}`,
-          body: text || (mediaType ? `[ارسال ${mediaType}]` : 'پیام جدید')
+          body: text || (mediaType ? `[ارسال ${mediaType}]` : 'پیام جدید'),
+          messageId: msgId,
+          senderName,
+          senderAvatarUrl: msg.from?.id
+            ? `/api/avatar?userId=${encodeURIComponent(msg.from.id)}`
+            : null,
+          mediaType,
+          mediaUrl: (mediaType === 'photo' || mediaType === 'video') && fileId
+            ? `/api/media?fileId=${encodeURIComponent(mediaType === 'video' && thumbId ? thumbId : fileId)}`
+            : null
         }));
       }
     }
@@ -866,10 +938,15 @@ export class ChatRoom extends DurableObject {
         `).bind(msgId, user.userId, user.userName, data.text, time, replyName, replyText, replyId).run();
 
         // ارسال وب‌پوش واقعی به گوشی‌های بسته اعضا
-        dispatchWebPush(this.env, {
+        await dispatchWebPush(this.env, {
           title: `🌐 وب: ${user.userName}`,
           body: data.text,
-          senderUserId: user.userId
+          senderUserId: user.userId,
+          messageId: msgId,
+          senderName: user.userName,
+          senderAvatarUrl: user.tgId
+            ? `/api/avatar?userId=${encodeURIComponent(user.tgId)}`
+            : null
         });
 
         try {
