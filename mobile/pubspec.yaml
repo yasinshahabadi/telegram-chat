@@ -19,8 +19,7 @@ dependencies:
   url_launcher: ^6.3.0
   cached_network_image: ^3.4.1
 
-  # مالتی‌مدیا، دوربین و ضبط صدا
-  camera: ^0.11.0+2
+  # مالتی‌مدیا و ضبط صدا
   record: ^5.2.0
   audioplayers: ^6.1.0
   video_player: ^2.9.2

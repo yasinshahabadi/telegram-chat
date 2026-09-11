@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- مجوزهای لازم برای اندروید 13 و 14 -->
+    <!-- مجوزهای شبکه، ویبره و پس‌زمینه -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
@@ -11,8 +11,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- دسترسی ضبط صدا برای ارسال ویس -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
-    <!-- دسترسی باز کردن لینک‌ها و تلگرام -->
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
@@ -52,7 +53,6 @@
             </intent-filter>
         </activity>
 
-        <!-- تگ سرویس بیرون از اکتیویتی و مستقیماً داخل اپلیکیشن قرار دارد -->
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="dataSync|remoteMessaging"
