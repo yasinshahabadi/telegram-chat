@@ -1,0 +1,41 @@
+name: telegram_chat_mobile
+description: "Telegram Connected Chat Mobile Application"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # شبکه و سوکت
+  http: ^1.2.2
+  http_parser: ^4.1.2
+  web_socket_channel: ^3.0.1
+  url_launcher: ^6.3.0
+  cached_network_image: ^3.4.1
+
+  # سخت‌افزار، ویدیو و فایل‌ها
+  video_player: ^2.9.2
+  shared_preferences: ^2.3.2
+  device_info_plus: ^10.1.2
+  uuid: ^4.5.1
+  intl: ^0.20.3
+  file_picker: ^8.1.7
+  path_provider: ^2.1.5
+
+  # سرویس پس‌زمینه و نوتیفیکیشن نیتیو
+  flutter_foreground_task: ^8.17.0
+  flutter_local_notifications: ^17.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
