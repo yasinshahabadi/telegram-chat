@@ -1,3 +1,5 @@
+// src/index.js
+
 import { DurableObject } from "cloudflare:workers";
 import { buildPushPayload } from "@block65/webcrypto-web-push";
 
@@ -13,7 +15,7 @@ function escapeXml(str) {
   }[m]));
 }
 
-// تابع ارسال وب‌پوش به تمامی اعضای مشترک از طریق سرورهای گوگل/اپل
+// تابع ارسال وب‌پوش به تمامی مشترکین از طریق سرورهای گوگل/اپل
 const PUSH_TTL_SECONDS = 60 * 60 * 24 * 28;
 async function dispatchWebPush(env, {
   title,
@@ -71,9 +73,7 @@ async function dispatchWebPush(env, {
         const payload = await buildPushPayload({
           data: payloadData,
           options: {
-            // Keep the message at the push service while the device is offline.
             ttl: PUSH_TTL_SECONDS,
-            // Chat messages should be delivered promptly when the device reconnects.
             urgency: "high"
           }
         }, pushSub, vapid);
@@ -98,13 +98,11 @@ async function dispatchWebPush(env, {
           console.error("Push service error:", res.status, await res.text().catch(() => ""));
           return;
         }
-        console.log("Push sent:", res.status);
       } catch (e) {
         console.error("Push dispatch single error:", e);
       }
     };
 
-    // Send to all devices in parallel so a slow endpoint cannot block the others.
     await Promise.allSettled(subs.map(sendOne));
   } catch (err) {
     console.error("Push dispatch all error:", err);
@@ -143,7 +141,7 @@ export default {
       }
     }
 
-    // ۳. استریم مدیا
+    // ۳. استریم مدیا با پشتیبانی از HTTP Range Requests جهت استریم آنلاین صوت و ویدیو در اندروید
     if (url.pathname === "/api/media") {
       const fileId = url.searchParams.get("fileId");
       const customName = url.searchParams.get("name");
@@ -162,26 +160,44 @@ export default {
           }
 
           const filePath = fileData.result.file_path;
-          const ext = filePath.includes(".") ? filePath.split(".").pop() : "bin";
+          const ext = filePath.includes(".") ? filePath.split(".").pop().toLowerCase() : "bin";
           const fileName = customName || `file_${fileId.substring(0, 8)}.${ext}`;
 
+          // انتقال هدر Range به سرور تلگرام جهت رفع خطای ProtocolException در پخش‌کننده اندروید
+          const rangeHeader = request.headers.get("Range") || request.headers.get("range");
+          const tgHeaders = {};
+          if (rangeHeader) tgHeaders["Range"] = rangeHeader;
+
           const mediaRes = await fetch(
-            `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`
+            `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`,
+            { headers: tgHeaders }
           );
 
           let contentType = mediaRes.headers.get("Content-Type") || "application/octet-stream";
           if (ext === "mp4") contentType = "video/mp4";
           else if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
           else if (ext === "png") contentType = "image/png";
+          else if (ext === "webp") contentType = "image/webp";
           else if (ext === "mp3") contentType = "audio/mpeg";
           else if (ext === "ogg") contentType = "audio/ogg";
+          else if (ext === "m4a") contentType = "audio/mp4";
+
+          const resHeaders = new Headers();
+          resHeaders.set("Content-Type", contentType);
+          resHeaders.set("Content-Disposition", `${isDownload ? "attachment" : "inline"}; filename="${encodeURIComponent(fileName)}"`);
+          resHeaders.set("Cache-Control", "public, max-age=604800, immutable");
+          resHeaders.set("Accept-Ranges", "bytes");
+
+          if (mediaRes.headers.has("Content-Range")) {
+            resHeaders.set("Content-Range", mediaRes.headers.get("Content-Range"));
+          }
+          if (mediaRes.headers.has("Content-Length")) {
+            resHeaders.set("Content-Length", mediaRes.headers.get("Content-Length"));
+          }
 
           return new Response(mediaRes.body, {
-            headers: {
-              "Content-Type": contentType,
-              "Content-Disposition": `${isDownload ? "attachment" : "inline"}; filename="${encodeURIComponent(fileName)}"`,
-              "Cache-Control": "public, max-age=604800, immutable"
-            }
+            status: mediaRes.status,
+            headers: resHeaders
           });
         }
       } catch (e) {}
@@ -201,7 +217,7 @@ export default {
       }
     }
 
-    // ۵. آپلود مدیا
+    // ۵. آپلود مدیا (شامل ویس، ویدیو مسیج دایره‌ای، عکس، فیلم و اسناد)
     if (url.pathname === "/api/upload" && request.method === "POST") {
       try {
         const formData = await request.formData();
@@ -209,6 +225,7 @@ export default {
         const caption = (formData.get("caption") || "").trim();
         const sessionToken = formData.get("sessionToken");
         const replyToRaw = formData.get("replyTo");
+        const customType = formData.get("mediaType");
 
         if (!file || !(file instanceof File) || file.size > MAX_FILE_SIZE) {
           return Response.json({ status: "error", message: "فایل نامعتبر یا بیش از ۲۰ مگابایت است." }, { status: 400 });
@@ -229,7 +246,12 @@ export default {
         let tgEndpoint = "sendDocument";
         let fileField = "document";
 
-        if (file.type.startsWith("image/")) {
+        // تفکیک ویدیو مسیج دایره‌ای، ویس تلگرام، عکس و فیلم
+        if (customType === "video_note" || file.name.includes("video_note") || file.name.endsWith("_note.mp4")) {
+          mediaType = "video_note"; tgEndpoint = "sendVideoNote"; fileField = "video_note";
+        } else if (customType === "voice" || file.name.includes("voice") || file.name.endsWith("_voice.m4a") || file.name.endsWith("_voice.ogg")) {
+          mediaType = "voice"; tgEndpoint = "sendVoice"; fileField = "voice";
+        } else if (file.type.startsWith("image/")) {
           mediaType = "photo"; tgEndpoint = "sendPhoto"; fileField = "photo";
         } else if (file.type.startsWith("video/")) {
           mediaType = "video"; tgEndpoint = "sendVideo"; fileField = "video";
@@ -240,14 +262,17 @@ export default {
         const tgFormData = new FormData();
         tgFormData.append("chat_id", env.TELEGRAM_GROUP_ID);
 
-        let tgCaption = `🌐 <b>[وب‌سایت]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.full_name)}`;
-        if (replyTo && !replyTo.tgMsgId) tgCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml(replyTo.text.substring(0, 30))}»`;
-        if (caption) {
-          tgCaption += `\n💬 ${escapeXml(caption)}`;
+        // برای ویدیو مسیج تلگرام نباید کپشن ارسال شود
+        if (mediaType !== "video_note") {
+          let tgCaption = `🌐 <b>[وب‌سایت]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.full_name)}`;
+          if (replyTo && !replyTo.tgMsgId) tgCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml(replyTo.text.substring(0, 30))}»`;
+          if (caption) {
+            tgCaption += `\n💬 ${escapeXml(caption)}`;
+          }
+          tgFormData.append("caption", tgCaption);
+          tgFormData.append("parse_mode", "HTML");
         }
 
-        tgFormData.append("caption", tgCaption);
-        tgFormData.append("parse_mode", "HTML");
         tgFormData.append(fileField, file, file.name);
 
         if (replyTo && replyTo.tgMsgId) {
@@ -265,16 +290,27 @@ export default {
         let duration = 0;
         const resMsg = tgData.result;
         
-        if (resMsg.photo && resMsg.photo.length > 0) fileId = resMsg.photo[resMsg.photo.length - 1].file_id;
-        else if (resMsg.video) {
+        if (resMsg.photo && resMsg.photo.length > 0) {
+          fileId = resMsg.photo[resMsg.photo.length - 1].file_id;
+        } else if (resMsg.video_note) {
+          fileId = resMsg.video_note.file_id;
+          duration = resMsg.video_note.duration || 0;
+          const th = resMsg.video_note.thumbnail || resMsg.video_note.thumb;
+          if (th) thumbId = th.file_id;
+        } else if (resMsg.video) {
           fileId = resMsg.video.file_id;
           duration = resMsg.video.duration || 0;
           const th = resMsg.video.thumbnail || resMsg.video.thumb;
           if (th) thumbId = th.file_id;
+        } else if (resMsg.voice) {
+          fileId = resMsg.voice.file_id;
+          duration = resMsg.voice.duration || 0;
         } else if (resMsg.audio) {
           fileId = resMsg.audio.file_id;
           duration = resMsg.audio.duration || 0;
-        } else if (resMsg.document) fileId = resMsg.document.file_id;
+        } else if (resMsg.document) {
+          fileId = resMsg.document.file_id;
+        }
 
         const msgId = crypto.randomUUID();
         const timestamp = Date.now();
@@ -284,7 +320,7 @@ export default {
           INSERT INTO messages (id, sender_id, sender_name, text, is_from_telegram, timestamp, reply_to_name, reply_to_text, reply_to_id, tg_msg_id, is_read, read_at, is_edited, media_type, media_file_id, media_file_name, media_file_size, media_thumb_id, media_duration, reactions)
           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?, ?, ?, ?, '{}')
         `).bind(
-          msgId, user.id, user.full_name, caption, timestamp,
+          msgId, user.telegram_id || user.id, user.full_name, caption, timestamp,
           replyTo ? replyTo.name : null, replyTo ? replyTo.text : null, replyId, resMsg.message_id,
           mediaType, fileId, file.name, file.size, thumbId, duration
         ).run();
@@ -303,16 +339,21 @@ export default {
           })
         });
 
-        // ارسال وب‌پوش واقعی به گوشی‌های خاموش
+        // متن مناسب وب‌پوش
+        let notifText = caption;
+        if (!notifText) {
+          if (mediaType === "voice") notifText = "🎤 [پیام صوتی]";
+          else if (mediaType === "video_note") notifText = "⭕ [ویدیو مسیج]";
+          else notifText = `[ارسال ${mediaType}]`;
+        }
+
         ctx.waitUntil(dispatchWebPush(env, {
           title: `🌐 وب: ${user.full_name}`,
-          body: caption || `[ارسال ${mediaType}]`,
+          body: notifText,
           senderUserId: user.id,
           messageId: msgId,
           senderName: user.full_name,
-          senderAvatarUrl: user.telegram_id
-            ? `/api/avatar?userId=${encodeURIComponent(user.telegram_id)}`
-            : null,
+          senderAvatarUrl: user.telegram_id ? `/api/avatar?userId=${encodeURIComponent(user.telegram_id)}` : null,
           mediaType,
           mediaUrl: (mediaType === 'photo' || mediaType === 'video') && fileId
             ? `/api/media?fileId=${encodeURIComponent(mediaType === 'video' && thumbId ? thumbId : fileId)}`
@@ -325,7 +366,7 @@ export default {
       }
     }
 
-    // ۶. آواتار
+    // ۶. دریافت آواتار تلگرام
     if (url.pathname === "/api/avatar") {
       const userId = url.searchParams.get("userId");
       if (!userId) return new Response("Missing userId", { status: 400 });
@@ -362,7 +403,7 @@ export default {
       }
     }
 
-    // ۸. بررسی ورود
+    // ۸. بررسی دستگاه و لاگین
     if (url.pathname === "/api/auth/verify-device" && request.method === "POST") {
       try {
         const { sessionToken, fingerprint } = await request.json();
@@ -394,7 +435,7 @@ export default {
       return env.CHAT_ROOM.get(id).fetch(request);
     }
 
-    // ۱۰. دریافت پیام‌ها
+    // ۱۰. تاریخچه پیام‌ها
     if (url.pathname === "/api/messages") {
       try {
         const messageId = url.searchParams.get("id");
@@ -456,7 +497,6 @@ async function ensureDbSchema(db) {
   try { await db.prepare("ALTER TABLE messages ADD COLUMN media_thumb_id TEXT").run(); } catch (e) {}
   try { await db.prepare("ALTER TABLE messages ADD COLUMN media_duration INTEGER DEFAULT 0").run(); } catch (e) {}
   try { await db.prepare("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)").run(); } catch (e) {}
-  // جدول ذخیره اشتراک‌های وب‌پوش
   try {
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -578,7 +618,7 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // ری‌اکشن تلگرام به وب
+  // ری‌اکشن از تلگرام به وب و اپلیکیشن
   if (update.message_reaction && update.message_reaction.chat) {
     const mr = update.message_reaction;
     const tgMsgId = mr.message_id;
@@ -643,7 +683,7 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // احراز هویت اولیه
+  // ثبت‌نام / احراز هویت اولیه ربات
   if (update.message && update.message.text && update.message.text.startsWith("/start auth_")) {
     const token = update.message.text.split(" ")[1].replace("auth_", "");
     const tgUser = update.message.from;
@@ -675,7 +715,7 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // پیام جدید از تلگرام
+  // پیام ورودی جدید از گروه تلگرام (پشتیبانی کامل از voice و video_note)
   if (update.message && update.message.chat) {
     const incomingChatId = update.message.chat.id.toString();
     const targetGroupId = env.TELEGRAM_GROUP_ID.toString();
@@ -705,14 +745,18 @@ async function handleTelegramUpdate(update, env, ctx) {
 
       if (msg.photo && msg.photo.length > 0) {
         mediaType = "photo"; fileId = msg.photo[msg.photo.length - 1].file_id; fileSize = msg.photo[msg.photo.length - 1].file_size; fileName = "photo.jpg";
+      } else if (msg.video_note) {
+        mediaType = "video_note"; fileId = msg.video_note.file_id; fileSize = msg.video_note.file_size; fileName = "video_note.mp4"; duration = msg.video_note.duration || 0;
+        const th = msg.video_note.thumbnail || msg.video_note.thumb;
+        if (th) thumbId = th.file_id;
       } else if (msg.video) {
         mediaType = "video"; fileId = msg.video.file_id; fileSize = msg.video.file_size; fileName = msg.video.file_name || "video.mp4"; duration = msg.video.duration || 0;
         const th = msg.video.thumbnail || msg.video.thumb;
         if (th) thumbId = th.file_id;
       } else if (msg.voice) {
-        mediaType = "audio"; fileId = msg.voice.file_id; fileSize = msg.voice.file_size; fileName = "voice.ogg"; duration = msg.voice.duration || 0;
+        mediaType = "voice"; fileId = msg.voice.file_id; fileSize = msg.voice.file_size; fileName = "voice.ogg"; duration = msg.voice.duration || 0;
       } else if (msg.audio) {
-        mediaType = "audio"; fileId = msg.audio.file_id; fileSize = msg.audio.file_size; fileName = "audio.mp3"; duration = msg.audio.duration || 0;
+        mediaType = "audio"; fileId = msg.audio.file_id; fileSize = msg.audio.file_size; fileName = msg.audio.file_name || "audio.mp3"; duration = msg.audio.duration || 0;
       } else if (msg.document) {
         mediaType = "document"; fileId = msg.document.file_id; fileSize = msg.document.file_size; fileName = msg.document.file_name || "file";
       }
@@ -740,15 +784,20 @@ async function handleTelegramUpdate(update, env, ctx) {
           })
         });
 
-        // ارسال اعلان واقعی به گوشی‌های بسته هنگام ارسال پیام در تلگرام
+        // وب‌پوش
+        let pushBody = text;
+        if (!pushBody) {
+          if (mediaType === "voice") pushBody = "🎤 [پیام صوتی]";
+          else if (mediaType === "video_note") pushBody = "⭕ [ویدیو مسیج]";
+          else pushBody = mediaType ? `[ارسال ${mediaType}]` : "پیام جدید";
+        }
+
         ctx.waitUntil(dispatchWebPush(env, {
           title: `📱 تلگرام: ${senderName}`,
-          body: text || (mediaType ? `[ارسال ${mediaType}]` : 'پیام جدید'),
+          body: pushBody,
           messageId: msgId,
           senderName,
-          senderAvatarUrl: msg.from?.id
-            ? `/api/avatar?userId=${encodeURIComponent(msg.from.id)}`
-            : null,
+          senderAvatarUrl: msg.from?.id ? `/api/avatar?userId=${encodeURIComponent(msg.from.id)}` : null,
           mediaType,
           mediaUrl: (mediaType === 'photo' || mediaType === 'video') && fileId
             ? `/api/media?fileId=${encodeURIComponent(mediaType === 'video' && thumbId ? thumbId : fileId)}`
@@ -937,16 +986,13 @@ export class ChatRoom extends DurableObject {
           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, NULL, 0, '{}')
         `).bind(msgId, user.userId, user.userName, data.text, time, replyName, replyText, replyId).run();
 
-        // ارسال وب‌پوش واقعی به گوشی‌های بسته اعضا
         await dispatchWebPush(this.env, {
           title: `🌐 وب: ${user.userName}`,
           body: data.text,
           senderUserId: user.userId,
           messageId: msgId,
           senderName: user.userName,
-          senderAvatarUrl: user.tgId
-            ? `/api/avatar?userId=${encodeURIComponent(user.tgId)}`
-            : null
+          senderAvatarUrl: user.tgId ? `/api/avatar?userId=${encodeURIComponent(user.tgId)}` : null
         });
 
         try {

@@ -12,25 +12,35 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  # شبکه و سوکت
+  # شبکه، سوکت و پروتکل‌ها
   http: ^1.2.2
   http_parser: ^4.1.2
   web_socket_channel: ^3.0.1
   url_launcher: ^6.3.0
   cached_network_image: ^3.4.1
 
-  # سخت‌افزار، ویدیو و فایل‌ها
+  # مالتی‌مدیا، دوربین و ضبط صدا
+  camera: ^0.11.0+2
+  record: ^5.2.0
+  audioplayers: ^6.1.0
   video_player: ^2.9.2
+  file_picker: ^8.1.7
+  path_provider: ^2.1.5
+
+  # ذخیره‌سازی، ابزارها و کیبورد ایموجی تلگرام
   shared_preferences: ^2.3.2
   device_info_plus: ^10.1.2
   uuid: ^4.5.1
   intl: ^0.20.3
-  file_picker: ^8.1.7
-  path_provider: ^2.1.5
+  emoji_picker_flutter: ^4.5.4
 
-  # سرویس پس‌زمینه و نوتیفیکیشن نیتیو
+  # سرویس پس‌زمینه و نوتیفیکیشن نیتیو اندروید
   flutter_foreground_task: ^8.17.0
   flutter_local_notifications: ^17.2.3
+
+dependency_overrides:
+  record_platform_interface: 1.2.0
+  record_linux: 0.7.2
 
 dev_dependencies:
   flutter_test:

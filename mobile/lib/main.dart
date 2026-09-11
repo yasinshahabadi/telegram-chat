@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -16,11 +17,43 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:video_player/video_player.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:camera/camera.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 
 import 'config.dart';
 import 'models/chat_message.dart';
 import 'services/notification_service.dart';
 import 'services/foreground_service.dart';
+
+List<CameraDescription> _availableCameras = [];
+
+// کلاس اختصاصی ارسال چندبخشی با گزارش درصد پیشرفت زنده
+class ProgressMultipartRequest extends http.MultipartRequest {
+  final void Function(int bytesSent, int totalBytes)? onProgress;
+
+  ProgressMultipartRequest(super.method, super.url, {this.onProgress});
+
+  @override
+  http.ByteStream finalize() {
+    final byteStream = super.finalize();
+    if (onProgress == null) return byteStream;
+
+    final total = contentLength;
+    int bytesSent = 0;
+
+    final transformer = StreamTransformer<List<int>, List<int>>.fromHandlers(
+      handleData: (List<int> data, EventSink<List<int>> sink) {
+        bytesSent += data.length;
+        onProgress!(bytesSent, total);
+        sink.add(data);
+      },
+    );
+
+    return http.ByteStream(byteStream.transform(transformer));
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,7 +64,10 @@ void main() async {
     systemNavigationBarIconBrightness: Brightness.light,
   ));
 
-  // آماده‌سازی اولیه پورت ارتباطی و تنظیمات سرویس پس‌زمینه
+  try {
+    _availableCameras = await availableCameras();
+  } catch (_) {}
+
   ForegroundServiceManager.init();
 
   runApp(const TelegramChatApp());
@@ -91,17 +127,57 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
 
   final List<ChatMessage> _messages = [];
   final Set<String> _seenMessageIds = {};
-  final Map<String, GlobalKey> _messageKeys = {};
   final TextEditingController _msgController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final FocusNode _msgFocusNode = FocusNode();
 
-  // مدیریت دانلود مدیا به سبک تلگرام
+  // بهینه‌سازی دکمه ارسال
+  bool _hasTextContent = false;
+
+  // تولتیپ شناور تلگرام
+  String? _floatingHintText;
+  Timer? _floatingHintTimer;
+
+  // گزارش زنده درصد آپلود
+  bool _isUploading = false;
+  double _uploadProgress = 0.0;
+  int _uploadBytesSent = 0;
+  int _uploadTotalBytes = 0;
+
+  // پلیر و صوت ایزوله‌شده
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _currentlyPlayingMsgId;
+  PlayerState _playerState = PlayerState.stopped;
+  final ValueNotifier<Duration> _audioPosNotifier = ValueNotifier(Duration.zero);
+  Duration _audioDuration = Duration.zero;
+
+  // وضعیت دانلود مدیا
   final Set<String> _downloadedMediaIds = {};
   final Set<String> _downloadingMediaIds = {};
   final Map<String, double> _downloadProgress = {};
   final Map<String, int> _downloadedBytes = {};
   final Map<String, String> _localMediaPaths = {};
   final Map<String, http.Client> _activeClients = {};
+
+  // ضبط ویس و ویدیو مسیج
+  late final AudioRecorder _audioRecorder;
+  bool _isRecordingAudio = false;
+  int _audioRecordSeconds = 0;
+  Timer? _audioRecordTimer;
+
+  bool _isVideoNoteMode = false;
+  CameraController? _cameraController;
+  int _selectedCameraIndex = 0;
+  bool _isRecordingVideoNote = false;
+  int _videoRecordSeconds = 0;
+  Timer? _videoRecordTimer;
+  bool _isSwitchingCamera = false;
+
+  // قفل کردن ضبط تلگرام (Lock Mode)
+  bool _isRecordingLocked = false;
+
+  // کیبورد ایموجی
+  bool _showEmojiKeyboard = false;
 
   ChatMessage? _replyTarget;
   ChatMessage? _editingMessage;
@@ -142,12 +218,37 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
+  void _showFloatingHint(String text) {
+    setState(() => _floatingHintText = text);
+    _floatingHintTimer?.cancel();
+    _floatingHintTimer = Timer(const Duration(milliseconds: 1800), () {
+      if (mounted) setState(() => _floatingHintText = null);
+    });
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _audioRecorder = AudioRecorder();
 
-    // راه‌اندازی نوتیفیکیشن و گوش دادن به لمس نوتیفیکیشن جهت اسکرول مستقیم به پیام
+    _msgController.addListener(() {
+      final has = _msgController.text.trim().isNotEmpty;
+      if (has != _hasTextContent) {
+        setState(() => _hasTextContent = has);
+      }
+    });
+
+    _audioPlayer.onPlayerStateChanged.listen((state) {
+      if (mounted) setState(() => _playerState = state);
+    });
+    _audioPlayer.onPositionChanged.listen((pos) {
+      _audioPosNotifier.value = pos;
+    });
+    _audioPlayer.onDurationChanged.listen((dur) {
+      _audioDuration = dur;
+    });
+
     NotificationService().init(onNotificationTap: (messageId) {
       if (messageId != null) {
         _scrollToMessage(messageId);
@@ -164,16 +265,23 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     _pollingTimer?.cancel();
     _pingTimer?.cancel();
     _typingTimer?.cancel();
+    _audioRecordTimer?.cancel();
+    _videoRecordTimer?.cancel();
+    _floatingHintTimer?.cancel();
+    _audioPlayer.dispose();
+    _audioRecorder.dispose();
+    _cameraController?.dispose();
     _wsChannel?.sink.close();
     _msgController.dispose();
+    _msgFocusNode.dispose();
     _scrollController.dispose();
+    _audioPosNotifier.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _isAppResumed = (state == AppLifecycleState.resumed);
-    // اطلاع وضعیت فوکوس برنامه به سرویس پس‌زمینه
     ForegroundServiceManager.setAppLifecycle(_isAppResumed);
 
     if (_isAppResumed) {
@@ -238,7 +346,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           _avatarCacheBuster = DateTime.now().millisecondsSinceEpoch;
         });
 
-        // شروع خودکار سرویس مستقل پس‌زمینه
         ForegroundServiceManager.start(
           userName: data['user']['full_name'] ?? 'کاربر',
           userId: data['user']['id'],
@@ -310,7 +417,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         );
       } catch (_) {}
 
-      // توقف سرویس پس‌زمینه
       ForegroundServiceManager.stop();
 
       final prefs = await SharedPreferences.getInstance();
@@ -350,7 +456,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         "tgId": _currentUser?['telegram_id']
       }));
 
-      // تایمر Keep-Alive برای زنده نگه‌داشتن سوکت در کلودفلر
       _pingTimer?.cancel();
       _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
         if (_wsChannel != null && _isConnected) {
@@ -375,7 +480,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         });
         _scrollToBottom();
 
-        // همگام‌سازی زمان آخرین پیام با سرویس پس‌زمینه
         if (msg.timestamp > 0) {
           ForegroundServiceManager.syncLastMessageTime(msg.timestamp);
         }
@@ -543,13 +647,15 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
       return;
     }
 
+    // ارسال پیوست چه با متن و چه بدون متن
     if (_selectedAttachment != null) {
-      _uploadMedia(_selectedAttachment!, text);
+      final fileToSend = _selectedAttachment!;
       setState(() {
         _selectedAttachment = null;
         _replyTarget = null;
       });
       _msgController.clear();
+      _uploadMedia(file: fileToSend, caption: text);
       return;
     }
 
@@ -578,7 +684,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
   Future<void> _pickAttachment() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['jpg', 'png', 'jpeg', 'webp', 'mp4', 'mov', 'mp3', 'ogg', 'pdf', 'zip', 'doc', 'docx'],
+      allowedExtensions: ['jpg', 'png', 'jpeg', 'webp', 'mp4', 'mov', 'mp3', 'ogg', 'm4a', 'pdf', 'zip', 'doc', 'docx'],
     );
 
     if (result != null && result.files.single.path != null) {
@@ -598,7 +704,10 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     }
   }
 
-  MediaType _resolveMediaType(String path) {
+  MediaType _resolveMediaType(String path, {String? customType}) {
+    if (customType == "voice") return MediaType('audio', 'm4a');
+    if (customType == "video_note") return MediaType('video', 'mp4');
+
     final ext = path.split('.').last.toLowerCase();
     switch (ext) {
       case 'jpg':
@@ -616,18 +725,55 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         return MediaType('audio', 'mpeg');
       case 'ogg':
         return MediaType('audio', 'ogg');
+      case 'm4a':
+        return MediaType('audio', 'mp4');
       default:
         return MediaType('application', 'octet-stream');
     }
   }
 
-  Future<void> _uploadMedia(File file, String caption) async {
+  // آپلود هوشمند با نمایش نوار پیشرفت زنده و رعایت سقف ۲۰ مگابایت برای کل برنامه
+  Future<void> _uploadMedia({required File file, String caption = '', String? customType}) async {
     try {
+      final fileSize = await file.length();
+      if (fileSize > 20 * 1024 * 1024) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("حجم فایل بیش از ۲۰ مگابایت است و ارسال نشد")),
+          );
+        }
+        return;
+      }
+
+      setState(() {
+        _isUploading = true;
+        _uploadProgress = 0.0;
+        _uploadBytesSent = 0;
+        _uploadTotalBytes = fileSize;
+      });
+
       final uri = Uri.parse("${AppConfig.baseUrl}/api/upload");
-      final request = http.MultipartRequest("POST", uri);
+      final request = ProgressMultipartRequest(
+        "POST",
+        uri,
+        onProgress: (bytesSent, totalBytes) {
+          if (mounted) {
+            setState(() {
+              _uploadBytesSent = bytesSent;
+              _uploadTotalBytes = totalBytes;
+              if (totalBytes > 0) {
+                _uploadProgress = (bytesSent / totalBytes).clamp(0.0, 1.0);
+              }
+            });
+          }
+        },
+      );
 
       request.fields['sessionToken'] = _sessionToken ?? '';
       request.fields['caption'] = caption;
+      if (customType != null) {
+        request.fields['mediaType'] = customType;
+      }
 
       if (_replyTarget != null) {
         request.fields['replyTo'] = jsonEncode({
@@ -638,7 +784,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         });
       }
 
-      final mime = _resolveMediaType(file.path);
+      final mime = _resolveMediaType(file.path, customType: customType);
       request.files.add(await http.MultipartFile.fromPath(
         'file',
         file.path,
@@ -660,6 +806,162 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("خطای شبکه در آپلود فایل")),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          _uploadProgress = 0.0;
+        });
+      }
+    }
+  }
+
+  Future<void> _startRecordingAudio() async {
+    if (await _audioRecorder.hasPermission()) {
+      _triggerVibration(duration: 40);
+      final dir = await getTemporaryDirectory();
+      final filePath = '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+
+      await _audioRecorder.start(
+        const RecordConfig(encoder: AudioEncoder.aacLc),
+        path: filePath,
+      );
+
+      setState(() {
+        _isRecordingAudio = true;
+        _isRecordingLocked = false;
+        _audioRecordSeconds = 0;
+      });
+
+      _audioRecordTimer?.cancel();
+      _audioRecordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _audioRecordSeconds++);
+      });
+    }
+  }
+
+  Future<void> _stopRecordingAudio({bool cancel = false}) async {
+    _audioRecordTimer?.cancel();
+    final path = await _audioRecorder.stop();
+    setState(() {
+      _isRecordingAudio = false;
+      _isRecordingLocked = false;
+    });
+
+    if (!cancel && path != null) {
+      _triggerVibration(duration: 50);
+      await _uploadMedia(file: File(path), customType: "voice");
+    }
+  }
+
+  Future<void> _initCamera([int? cameraIndex]) async {
+    if (_availableCameras.isEmpty) return;
+    _selectedCameraIndex = cameraIndex ?? 0;
+    _cameraController = CameraController(
+      _availableCameras[_selectedCameraIndex],
+      ResolutionPreset.medium,
+      enableAudio: true,
+    );
+    await _cameraController!.initialize();
+    if (mounted) setState(() {});
+  }
+
+  // سوئیچ کاملاً امن بین دوربین‌ها بدون کرش کردن
+  Future<void> _switchCamera() async {
+    if (_availableCameras.length < 2 || _isSwitchingCamera) return;
+    _isSwitchingCamera = true;
+    _triggerVibration(duration: 30);
+
+    try {
+      final nextIndex = (_selectedCameraIndex + 1) % _availableCameras.length;
+      final wasRecording = _isRecordingVideoNote && (_cameraController?.value.isRecordingVideo ?? false);
+
+      if (wasRecording) {
+        await _cameraController!.stopVideoRecording();
+      }
+
+      await _cameraController?.dispose();
+      _cameraController = null;
+
+      _selectedCameraIndex = nextIndex;
+      final newController = CameraController(
+        _availableCameras[_selectedCameraIndex],
+        ResolutionPreset.medium,
+        enableAudio: true,
+      );
+      await newController.initialize();
+      _cameraController = newController;
+
+      if (wasRecording && mounted) {
+        await _cameraController!.startVideoRecording();
+      }
+    } catch (_) {} finally {
+      if (mounted) setState(() => _isSwitchingCamera = false);
+    }
+  }
+
+  Future<void> _startRecordingVideoNote() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      int frontCam = _availableCameras.indexWhere((c) => c.lensDirection == CameraLensDirection.front);
+      await _initCamera(frontCam != -1 ? frontCam : 0);
+    }
+
+    if (_cameraController != null && _cameraController!.value.isInitialized) {
+      _triggerVibration(duration: 40);
+      await _cameraController!.startVideoRecording();
+      setState(() {
+        _isRecordingVideoNote = true;
+        _isRecordingLocked = false;
+        _videoRecordSeconds = 0;
+      });
+
+      _videoRecordTimer?.cancel();
+      _videoRecordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _videoRecordSeconds++);
+      });
+    }
+  }
+
+  Future<void> _stopRecordingVideoNote({bool cancel = false}) async {
+    _videoRecordTimer?.cancel();
+    if (_cameraController != null && _cameraController!.value.isRecordingVideo) {
+      final file = await _cameraController!.stopVideoRecording();
+      setState(() {
+        _isRecordingVideoNote = false;
+        _isRecordingLocked = false;
+      });
+
+      if (!cancel) {
+        _triggerVibration(duration: 50);
+        await _uploadMedia(file: File(file.path), customType: "video_note");
+      }
+    }
+  }
+
+  // استریم آنی با فال‌بک کش
+  Future<void> _toggleAudioPlay(ChatMessage msg) async {
+    final audioSourceUrl = _localMediaPaths[msg.id] ?? msg.mediaUrl;
+    if (audioSourceUrl == null) return;
+
+    if (_currentlyPlayingMsgId == msg.id && _playerState == PlayerState.playing) {
+      await _audioPlayer.pause();
+    } else {
+      _triggerVibration(duration: 30);
+      _currentlyPlayingMsgId = msg.id;
+
+      try {
+        if (_localMediaPaths.containsKey(msg.id)) {
+          await _audioPlayer.play(DeviceFileSource(_localMediaPaths[msg.id]!));
+        } else {
+          await _audioPlayer.play(UrlSource(msg.mediaUrl!));
+        }
+      } catch (_) {
+        _startDownloadingMedia(msg).then((_) {
+          if (_localMediaPaths.containsKey(msg.id)) {
+            _audioPlayer.play(DeviceFileSource(_localMediaPaths[msg.id]!));
+          }
+        });
       }
     }
   }
@@ -770,7 +1072,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     );
   }
 
-  // پرش دقیق به مرکز صفحه و هایلایت درخشان آبی تلگرامی
   void _scrollToMessage(String targetId) {
     final cleanId = targetId.startsWith('tg_') ? targetId.replaceFirst('tg_', '') : targetId;
     final index = _messages.indexWhere((m) => m.id == cleanId || m.tgMsgId?.toString() == cleanId);
@@ -778,44 +1079,18 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     if (index == -1) return;
 
     final foundMsgId = _messages[index].id;
-    final key = _messageKeys[foundMsgId];
 
-    void triggerHighlight() {
-      _triggerVibration(duration: 50);
-      setState(() {
-        _highlightedMessageId = foundMsgId;
-      });
-      Timer(const Duration(milliseconds: 1800), () {
-        if (mounted) setState(() => _highlightedMessageId = null);
-      });
-    }
-
-    if (key?.currentContext != null) {
-      Scrollable.ensureVisible(
-        key!.currentContext!,
-        alignment: 0.5,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOutCubic,
-      ).then((_) => triggerHighlight());
-    } else if (_scrollController.hasClients) {
+    if (_scrollController.hasClients) {
       final targetOffset = (index / _messages.length) * _scrollController.position.maxScrollExtent;
       _scrollController.animateTo(
         targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOutCubic,
       ).then((_) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          final retryKey = _messageKeys[foundMsgId];
-          if (retryKey?.currentContext != null) {
-            Scrollable.ensureVisible(
-              retryKey!.currentContext!,
-              alignment: 0.5,
-              duration: const Duration(milliseconds: 250),
-              curve: Curves.easeInOut,
-            ).then((_) => triggerHighlight());
-          } else {
-            triggerHighlight();
-          }
+        _triggerVibration(duration: 50);
+        setState(() => _highlightedMessageId = foundMsgId);
+        Timer(const Duration(milliseconds: 1800), () {
+          if (mounted) setState(() => _highlightedMessageId = null);
         });
       });
     }
@@ -833,7 +1108,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     });
   }
 
-  // دانلود فایل در پس‌زمینه با نمایش درصد پیشرفت
   Future<void> _startDownloadingMedia(ChatMessage msg) async {
     if (msg.mediaUrl == null) return;
     final client = http.Client();
@@ -863,7 +1137,12 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
       }
 
       final dir = await getApplicationDocumentsDirectory();
-      final ext = msg.mediaType == 'video' ? 'mp4' : 'jpg';
+      String ext = 'bin';
+      if (msg.mediaType == 'video' || msg.mediaType == 'video_note') ext = 'mp4';
+      else if (msg.mediaType == 'photo') ext = 'jpg';
+      else if (msg.mediaType == 'voice') ext = 'm4a';
+      else if (msg.mediaType == 'audio') ext = 'mp3';
+
       final fileName = msg.mediaFileName ?? "media_${msg.id.substring(0, 8)}.$ext";
       final file = File("${dir.path}/$fileName");
       await file.writeAsBytes(bytes);
@@ -935,7 +1214,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     );
   }
 
-  void _openVideoPlayer({String? videoUrl, String? localPath, required String fileName}) {
+  void _openVideoPlayer({String? videoUrl, String? localPath, required String fileName, bool isCircular = false}) {
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -943,6 +1222,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           videoUrl: videoUrl,
           localPath: localPath,
           fileName: fileName,
+          isCircular: isCircular,
         ),
       ),
     );
@@ -997,6 +1277,9 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
 
     final myName = _currentUser!['full_name'] ?? 'کاربر';
     final tgId = _currentUser!['telegram_id']?.toString() ?? '';
+
+    // دکمه ارسال چه با متن و چه با فایل فوراً فعال می‌شود
+    final bool canSend = _hasTextContent || _selectedAttachment != null;
 
     return Scaffold(
       appBar: AppBar(
@@ -1065,172 +1348,472 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          if (_pinnedMessage != null)
-            GestureDetector(
-              onTap: () => _scrollToMessage(_pinnedMessage!.id),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                color: const Color(0xFF17212B).withOpacity(0.95),
-                child: Row(
-                  children: [
-                    const Icon(Icons.push_pin_rounded, size: 18, color: Color(0xFF50A2E9)),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text("پیام سنجاق شده",
-                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF50A2E9))),
-                          Text(
-                            _pinnedMessage!.text.isNotEmpty
-                                ? _pinnedMessage!.text
-                                : (_pinnedMessage!.mediaType ?? 'مدیا'),
-                            style: const TextStyle(fontSize: 12, color: Colors.white70),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, size: 16, color: Colors.grey),
-                      onPressed: () {
-                        _wsChannel?.sink.add(jsonEncode({"type": "unpin_message"}));
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final msg = _messages[index];
-                final isMe = msg.senderName == myName;
-                return _buildMessageRow(msg, isMe, myName);
-              },
-            ),
-          ),
-          if (_replyTarget != null || _editingMessage != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              color: const Color(0xFF17212B),
-              child: Row(
-                children: [
-                  Icon(
-                    _editingMessage != null ? Icons.edit_rounded : Icons.reply_rounded,
-                    color: _editingMessage != null ? Colors.amber : const Color(0xFF50A2E9),
-                    size: 20,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+          Column(
+            children: [
+              if (_pinnedMessage != null)
+                GestureDetector(
+                  onTap: () => _scrollToMessage(_pinnedMessage!.id),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    color: const Color(0xFF17212B).withOpacity(0.95),
+                    child: Row(
                       children: [
-                        Text(
-                          _editingMessage != null ? "ویرایش پیام" : _replyTarget!.senderName,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: _editingMessage != null ? Colors.amber : const Color(0xFF50A2E9),
+                        const Icon(Icons.push_pin_rounded, size: 18, color: Color(0xFF50A2E9)),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text("پیام سنجاق شده",
+                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF50A2E9))),
+                              Text(
+                                _pinnedMessage!.text.isNotEmpty
+                                    ? _pinnedMessage!.text
+                                    : (_pinnedMessage!.mediaType ?? 'مدیا'),
+                                style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
                           ),
                         ),
-                        Text(
-                          _editingMessage != null
-                              ? _editingMessage!.text
-                              : (_replyTarget!.text.isNotEmpty
-                                  ? _replyTarget!.text
-                                  : (_replyTarget!.mediaType ?? 'مدیا')),
-                          style: const TextStyle(fontSize: 12, color: Colors.white60),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 16, color: Colors.grey),
+                          onPressed: () {
+                            _wsChannel?.sink.add(jsonEncode({"type": "unpin_message"}));
+                          },
                         ),
                       ],
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 18, color: Colors.grey),
-                    onPressed: () {
-                      setState(() {
-                        _replyTarget = null;
-                        _editingMessage = null;
-                        _msgController.clear();
-                      });
-                    },
-                  ),
-                ],
+                ),
+
+              // لیست فوق روان چت با بهینه‌سازی ۱۲۰ هرتز
+              Expanded(
+                child: ListView.builder(
+                  controller: _scrollController,
+                  cacheExtent: 600,
+                  physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  itemCount: _messages.length,
+                  itemBuilder: (context, index) {
+                    final msg = _messages[index];
+                    final isMe = msg.senderName == myName;
+                    return _buildMessageRow(msg, isMe, myName);
+                  },
+                ),
               ),
-            ),
-          if (_selectedAttachment != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              color: const Color(0xFF17212B),
-              child: Row(
-                children: [
-                  const Icon(Icons.attach_file, color: Color(0xFF50A2E9)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _selectedAttachment!.path.split(Platform.pathSeparator).last,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 18, color: Colors.redAccent),
-                    onPressed: () => setState(() => _selectedAttachment = null),
-                  ),
-                ],
-              ),
-            ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            color: const Color(0xFF17212B),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 21,
-                  backgroundColor: const Color(0xFF50A2E9),
-                  child: IconButton(
-                    icon: const Icon(Icons.send_rounded, color: Colors.white, size: 19),
-                    onPressed: _sendMessage,
+
+              if (_replyTarget != null || _editingMessage != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  color: const Color(0xFF17212B),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _editingMessage != null ? Icons.edit_rounded : Icons.reply_rounded,
+                        color: _editingMessage != null ? Colors.amber : const Color(0xFF50A2E9),
+                        size: 20,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _editingMessage != null ? "ویرایش پیام" : _replyTarget!.senderName,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: _editingMessage != null ? Colors.amber : const Color(0xFF50A2E9),
+                              ),
+                            ),
+                            Text(
+                              _editingMessage != null
+                                  ? _editingMessage!.text
+                                  : (_replyTarget!.text.isNotEmpty
+                                      ? _replyTarget!.text
+                                      : (_replyTarget!.mediaType ?? 'مدیا')),
+                              style: const TextStyle(fontSize: 12, color: Colors.white60),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18, color: Colors.grey),
+                        onPressed: () {
+                          setState(() {
+                            _replyTarget = null;
+                            _editingMessage = null;
+                            _msgController.clear();
+                          });
+                        },
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _msgController,
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
-                    onChanged: (_) {
-                      _wsChannel?.sink.add(jsonEncode({"type": "typing"}));
-                    },
-                    decoration: InputDecoration(
-                      hintText: "پیام...",
-                      hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
-                      filled: true,
-                      fillColor: const Color(0xFF242F3D),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(22),
-                        borderSide: BorderSide.none,
+
+              if (_selectedAttachment != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  color: const Color(0xFF17212B),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.attach_file, color: Color(0xFF50A2E9)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _selectedAttachment!.path.split(Platform.pathSeparator).last,
+                          style: const TextStyle(fontSize: 12, color: Colors.white),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18, color: Colors.redAccent),
+                        onPressed: () => setState(() => _selectedAttachment = null),
+                      ),
+                    ],
+                  ),
+                ),
+
+              // نوار زنده درصد پیشرفت آپلود در کل برنامه
+              if (_isUploading)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  color: const Color(0xFF17212B),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF50A2E9)),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            "در حال ارسال... ${(_uploadProgress * 100).toInt()}% (${_formatBytes(_uploadBytesSent)} / ${_formatBytes(_uploadTotalBytes)})",
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF50A2E9), fontWeight: FontWeight.bold),
+                          ),
+                          const Spacer(),
+                          const Text("حداکثر ۲۰ مگابایت", style: TextStyle(fontSize: 10, color: Colors.white38)),
+                        ],
+                      ),
+                      const SizedBox(height: 5),
+                      LinearProgressIndicator(
+                        value: _uploadProgress > 0 ? _uploadProgress : null,
+                        backgroundColor: Colors.white10,
+                        color: const Color(0xFF50A2E9),
+                        minHeight: 2.5,
+                      ),
+                    ],
+                  ),
+                ),
+
+              // تولتیپ شناور بالای کادر
+              if (_floatingHintText != null)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.82),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(
+                    _floatingHintText!,
+                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+
+              _buildTelegramInputBar(canSend),
+
+              if (_showEmojiKeyboard)
+                SizedBox(
+                  height: 270,
+                  child: EmojiPicker(
+                    textEditingController: _msgController,
+                    config: Config(
+                      height: 270,
+                      checkPlatformCompatibility: true,
+                      emojiViewConfig: const EmojiViewConfig(
+                        backgroundColor: Color(0xFF17212B),
+                        columns: 7,
+                      ),
+                      categoryViewConfig: const CategoryViewConfig(
+                        backgroundColor: Color(0xFF17212B),
+                        indicatorColor: Color(0xFF50A2E9),
+                        iconColorSelected: Color(0xFF50A2E9),
+                        iconColor: Colors.grey,
+                      ),
+                      bottomActionBarConfig: const BottomActionBarConfig(
+                        enabled: false,
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(width: 6),
-                IconButton(
-                  icon: const Icon(Icons.attach_file_rounded, color: Colors.grey),
-                  onPressed: _pickAttachment,
-                ),
-              ],
+            ],
+          ),
+
+          if (_isRecordingVideoNote && _cameraController != null && _cameraController!.value.isInitialized)
+            _buildCircularCameraOverlay(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTelegramInputBar(bool canSend) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      color: const Color(0xFF17212B),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF242F3D),
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  IconButton(
+                    icon: Icon(
+                      _showEmojiKeyboard ? Icons.keyboard_rounded : Icons.emoji_emotions_outlined,
+                      color: const Color(0xFF8E9BA8),
+                      size: 24,
+                    ),
+                    onPressed: () {
+                      if (_showEmojiKeyboard) {
+                        setState(() => _showEmojiKeyboard = false);
+                        _msgFocusNode.requestFocus();
+                      } else {
+                        FocusScope.of(context).unfocus();
+                        setState(() => _showEmojiKeyboard = true);
+                      }
+                    },
+                  ),
+                  Expanded(
+                    child: _isRecordingAudio
+                        ? Container(
+                            height: 44,
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.fiber_manual_record, color: Colors.redAccent, size: 14),
+                                const SizedBox(width: 6),
+                                Text(
+                                  "${_audioRecordSeconds ~/ 60}:${(_audioRecordSeconds % 60).toString().padLeft(2, '0')}",
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                ),
+                                const Spacer(),
+                                if (_isRecordingLocked)
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 22),
+                                    onPressed: () => _stopRecordingAudio(cancel: true),
+                                  )
+                                else
+                                  const Text("◀ به راست بکشید برای لغو", style: TextStyle(color: Colors.white54, fontSize: 11)),
+                              ],
+                            ),
+                          )
+                        : TextField(
+                            controller: _msgController,
+                            focusNode: _msgFocusNode,
+                            maxLines: 4,
+                            minLines: 1,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            onTap: () {
+                              if (_showEmojiKeyboard) setState(() => _showEmojiKeyboard = false);
+                            },
+                            onChanged: (_) {
+                              _wsChannel?.sink.add(jsonEncode({"type": "typing"}));
+                            },
+                            decoration: const InputDecoration(
+                              hintText: "Message",
+                              hintStyle: TextStyle(color: Color(0xFF8E9BA8), fontSize: 14),
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+                            ),
+                          ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.attach_file_rounded, color: Color(0xFF8E9BA8), size: 24),
+                    onPressed: _pickAttachment,
+                  ),
+                ],
+              ),
             ),
           ),
+          const SizedBox(width: 6),
+
+          // دکمه هوشمند تلگرام با کشیدن به راست برای لغو و کشیدن به بالا برای قفل
+          Stack(
+            alignment: Alignment.center,
+            clipBehavior: Clip.none,
+            children: [
+              // راهنمای قفل شدن هنگام نگه داشتن
+              if ((_isRecordingAudio || _isRecordingVideoNote) && !_isRecordingLocked)
+                Positioned(
+                  bottom: 54,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.75),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.lock_outline_rounded, size: 14, color: Colors.white),
+                        SizedBox(width: 4),
+                        Text("▲ به بالا بکشید برای قفل", style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
+                ),
+
+              GestureDetector(
+                onTap: () {
+                  if (canSend) {
+                    _sendMessage();
+                  } else if (_isRecordingLocked) {
+                    if (_isVideoNoteMode) _stopRecordingVideoNote();
+                    else _stopRecordingAudio();
+                  } else {
+                    _triggerVibration(duration: 30);
+                    setState(() {
+                      _isVideoNoteMode = !_isVideoNoteMode;
+                    });
+                    _showFloatingHint(
+                      _isVideoNoteMode ? "Hold to record video. Tap to switch to audio." : "Hold to record audio. Tap to switch to video."
+                    );
+                  }
+                },
+                onLongPressStart: (_) {
+                  if (!canSend && !_isRecordingLocked) {
+                    if (_isVideoNoteMode) {
+                      _startRecordingVideoNote();
+                    } else {
+                      _startRecordingAudio();
+                    }
+                  }
+                },
+                onLongPressMoveUpdate: (details) {
+                  // در حالت فارسی، کشیدن به بالا برای قفل، کشیدن به راست برای لغو
+                  if (details.localOffsetFromOrigin.dy < -50 && !_isRecordingLocked) {
+                    _triggerVibration(duration: 40);
+                    setState(() => _isRecordingLocked = true);
+                  }
+                  if (details.localOffsetFromOrigin.dx > 65 && !_isRecordingLocked) {
+                    _triggerVibration(duration: 40);
+                    if (_isVideoNoteMode) _stopRecordingVideoNote(cancel: true);
+                    else _stopRecordingAudio(cancel: true);
+                  }
+                },
+                onLongPressEnd: (details) {
+                  if (!canSend && !_isRecordingLocked) {
+                    final bool cancel = details.localPosition.dx > 65;
+                    if (_isVideoNoteMode) {
+                      _stopRecordingVideoNote(cancel: cancel);
+                    } else {
+                      _stopRecordingAudio(cancel: cancel);
+                    }
+                  }
+                },
+                child: CircleAvatar(
+                  radius: 23,
+                  backgroundColor: const Color(0xFF50A2E9),
+                  child: Icon(
+                    canSend || _isRecordingLocked
+                        ? Icons.send_rounded
+                        : (_isVideoNoteMode ? Icons.videocam_rounded : Icons.mic_rounded),
+                    color: Colors.white,
+                    size: 22,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildCircularCameraOverlay() {
+    return Positioned(
+      bottom: 80,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Container(
+          width: 240,
+          height: 240,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: const Color(0xFF50A2E9), width: 3.5),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 20, spreadRadius: 5),
+            ],
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              ClipOval(
+                child: SizedBox(
+                  width: 240,
+                  height: 240,
+                  child: _cameraController != null && _cameraController!.value.isInitialized && !_isSwitchingCamera
+                      ? CameraPreview(_cameraController!)
+                      : const Center(child: CircularProgressIndicator(color: Color(0xFF50A2E9))),
+                ),
+              ),
+              Positioned(
+                top: 12,
+                child: GestureDetector(
+                  onTap: _switchCamera,
+                  child: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: Colors.black.withOpacity(0.6),
+                    child: const Icon(Icons.flip_camera_android_rounded, size: 20, color: Colors.white),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 14,
+                bottom: 14,
+                child: GestureDetector(
+                  onTap: () => _stopRecordingVideoNote(cancel: true),
+                  child: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: Colors.redAccent.withOpacity(0.8),
+                    child: const Icon(Icons.delete_outline_rounded, size: 20, color: Colors.white),
+                  ),
+                ),
+              ),
+              Positioned(
+                bottom: 14,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    "${_videoRecordSeconds ~/ 60}:${(_videoRecordSeconds % 60).toString().padLeft(2, '0')}",
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1238,7 +1821,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
   Widget _buildMessageRow(ChatMessage msg, bool isMe, String currentUserName) {
     final senderColor = _getUserColor(msg.senderName);
     final isHighlighted = _highlightedMessageId == msg.id;
-    final itemKey = _messageKeys.putIfAbsent(msg.id, () => GlobalKey());
 
     final avatarTgId = isMe
         ? (_currentUser?['telegram_id']?.toString() ?? '')
@@ -1246,7 +1828,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
 
     final bool hasMedia = msg.mediaType != null && msg.mediaUrl != null;
     final bool hasCaption = msg.text.trim().isNotEmpty;
-    final bool isFrameless = hasMedia && !hasCaption && msg.replyToName == null;
+    final bool isFrameless = hasMedia && !hasCaption && msg.replyToName == null && (msg.mediaType == 'photo' || msg.mediaType == 'video' || msg.mediaType == 'video_note');
 
     final borderRadius = BorderRadius.only(
       topLeft: const Radius.circular(16),
@@ -1255,176 +1837,177 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
       bottomRight: Radius.circular(isMe ? 16 : 4),
     );
 
-    return Container(
-      key: itemKey,
-      padding: const EdgeInsets.symmetric(vertical: 3.5),
-      child: Row(
-        mainAxisAlignment: isMe ? MainAxisAlignment.start : MainAxisAlignment.end,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (isMe) ...[
-            _buildAvatar(avatarTgId, msg.senderName, senderColor),
-            const SizedBox(width: 6),
-          ],
-          Flexible(
-            child: GestureDetector(
-              onTap: () => _showContextMenu(msg),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.76),
-                decoration: BoxDecoration(
-                  color: isFrameless
-                      ? (isHighlighted ? const Color(0xFF50A2E9).withOpacity(0.4) : Colors.transparent)
-                      : (isHighlighted
-                          ? const Color(0xFF50A2E9).withOpacity(0.55)
-                          : (isMe ? const Color(0xFF2B5278) : const Color(0xFF182533))),
-                  border: isHighlighted
-                      ? Border.all(color: const Color(0xFF50A2E9), width: 2.5)
-                      : null,
-                  boxShadow: isHighlighted
-                      ? [
-                          BoxShadow(
-                            color: const Color(0xFF50A2E9).withOpacity(0.6),
-                            blurRadius: 16,
-                            spreadRadius: 2,
-                          )
-                        ]
-                      : null,
-                  borderRadius: borderRadius,
-                ),
-                padding: isFrameless
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-                child: ClipRRect(
-                  borderRadius: borderRadius,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (!isMe && !isFrameless)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 3),
-                          child: Text(
-                            msg.senderName,
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: senderColor),
-                          ),
-                        ),
-                      if (msg.replyToName != null)
-                        GestureDetector(
-                          onTap: () {
-                            if (msg.replyToId != null) _scrollToMessage(msg.replyToId!);
-                          },
-                          child: Container(
-                            margin: const EdgeInsets.only(bottom: 6),
-                            padding: const EdgeInsets.only(right: 8, top: 2, bottom: 2, left: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.black26,
-                              borderRadius: BorderRadius.circular(6),
-                              border: const Border(
-                                right: BorderSide(color: Color(0xFF50A2E9), width: 3),
-                              ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  msg.replyToName!,
-                                  style: const TextStyle(
-                                      fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF50A2E9)),
-                                ),
-                                Text(
-                                  msg.replyToText ?? '',
-                                  style: const TextStyle(fontSize: 11, color: Colors.white70),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
+    return RepaintBoundary(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 3.5),
+        child: Row(
+          mainAxisAlignment: isMe ? MainAxisAlignment.start : MainAxisAlignment.end,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (isMe) ...[
+              _buildAvatar(avatarTgId, msg.senderName, senderColor),
+              const SizedBox(width: 6),
+            ],
+            Flexible(
+              child: GestureDetector(
+                onTap: () => _showContextMenu(msg),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+                  decoration: BoxDecoration(
+                    color: isFrameless
+                        ? (isHighlighted ? const Color(0xFF50A2E9).withOpacity(0.4) : Colors.transparent)
+                        : (isHighlighted
+                            ? const Color(0xFF50A2E9).withOpacity(0.55)
+                            : (isMe ? const Color(0xFF2B5278) : const Color(0xFF182533))),
+                    border: isHighlighted
+                        ? Border.all(color: const Color(0xFF50A2E9), width: 2.5)
+                        : null,
+                    boxShadow: isHighlighted
+                        ? [
+                            BoxShadow(
+                              color: const Color(0xFF50A2E9).withOpacity(0.6),
+                              blurRadius: 16,
+                              spreadRadius: 2,
+                            )
+                          ]
+                        : null,
+                    borderRadius: borderRadius,
+                  ),
+                  padding: isFrameless
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                  child: ClipRRect(
+                    borderRadius: borderRadius,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (!isMe && !isFrameless)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 3),
+                            child: Text(
+                              msg.senderName,
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: senderColor),
                             ),
                           ),
-                        ),
-                      if (hasMedia) _buildMediaContent(msg, isFrameless, isMe),
-                      if (msg.text.isNotEmpty)
-                        Padding(
-                          padding: isFrameless ? const EdgeInsets.all(8.0) : EdgeInsets.zero,
-                          child: Text(
-                            msg.text,
-                            style: const TextStyle(fontSize: 14, color: Colors.white, height: 1.35),
-                          ),
-                        ),
-                      if (!isFrameless) ...[
-                        const SizedBox(height: 3),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            if (isMe) ...[
-                              Text(
-                                msg.isRead == 1 ? "✓✓" : "✓",
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: msg.isRead == 1 ? const Color(0xFF50A2E9) : Colors.white60,
+                        if (msg.replyToName != null)
+                          GestureDetector(
+                            onTap: () {
+                              if (msg.replyToId != null) _scrollToMessage(msg.replyToId!);
+                            },
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 6),
+                              padding: const EdgeInsets.only(right: 8, top: 2, bottom: 2, left: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black26,
+                                borderRadius: BorderRadius.circular(6),
+                                border: const Border(
+                                  right: BorderSide(color: Color(0xFF50A2E9), width: 3),
                                 ),
                               ),
-                              const SizedBox(width: 4),
-                            ],
-                            if (msg.isEdited) ...[
-                              const Text("edited", style: TextStyle(fontSize: 10, color: Colors.white54)),
-                              const SizedBox(width: 4),
-                            ],
-                            Text(
-                              msg.formattedTime,
-                              style: const TextStyle(fontSize: 10, color: Colors.white60),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    msg.replyToName!,
+                                    style: const TextStyle(
+                                        fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF50A2E9)),
+                                  ),
+                                  Text(
+                                    msg.replyToText ?? '',
+                                    style: const TextStyle(fontSize: 11, color: Colors.white70),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
                             ),
-                          ],
-                        ),
-                      ],
-                      if (msg.reactions.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 4,
-                          runSpacing: 4,
-                          children: msg.reactions.entries.map((entry) {
-                            final count = entry.value.length;
-                            final isMyReaction = entry.value.contains(currentUserName);
-                            return GestureDetector(
-                              onTap: () => _toggleReaction(msg.id, entry.key),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: isMyReaction ? const Color(0xFF2B5278) : const Color(0xFF17212B),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: isMyReaction ? const Color(0xFF50A2E9) : Colors.white12,
-                                    width: 1,
+                          ),
+                        if (hasMedia) _buildMediaContent(msg, isFrameless, isMe),
+                        if (msg.text.isNotEmpty)
+                          Padding(
+                            padding: isFrameless ? const EdgeInsets.all(8.0) : EdgeInsets.zero,
+                            child: Text(
+                              msg.text,
+                              style: const TextStyle(fontSize: 14, color: Colors.white, height: 1.35),
+                            ),
+                          ),
+                        if (!isFrameless) ...[
+                          const SizedBox(height: 3),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              if (isMe) ...[
+                                Text(
+                                  msg.isRead == 1 ? "✓✓" : "✓",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: msg.isRead == 1 ? const Color(0xFF50A2E9) : Colors.white60,
                                   ),
                                 ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(entry.key, style: const TextStyle(fontSize: 12)),
-                                    const SizedBox(width: 3),
-                                    Text(
-                                      count.toString(),
-                                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
-                                    ),
-                                  ],
-                                ),
+                                const SizedBox(width: 4),
+                              ],
+                              if (msg.isEdited) ...[
+                                const Text("edited", style: TextStyle(fontSize: 10, color: Colors.white54)),
+                                const SizedBox(width: 4),
+                              ],
+                              Text(
+                                msg.formattedTime,
+                                style: const TextStyle(fontSize: 10, color: Colors.white60),
                               ),
-                            );
-                          }).toList(),
-                        ),
+                            ],
+                          ),
+                        ],
+                        if (msg.reactions.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Wrap(
+                            spacing: 4,
+                            runSpacing: 4,
+                            children: msg.reactions.entries.map((entry) {
+                              final count = entry.value.length;
+                              final isMyReaction = entry.value.contains(currentUserName);
+                              return GestureDetector(
+                                onTap: () => _toggleReaction(msg.id, entry.key),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isMyReaction ? const Color(0xFF2B5278) : const Color(0xFF17212B),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: isMyReaction ? const Color(0xFF50A2E9) : Colors.white12,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(entry.key, style: const TextStyle(fontSize: 12)),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        count.toString(),
+                                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-          if (!isMe) ...[
-            const SizedBox(width: 6),
-            _buildAvatar(avatarTgId, msg.senderName, senderColor),
+            if (!isMe) ...[
+              const SizedBox(width: 6),
+              _buildAvatar(avatarTgId, msg.senderName, senderColor),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -1496,7 +2079,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
   Widget _buildMediaContent(ChatMessage msg, bool isFrameless, bool isMe) {
     final type = msg.mediaType;
     final url = msg.mediaUrl;
-    final fileName = msg.mediaFileName ?? (type == 'video' ? 'video.mp4' : 'photo.jpg');
+    final fileName = msg.mediaFileName ?? (type == 'video' ? 'video.mp4' : 'file');
 
     final isDownloaded = _downloadedMediaIds.contains(msg.id) || _localMediaPaths.containsKey(msg.id);
     final isDownloading = _downloadingMediaIds.contains(msg.id);
@@ -1504,7 +2087,182 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     final currentBytes = _downloadedBytes[msg.id] ?? 0;
     final localPath = _localMediaPaths[msg.id];
 
-    // ۱. عکس (مشابه عکس ۱ تلگرام قبل از دانلود، و نمایش تصویر پس از دانلود)
+    // ۱. ویدیو مسیج دایره‌ای تلگرام
+    if (type == 'video_note' && url != null) {
+      return Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        child: Center(
+          child: GestureDetector(
+            onTap: () => _openVideoPlayer(videoUrl: isDownloaded ? null : url, localPath: localPath, fileName: "video_note.mp4", isCircular: true),
+            child: Container(
+              width: 210,
+              height: 210,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: const Color(0xFF50A2E9), width: 2.5),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 10),
+                ],
+              ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  ClipOval(
+                    child: msg.thumbUrl != null && msg.thumbUrl != url
+                        ? CachedNetworkImage(imageUrl: msg.thumbUrl!, width: 210, height: 210, fit: BoxFit.cover)
+                        : Container(color: Colors.black87, width: 210, height: 210),
+                  ),
+                  CircleAvatar(
+                    radius: 26,
+                    backgroundColor: Colors.black.withOpacity(0.6),
+                    child: const Icon(Icons.play_arrow_rounded, size: 34, color: Colors.white),
+                  ),
+                  _buildTimeOverlay(msg, isMe),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ۲. ویس تلگرام با شکل موج صوتی و ثانیه‌شمار ایزوله
+    if (type == 'voice' && url != null) {
+      final bool isPlayingThis = _currentlyPlayingMsgId == msg.id && _playerState == PlayerState.playing;
+
+      return Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.black26,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          children: [
+            GestureDetector(
+              onTap: () => _toggleAudioPlay(msg),
+              child: CircleAvatar(
+                radius: 20,
+                backgroundColor: const Color(0xFF50A2E9),
+                child: Icon(
+                  isPlayingThis ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  color: Colors.white,
+                  size: 26,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ValueListenableBuilder<Duration>(
+                    valueListenable: _audioPosNotifier,
+                    builder: (context, pos, _) {
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: List.generate(24, (i) {
+                          final h = (math.sin(i * 0.7).abs() * 16 + 4).clamp(4.0, 22.0);
+                          final bool played = isPlayingThis && (_audioDuration.inMilliseconds > 0) &&
+                              (i / 24 <= pos.inMilliseconds / _audioDuration.inMilliseconds);
+                          return Container(
+                            width: 3,
+                            height: h,
+                            decoration: BoxDecoration(
+                              color: played ? const Color(0xFF50A2E9) : Colors.white38,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          );
+                        }),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 4),
+                  ValueListenableBuilder<Duration>(
+                    valueListenable: _audioPosNotifier,
+                    builder: (context, pos, _) {
+                      return Text(
+                        isPlayingThis
+                            ? "${pos.inMinutes}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}"
+                            : msg.formattedDuration,
+                        style: const TextStyle(fontSize: 10, color: Colors.white60),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // ۳. موزیک پلیر تلگرام
+    if (type == 'audio' && url != null) {
+      final bool isPlayingThis = _currentlyPlayingMsgId == msg.id && _playerState == PlayerState.playing;
+
+      return Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.black26,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            GestureDetector(
+              onTap: () => _toggleAudioPlay(msg),
+              child: CircleAvatar(
+                radius: 21,
+                backgroundColor: const Color(0xFF2B5278),
+                child: Icon(
+                  isPlayingThis ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  color: const Color(0xFF50A2E9),
+                  size: 26,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    fileName,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  ValueListenableBuilder<Duration>(
+                    valueListenable: _audioPosNotifier,
+                    builder: (context, pos, _) {
+                      return Text(
+                        isPlayingThis
+                            ? "${pos.inMinutes}:${(pos.inSeconds % 60).toString().padLeft(2, '0')} / ${_audioDuration.inMinutes}:${(_audioDuration.inSeconds % 60).toString().padLeft(2, '0')}"
+                            : msg.formattedFileSize,
+                        style: const TextStyle(fontSize: 11, color: Colors.white60),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.download_rounded, color: Color(0xFF50A2E9), size: 22),
+              onPressed: () {
+                launchUrl(
+                  Uri.parse("$url&download=1&name=${Uri.encodeComponent(fileName)}"),
+                  mode: LaunchMode.externalApplication,
+                );
+              },
+            ),
+          ],
+        ),
+      );
+    }
+
+    // ۴. عکس
     if (type == 'photo' && url != null) {
       return Container(
         constraints: const BoxConstraints(minHeight: 220, maxHeight: 380),
@@ -1536,7 +2294,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
                 height: 260,
               ),
 
-            // دکمه وسط قبل از دانلود یا در حین دانلود
             if (!isDownloaded)
               isDownloading
                   ? Stack(
@@ -1567,14 +2324,13 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
                       ),
                     ),
 
-            // تیک و ساعت شناور روی خود عکس در حالت بدون کپشن
             if (isFrameless) _buildTimeOverlay(msg, isMe),
           ],
         ),
       );
     }
 
-    // ۲. ویدیو (مشابه عکس‌های ۲ و ۳ تلگرام)
+    // ۵. ویدیو
     if (type == 'video' && url != null) {
       final thumb = msg.thumbUrl;
 
@@ -1603,7 +2359,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
 
             Container(color: Colors.black.withOpacity(0.25)),
 
-            // بج بالا سمت چپ: مدت‌زمان یا حجم و پیشرفت دانلود
             Positioned(
               top: 8,
               left: 8,
@@ -1624,7 +2379,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
               ),
             ),
 
-            // دکمه دایره‌ای وسط (دانلود / لغو / پلی)
             if (!isDownloaded && !isDownloading)
               GestureDetector(
                 onTap: () => _startDownloadingMedia(msg),
@@ -1664,15 +2418,14 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
                 ),
               ),
 
-            // تیک و ساعت شناور روی خود ویدیو در حالت بدون کپشن
             if (isFrameless) _buildTimeOverlay(msg, isMe),
           ],
         ),
       );
     }
 
-    // ۳. فایل‌ها و ویس‌ها
-    if (type == 'document' || type == 'audio') {
+    // ۶. اسناد و فایل‌ها
+    if (type == 'document') {
       return GestureDetector(
         onTap: () {
           if (url != null) {
@@ -1691,8 +2444,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           ),
           child: Row(
             children: [
-              Icon(type == 'audio' ? Icons.audiotrack_rounded : Icons.insert_drive_file_rounded,
-                  color: const Color(0xFF50A2E9), size: 28),
+              const Icon(Icons.insert_drive_file_rounded, color: Color(0xFF50A2E9), size: 28),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
@@ -1722,12 +2474,14 @@ class VideoPlayerModal extends StatefulWidget {
   final String? videoUrl;
   final String? localPath;
   final String fileName;
+  final bool isCircular;
 
   const VideoPlayerModal({
     super.key,
     this.videoUrl,
     this.localPath,
     required this.fileName,
+    this.isCircular = false,
   });
 
   @override
@@ -1784,30 +2538,57 @@ class _VideoPlayerModalState extends State<VideoPlayerModal> {
       ),
       body: Center(
         child: _isInitialized
-            ? AspectRatio(
-                aspectRatio: _controller.value.aspectRatio,
-                child: Stack(
-                  alignment: Alignment.bottomCenter,
-                  children: [
-                    VideoPlayer(_controller),
-                    VideoProgressIndicator(_controller, allowScrubbing: true),
-                    Center(
-                      child: IconButton(
-                        iconSize: 52,
-                        icon: Icon(
-                          _controller.value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
-                          color: Colors.white70,
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            _controller.value.isPlaying ? _controller.pause() : _controller.play();
-                          });
-                        },
+            ? (widget.isCircular
+                ? ClipOval(
+                    child: SizedBox(
+                      width: 280,
+                      height: 280,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          VideoPlayer(_controller),
+                          Center(
+                            child: IconButton(
+                              iconSize: 52,
+                              icon: Icon(
+                                _controller.value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                                color: Colors.white70,
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  _controller.value.isPlaying ? _controller.pause() : _controller.play();
+                                });
+                              },
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-              )
+                  )
+                : AspectRatio(
+                    aspectRatio: _controller.value.aspectRatio,
+                    child: Stack(
+                      alignment: Alignment.bottomCenter,
+                      children: [
+                        VideoPlayer(_controller),
+                        VideoProgressIndicator(_controller, allowScrubbing: true),
+                        Center(
+                          child: IconButton(
+                            iconSize: 52,
+                            icon: Icon(
+                              _controller.value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                              color: Colors.white70,
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _controller.value.isPlaying ? _controller.pause() : _controller.play();
+                              });
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ))
             : const CircularProgressIndicator(color: Color(0xFF50A2E9)),
       ),
     );
