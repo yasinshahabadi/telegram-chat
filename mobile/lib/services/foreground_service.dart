@@ -28,7 +28,6 @@ class ChatBackgroundTaskHandler extends TaskHandler {
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    // راه‌اندازی نوتیفیکیشن در ایزولیت پس‌زمینه
     await NotificationService().init();
 
     final prefs = await SharedPreferences.getInstance();
@@ -66,7 +65,8 @@ class ChatBackgroundTaskHandler extends TaskHandler {
           "type": "identify",
           "userName": _userName,
           "userId": _userId,
-          "tgId": _tgId
+          "tgId": _tgId,
+          "isOnline": false // سوکت پس‌زمینه کاربر را بیهوده آنلاین نشان ندهد
         }));
       }
 
@@ -77,38 +77,35 @@ class ChatBackgroundTaskHandler extends TaskHandler {
   }
 
   void _handleIncomingMessage(ChatMessage msg) {
-    // اگر کاربر در داخل برنامه نیست، اعلان با صدا و ویبره ارسال کن
     if (!_isAppInForeground && msg.senderName != _userName) {
       String notifBody = msg.text;
       if (notifBody.isEmpty) {
-        if (msg.mediaType == 'photo') notifBody = '📷 [ارسال تصویر]';
-        else if (msg.mediaType == 'video') notifBody = '📹 [ارسال ویدیو]';
-        else if (msg.mediaType == 'audio') notifBody = '🎵 [ارسال فایل صوتی]';
-        else notifBody = '📁 [ارسال فایل]';
+        if (msg.mediaType == 'photo') notifBody = '📷 [تصویر]';
+        else if (msg.mediaType == 'video') notifBody = '📹 [ویدیو]';
+        else if (msg.mediaType == 'voice') notifBody = '🎤 [پیام صوتی]';
+        else if (msg.mediaType == 'audio') notifBody = '🎵 [موزیک]';
+        else notifBody = '📁 [فایل]';
       }
 
-      final title = msg.isFromTelegram ? "📱 تلگرام: ${msg.senderName}" : "🌐 وب: ${msg.senderName}";
-
+      // فراخوانی نوتیفیکیشن تجمیعی تلگرام با پارامترهای جدید
       NotificationService().showMessageNotification(
-        id: msg.timestamp ~/ 1000,
-        title: title,
+        senderName: msg.senderName,
         body: notifBody,
+        senderId: msg.isFromTelegram ? msg.senderId : null,
         messageId: msg.id,
+        timestamp: msg.timestamp,
       );
     }
   }
 
   @override
   void onRepeatEvent(DateTime timestamp) async {
-    // ۱. بررسی سلامت سوکت و اتصال مجدد در صورت قطعی
     if (!_isConnected || _wsChannel == null) {
       _connectWebSocket();
     } else {
-      // ارسال پینگ زنده به کلودفلر
       _wsChannel?.sink.add(jsonEncode({"type": "presence", "status": _isAppInForeground ? "online" : "offline"}));
     }
 
-    // ۲. پولینگ هوشمند پشتیبان در صورت قطع شدن موقت سوکت
     if (!_isAppInForeground && _lastTimestamp > 0) {
       try {
         final res = await http.get(Uri.parse("${AppConfig.baseUrl}/api/messages?since=$_lastTimestamp"));
@@ -175,7 +172,7 @@ class ForegroundServiceManager {
         playSound: false,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(10000), // اجرای مداوم هر ۱۰ ثانیه در پس‌زمینه
+        eventAction: ForegroundTaskEventAction.repeat(10000),
         autoRunOnBoot: true,
         autoRunOnMyPackageReplaced: true,
         allowWakeLock: true,

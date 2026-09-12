@@ -128,16 +128,12 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
   final FocusNode _msgFocusNode = FocusNode();
 
   bool _hasTextContent = false;
-  String? _floatingHintText;
-  Timer? _floatingHintTimer;
 
-  // گزارش زنده درصد آپلود
   bool _isUploading = false;
   double _uploadProgress = 0.0;
   int _uploadBytesSent = 0;
   int _uploadTotalBytes = 0;
 
-  // وضعیت دانلود آپدیت درون‌برنامه‌ای گیت‌هاب
   bool _isDownloadingUpdate = false;
   double _appUpdateProgress = 0.0;
   int _appUpdateDownloadedBytes = 0;
@@ -249,6 +245,8 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     ForegroundServiceManager.setAppLifecycle(_isAppResumed);
 
     if (_isAppResumed) {
+      // پاک کردن اعلان‌های قبلی از نوار اعلان‌ها به محض باز شدن برنامه
+      NotificationService().clearNotificationHistory();
       _sendPresence(true);
       _fetchLatestMessages();
       _markVisibleUnreadMessages();
@@ -266,7 +264,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     }
   }
 
-  // بررسی نسخه جدید در گیت‌هاب
   Future<void> _checkForAppUpdate() async {
     final updateInfo = await GitHubUpdateService.checkForUpdate();
     if (updateInfo != null && mounted) {
@@ -274,7 +271,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     }
   }
 
-  // نمایش دیالوگ اطلاع‌رسانی نسخه جدید
   void _showUpdateDialog(AppUpdateInfo info) {
     showDialog(
       context: context,
@@ -341,7 +337,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     );
   }
 
-  // دانلود در پس‌زمینه بدون مسدود کردن کار با برنامه
   void _startInAppUpdate(AppUpdateInfo info) {
     setState(() {
       _isDownloadingUpdate = true;
@@ -623,7 +618,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
               ),
             ),
 
-          // نوار زنده آپلود فایل
           if (_isUploading)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
@@ -658,7 +652,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
               ),
             ),
 
-          // نوار زنده دانلود آپدیت جدید از گیت‌هاب
           if (_isDownloadingUpdate)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
@@ -884,136 +877,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildTelegramFormattedText(String fullText) {
-    if (fullText.trim().isEmpty) return const SizedBox.shrink();
-
-    final lines = fullText.split('\n');
-    List<Widget> textWidgets = [];
-    List<String> currentQuote = [];
-    List<String> currentRegular = [];
-
-    void flushRegular() {
-      if (currentRegular.isNotEmpty) {
-        textWidgets.add(_buildRichTextSpans(currentRegular.join('\n')));
-        currentRegular.clear();
-      }
-    }
-
-    void flushQuote() {
-      if (currentQuote.isNotEmpty) {
-        final quoteText = currentQuote.join('\n');
-        textWidgets.add(
-          Container(
-            margin: const EdgeInsets.symmetric(vertical: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF50A2E9).withOpacity(0.16),
-              borderRadius: BorderRadius.circular(8),
-              border: const Border(
-                right: BorderSide(color: Color(0xFF50A2E9), width: 3.5),
-              ),
-            ),
-            child: Stack(
-              children: [
-                _buildRichTextSpans(quoteText, isQuote: true),
-                const Positioned(
-                  left: 0,
-                  bottom: -2,
-                  child: Text(
-                    "”",
-                    style: TextStyle(color: Color(0xFF50A2E9), fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-        currentQuote.clear();
-      }
-    }
-
-    for (var line in lines) {
-      if (line.trim().startsWith('>')) {
-        flushRegular();
-        currentQuote.add(line.trim().substring(1).trim());
-      } else if (line.trim().startsWith('«') && line.trim().endsWith('»')) {
-        flushRegular();
-        currentQuote.add(line.trim());
-      } else {
-        flushQuote();
-        currentRegular.add(line);
-      }
-    }
-    flushRegular();
-    flushQuote();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: textWidgets,
-    );
-  }
-
-  Widget _buildRichTextSpans(String text, {bool isQuote = false}) {
-    final RegExp linkExp = RegExp(
-      r'(@[a-zA-Z0-9_]{3,32})|((https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(\/[^\s]*)?)',
-      caseSensitive: false,
-    );
-
-    List<TextSpan> spans = [];
-    int lastMatchEnd = 0;
-
-    for (final Match match in linkExp.allMatches(text)) {
-      if (match.start > lastMatchEnd) {
-        spans.add(TextSpan(
-          text: text.substring(lastMatchEnd, match.start),
-          style: TextStyle(
-            fontSize: isQuote ? 13 : 14,
-            color: isQuote ? Colors.white70 : Colors.white,
-            height: 1.38,
-          ),
-        ));
-      }
-
-      final String matchedText = match.group(0)!;
-      spans.add(
-        TextSpan(
-          text: matchedText,
-          style: TextStyle(
-            fontSize: isQuote ? 13 : 14,
-            color: const Color(0xFF50A2E9),
-            fontWeight: FontWeight.bold,
-            decoration: TextDecoration.underline,
-            decorationColor: const Color(0xFF50A2E9),
-            height: 1.38,
-          ),
-          recognizer: TapGestureRecognizer()
-            ..onTap = () {
-              _triggerVibration(duration: 25);
-              openLinkOrUsername(matchedText);
-            },
-        ),
-      );
-
-      lastMatchEnd = match.end;
-    }
-
-    if (lastMatchEnd < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(lastMatchEnd),
-        style: TextStyle(
-          fontSize: isQuote ? 13 : 14,
-          color: isQuote ? Colors.white70 : Colors.white,
-          height: 1.38,
-        ),
-      ));
-    }
-
-    return SelectableText.rich(
-      TextSpan(children: spans),
-      style: const TextStyle(fontFamily: 'Roboto'),
     );
   }
 
@@ -1689,6 +1552,136 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     return const SizedBox.shrink();
   }
 
+  Widget _buildTelegramFormattedText(String fullText) {
+    if (fullText.trim().isEmpty) return const SizedBox.shrink();
+
+    final lines = fullText.split('\n');
+    List<Widget> textWidgets = [];
+    List<String> currentQuote = [];
+    List<String> currentRegular = [];
+
+    void flushRegular() {
+      if (currentRegular.isNotEmpty) {
+        textWidgets.add(_buildRichTextSpans(currentRegular.join('\n')));
+        currentRegular.clear();
+      }
+    }
+
+    void flushQuote() {
+      if (currentQuote.isNotEmpty) {
+        final quoteText = currentQuote.join('\n');
+        textWidgets.add(
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF50A2E9).withOpacity(0.16),
+              borderRadius: BorderRadius.circular(8),
+              border: const Border(
+                right: BorderSide(color: Color(0xFF50A2E9), width: 3.5),
+              ),
+            ),
+            child: Stack(
+              children: [
+                _buildRichTextSpans(quoteText, isQuote: true),
+                const Positioned(
+                  left: 0,
+                  bottom: -2,
+                  child: Text(
+                    "”",
+                    style: TextStyle(color: Color(0xFF50A2E9), fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+        currentQuote.clear();
+      }
+    }
+
+    for (var line in lines) {
+      if (line.trim().startsWith('>')) {
+        flushRegular();
+        currentQuote.add(line.trim().substring(1).trim());
+      } else if (line.trim().startsWith('«') && line.trim().endsWith('»')) {
+        flushRegular();
+        currentQuote.add(line.trim());
+      } else {
+        flushQuote();
+        currentRegular.add(line);
+      }
+    }
+    flushRegular();
+    flushQuote();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: textWidgets,
+    );
+  }
+
+  Widget _buildRichTextSpans(String text, {bool isQuote = false}) {
+    final RegExp linkExp = RegExp(
+      r'(@[a-zA-Z0-9_]{3,32})|((https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(\/[^\s]*)?)',
+      caseSensitive: false,
+    );
+
+    List<TextSpan> spans = [];
+    int lastMatchEnd = 0;
+
+    for (final Match match in linkExp.allMatches(text)) {
+      if (match.start > lastMatchEnd) {
+        spans.add(TextSpan(
+          text: text.substring(lastMatchEnd, match.start),
+          style: TextStyle(
+            fontSize: isQuote ? 13 : 14,
+            color: isQuote ? Colors.white70 : Colors.white,
+            height: 1.38,
+          ),
+        ));
+      }
+
+      final String matchedText = match.group(0)!;
+      spans.add(
+        TextSpan(
+          text: matchedText,
+          style: TextStyle(
+            fontSize: isQuote ? 13 : 14,
+            color: const Color(0xFF50A2E9),
+            fontWeight: FontWeight.bold,
+            decoration: TextDecoration.underline,
+            decorationColor: const Color(0xFF50A2E9),
+            height: 1.38,
+          ),
+          recognizer: TapGestureRecognizer()
+            ..onTap = () {
+              _triggerVibration(duration: 25);
+              openLinkOrUsername(matchedText);
+            },
+        ),
+      );
+
+      lastMatchEnd = match.end;
+    }
+
+    if (lastMatchEnd < text.length) {
+      spans.add(TextSpan(
+        text: text.substring(lastMatchEnd),
+        style: TextStyle(
+          fontSize: isQuote ? 13 : 14,
+          color: isQuote ? Colors.white70 : Colors.white,
+          height: 1.38,
+        ),
+      ));
+    }
+
+    return SelectableText.rich(
+      TextSpan(children: spans),
+      style: const TextStyle(fontFamily: 'Roboto'),
+    );
+  }
+
   static Future<void> openLinkOrUsername(String input, {int? postId}) async {
     String url = input.trim();
     if (url.startsWith('@')) {
@@ -1775,7 +1768,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     }
 
     await _checkAuthStatus();
-    _checkForAppUpdate(); // بررسی خودکار نسخه جدید در شروع برنامه
+    _checkForAppUpdate();
   }
 
   Future<void> _checkAuthStatus() async {
@@ -1906,7 +1899,8 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         "type": "identify",
         "userName": _currentUser?['full_name'] ?? 'کاربر',
         "userId": _currentUser?['id'],
-        "tgId": _currentUser?['telegram_id']
+        "tgId": _currentUser?['telegram_id'],
+        "isOnline": _isAppResumed
       }));
 
       _pingTimer?.cancel();
@@ -1922,8 +1916,10 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     }
   }
 
-  void _handleWsEvent(Map<String, dynamic> data) {
+void _handleWsEvent(Map<String, dynamic> data) {
     final type = data['type'];
+    final myName = _currentUser?['full_name'] ?? '';
+
     if (type == 'new_message' && data['message'] != null) {
       final msg = ChatMessage.fromJson(data['message']);
       if (!_seenMessageIds.contains(msg.id)) {
@@ -1937,8 +1933,33 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           ForegroundServiceManager.syncLastMessageTime(msg.timestamp);
         }
 
-        if (_isAppResumed) {
+        // فقط اگر کاربر داخل برنامه است و فرستنده شخص دیگری است، علامت خوانده‌شده بزن
+        if (_isAppResumed && msg.senderName != myName) {
           _markAsRead([msg.id]);
+        } else if (!_isAppResumed && msg.senderName != myName) {
+          // اگر برنامه در پس‌زمینه است، نوتیفیکیشن تجمیعی تلگرام با آواتار بفرست
+          String notifBody = msg.text;
+          if (notifBody.isEmpty) {
+            if (msg.mediaType == 'photo') {
+              notifBody = '📷 [تصویر]';
+            } else if (msg.mediaType == 'video') {
+              notifBody = '📹 [ویدیو]';
+            } else if (msg.mediaType == 'voice') {
+              notifBody = '🎤 [پیام صوتی]';
+            } else if (msg.mediaType == 'audio') {
+              notifBody = '🎵 [موزیک]';
+            } else {
+              notifBody = '📁 [فایل]';
+            }
+          }
+
+          NotificationService().showMessageNotification(
+            senderName: msg.senderName,
+            body: notifBody,
+            senderId: msg.isFromTelegram ? msg.senderId : null,
+            messageId: msg.id,
+            timestamp: msg.timestamp,
+          );
         }
       }
     } else if (type == 'messages_read' && data['messageIds'] != null) {
@@ -2073,6 +2094,20 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
             _seenMessageIds.add(m.id);
             _messages.add(m);
             added = true;
+
+            // اعلان برای پیام‌های دریافتی در زمان بسته بودن برنامه
+            if (!_isAppResumed) {
+                final myName = _currentUser?['full_name'] ?? '';
+                if (m.senderName != myName) {
+                  NotificationService().showMessageNotification(
+                    senderName: m.senderName,
+                    body: m.text.isNotEmpty ? m.text : "[فایل رسانه]",
+                    senderId: m.isFromTelegram ? m.senderId : null,
+                    messageId: m.id,
+                    timestamp: m.timestamp,
+                  );
+                }
+              }
           }
         }
         if (added) {

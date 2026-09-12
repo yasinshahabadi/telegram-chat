@@ -248,7 +248,6 @@ export default {
         }
         tgFormData.append("caption", tgCaption);
         tgFormData.append("parse_mode", "HTML");
-
         tgFormData.append(fileField, file, file.name);
 
         if (replyTo && replyTo.tgMsgId) {
@@ -439,7 +438,6 @@ async function ensureDbSchema(db) {
   try { await db.prepare("ALTER TABLE messages ADD COLUMN media_thumb_id TEXT").run(); } catch (e) {}
   try { await db.prepare("ALTER TABLE messages ADD COLUMN media_duration INTEGER DEFAULT 0").run(); } catch (e) {}
 
-  // فیلدهای اختصاصی پست‌های فورواردشده و آلبوم‌ها
   try { await db.prepare("ALTER TABLE messages ADD COLUMN forward_from_name TEXT").run(); } catch (e) {}
   try { await db.prepare("ALTER TABLE messages ADD COLUMN forward_channel_username TEXT").run(); } catch (e) {}
   try { await db.prepare("ALTER TABLE messages ADD COLUMN forward_post_id INTEGER").run(); } catch (e) {}
@@ -661,7 +659,6 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // استخراج پیام‌های ورودی از تلگرام به همراه اطلاعات کامل فوروارد و آلبوم
   if (update.message && update.message.chat) {
     const incomingChatId = update.message.chat.id.toString();
     const targetGroupId = env.TELEGRAM_GROUP_ID.toString();
@@ -679,10 +676,8 @@ async function handleTelegramUpdate(update, env, ctx) {
       const timestamp = Date.now();
       const text = msg.text || msg.caption || "";
 
-      // شناسه آلبوم تلگرام (برای چیدمان شبکه‌ای عکس‌ها و فیلم‌ها)
       const mediaGroupId = msg.media_group_id || null;
 
-      // استخراج اطلاعات فوروارد تلگرام
       let forwardFromName = null;
       let forwardChannelUsername = null;
       let forwardPostId = null;
@@ -823,7 +818,12 @@ export class ChatRoom extends DurableObject {
       const data = JSON.parse(message);
 
       if (data.type === "identify") {
-        ws.serializeAttachment({ userName: data.userName, userId: data.userId, tgId: data.tgId, isOnline: true });
+        ws.serializeAttachment({ 
+          userName: data.userName, 
+          userId: data.userId, 
+          tgId: data.tgId, 
+          isOnline: data.isOnline !== false 
+        });
         this.broadcastOnline();
         return;
       }
@@ -1002,7 +1002,25 @@ export class ChatRoom extends DurableObject {
     } catch (e) {}
   }
 
-  async webSocketClose(ws) { this.broadcastOnline(); }
+  // پاکسازی قطعی وضعیت آنلاین هنگام بستن اتصال
+  async webSocketClose(ws) {
+    try {
+      const att = ws.deserializeAttachment() || {};
+      att.isOnline = false;
+      ws.serializeAttachment(att);
+    } catch (e) {}
+    this.broadcastOnline();
+  }
+
+  // پاکسازی هنگام خطای ناگهانی سوکت
+  async webSocketError(ws, error) {
+    try {
+      const att = ws.deserializeAttachment() || {};
+      att.isOnline = false;
+      ws.serializeAttachment(att);
+    } catch (e) {}
+    this.broadcastOnline();
+  }
 
   broadcast(data, excludeWs = null) {
     const str = JSON.stringify(data);
@@ -1018,7 +1036,9 @@ export class ChatRoom extends DurableObject {
     for (const ws of this.ctx.getWebSockets()) {
       try {
         const att = ws.deserializeAttachment();
-        if (att && att.userName && att.isOnline === true) online.push(att.userName);
+        if (att && att.userName && att.isOnline === true) {
+          online.push(att.userName);
+        }
       } catch (e) {}
     }
     this.broadcast({ type: "online_users", users: Array.from(new Set(online)) });
