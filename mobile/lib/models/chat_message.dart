@@ -25,6 +25,13 @@ class ChatMessage {
   final int? mediaDuration;
   Map<String, List<String>> reactions;
 
+  // اطلاعات پست‌های فورواردشده و آلبوم‌ها
+  final String? forwardFromName;
+  final String? forwardChannelUsername;
+  final int? forwardPostId;
+  final String? forwardChatId;
+  final String? mediaGroupId;
+
   ChatMessage({
     required this.id,
     required this.senderId,
@@ -46,9 +53,13 @@ class ChatMessage {
     this.mediaThumbId,
     this.mediaDuration,
     required this.reactions,
+    this.forwardFromName,
+    this.forwardChannelUsername,
+    this.forwardPostId,
+    this.forwardChatId,
+    this.mediaGroupId,
   });
 
-  // فرمت ۲۴ ساعته استاندارد تلگرام (HH:mm)
   String get formattedTime {
     final dt = DateTime.fromMillisecondsSinceEpoch(timestamp);
     return DateFormat('HH:mm').format(dt);
@@ -129,6 +140,11 @@ class ChatMessage {
       mediaThumbId: json['media_thumb_id'],
       mediaDuration: json['media_duration'],
       reactions: parsedReactions,
+      forwardFromName: json['forward_from_name'],
+      forwardChannelUsername: json['forward_channel_username'],
+      forwardPostId: json['forward_post_id'],
+      forwardChatId: json['forward_chat_id'],
+      mediaGroupId: json['media_group_id'],
     );
   }
 }

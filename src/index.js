@@ -15,7 +15,6 @@ function escapeXml(str) {
   }[m]));
 }
 
-// تابع ارسال وب‌پوش به تمامی مشترکین از طریق سرورهای گوگل/اپل
 const PUSH_TTL_SECONDS = 60 * 60 * 24 * 28;
 async function dispatchWebPush(env, {
   title,
@@ -27,10 +26,7 @@ async function dispatchWebPush(env, {
   mediaType = null,
   mediaUrl = null
 }) {
-  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) {
-    console.error("Web Push is not configured: missing VAPID keys");
-    return;
-  }
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return;
 
   const vapid = {
     subject: env.VAPID_SUBJECT || "mailto:admin@chat-app.com",
@@ -59,6 +55,7 @@ async function dispatchWebPush(env, {
       mediaType,
       mediaUrl
     });
+
     const sendOne = async (sub) => {
       if (!sub.endpoint || !sub.p256dh || !sub.auth) return;
 
@@ -92,21 +89,12 @@ async function dispatchWebPush(env, {
             .prepare("DELETE FROM push_subscriptions WHERE endpoint = ?")
             .bind(sub.endpoint)
             .run();
-          return;
         }
-        if (!res.ok) {
-          console.error("Push service error:", res.status, await res.text().catch(() => ""));
-          return;
-        }
-      } catch (e) {
-        console.error("Push dispatch single error:", e);
-      }
+      } catch (e) {}
     };
 
     await Promise.allSettled(subs.map(sendOne));
-  } catch (err) {
-    console.error("Push dispatch all error:", err);
-  }
+  } catch (err) {}
 }
 
 export default {
@@ -115,12 +103,10 @@ export default {
 
     ctx.waitUntil(ensureDbSchema(env.DB));
 
-    // ۱. دریافت کلید عمومی VAPID برای کلاینت
     if (url.pathname === "/api/vapid-public-key") {
       return Response.json({ publicKey: env.VAPID_PUBLIC_KEY || null });
     }
 
-    // ۲. ثبت اشتراک وب‌پوش کلاینت
     if (url.pathname === "/api/push-subscribe" && request.method === "POST") {
       try {
         const { endpoint, p256dh, auth, sessionToken } = await request.json();
@@ -141,7 +127,6 @@ export default {
       }
     }
 
-    // ۳. استریم مدیا با پشتیبانی از HTTP Range Requests جهت استریم آنلاین صوت و ویدیو در اندروید
     if (url.pathname === "/api/media") {
       const fileId = url.searchParams.get("fileId");
       const customName = url.searchParams.get("name");
@@ -163,7 +148,6 @@ export default {
           const ext = filePath.includes(".") ? filePath.split(".").pop().toLowerCase() : "bin";
           const fileName = customName || `file_${fileId.substring(0, 8)}.${ext}`;
 
-          // انتقال هدر Range به سرور تلگرام جهت رفع خطای ProtocolException در پخش‌کننده اندروید
           const rangeHeader = request.headers.get("Range") || request.headers.get("range");
           const tgHeaders = {};
           if (rangeHeader) tgHeaders["Range"] = rangeHeader;
@@ -204,7 +188,6 @@ export default {
       return new Response("فایل یافت نشد", { status: 404 });
     }
 
-    // ۴. خروج کاربر (Logout)
     if (url.pathname === "/api/auth/logout" && request.method === "POST") {
       try {
         const { sessionToken } = await request.json();
@@ -217,7 +200,6 @@ export default {
       }
     }
 
-    // ۵. آپلود مدیا (شامل ویس، ویدیو مسیج دایره‌ای، عکس، فیلم و اسناد)
     if (url.pathname === "/api/upload" && request.method === "POST") {
       try {
         const formData = await request.formData();
@@ -246,10 +228,7 @@ export default {
         let tgEndpoint = "sendDocument";
         let fileField = "document";
 
-        // تفکیک ویدیو مسیج دایره‌ای، ویس تلگرام، عکس و فیلم
-        if (customType === "video_note" || file.name.includes("video_note") || file.name.endsWith("_note.mp4")) {
-          mediaType = "video_note"; tgEndpoint = "sendVideoNote"; fileField = "video_note";
-        } else if (customType === "voice" || file.name.includes("voice") || file.name.endsWith("_voice.m4a") || file.name.endsWith("_voice.ogg")) {
+        if (customType === "voice" || file.name.includes("voice") || file.name.endsWith("_voice.m4a") || file.name.endsWith("_voice.ogg")) {
           mediaType = "voice"; tgEndpoint = "sendVoice"; fileField = "voice";
         } else if (file.type.startsWith("image/")) {
           mediaType = "photo"; tgEndpoint = "sendPhoto"; fileField = "photo";
@@ -262,16 +241,13 @@ export default {
         const tgFormData = new FormData();
         tgFormData.append("chat_id", env.TELEGRAM_GROUP_ID);
 
-        // برای ویدیو مسیج تلگرام نباید کپشن ارسال شود
-        if (mediaType !== "video_note") {
-          let tgCaption = `🌐 <b>[وب‌سایت]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.full_name)}`;
-          if (replyTo && !replyTo.tgMsgId) tgCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml(replyTo.text.substring(0, 30))}»`;
-          if (caption) {
-            tgCaption += `\n💬 ${escapeXml(caption)}`;
-          }
-          tgFormData.append("caption", tgCaption);
-          tgFormData.append("parse_mode", "HTML");
+        let tgCaption = `🌐 <b>[وب‌سایت]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.full_name)}`;
+        if (replyTo && !replyTo.tgMsgId) tgCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml(replyTo.text.substring(0, 30))}»`;
+        if (caption) {
+          tgCaption += `\n💬 ${escapeXml(caption)}`;
         }
+        tgFormData.append("caption", tgCaption);
+        tgFormData.append("parse_mode", "HTML");
 
         tgFormData.append(fileField, file, file.name);
 
@@ -290,14 +266,8 @@ export default {
         let duration = 0;
         const resMsg = tgData.result;
         
-        if (resMsg.photo && resMsg.photo.length > 0) {
-          fileId = resMsg.photo[resMsg.photo.length - 1].file_id;
-        } else if (resMsg.video_note) {
-          fileId = resMsg.video_note.file_id;
-          duration = resMsg.video_note.duration || 0;
-          const th = resMsg.video_note.thumbnail || resMsg.video_note.thumb;
-          if (th) thumbId = th.file_id;
-        } else if (resMsg.video) {
+        if (resMsg.photo && resMsg.photo.length > 0) fileId = resMsg.photo[resMsg.photo.length - 1].file_id;
+        else if (resMsg.video) {
           fileId = resMsg.video.file_id;
           duration = resMsg.video.duration || 0;
           const th = resMsg.video.thumbnail || resMsg.video.thumb;
@@ -308,9 +278,7 @@ export default {
         } else if (resMsg.audio) {
           fileId = resMsg.audio.file_id;
           duration = resMsg.audio.duration || 0;
-        } else if (resMsg.document) {
-          fileId = resMsg.document.file_id;
-        }
+        } else if (resMsg.document) fileId = resMsg.document.file_id;
 
         const msgId = crypto.randomUUID();
         const timestamp = Date.now();
@@ -339,34 +307,12 @@ export default {
           })
         });
 
-        // متن مناسب وب‌پوش
-        let notifText = caption;
-        if (!notifText) {
-          if (mediaType === "voice") notifText = "🎤 [پیام صوتی]";
-          else if (mediaType === "video_note") notifText = "⭕ [ویدیو مسیج]";
-          else notifText = `[ارسال ${mediaType}]`;
-        }
-
-        ctx.waitUntil(dispatchWebPush(env, {
-          title: `🌐 وب: ${user.full_name}`,
-          body: notifText,
-          senderUserId: user.id,
-          messageId: msgId,
-          senderName: user.full_name,
-          senderAvatarUrl: user.telegram_id ? `/api/avatar?userId=${encodeURIComponent(user.telegram_id)}` : null,
-          mediaType,
-          mediaUrl: (mediaType === 'photo' || mediaType === 'video') && fileId
-            ? `/api/media?fileId=${encodeURIComponent(mediaType === 'video' && thumbId ? thumbId : fileId)}`
-            : null
-        }));
-
         return Response.json({ status: "ok", fileId });
       } catch (err) {
         return Response.json({ status: "error", message: err.message }, { status: 500 });
       }
     }
 
-    // ۶. دریافت آواتار تلگرام
     if (url.pathname === "/api/avatar") {
       const userId = url.searchParams.get("userId");
       if (!userId) return new Response("Missing userId", { status: 400 });
@@ -393,7 +339,6 @@ export default {
       return new Response("Not found", { status: 404 });
     }
 
-    // ۷. وب‌هوک تلگرام
     if (url.pathname === "/api/telegram-webhook" && request.method === "POST") {
       try {
         const update = await request.json();
@@ -403,7 +348,6 @@ export default {
       }
     }
 
-    // ۸. بررسی دستگاه و لاگین
     if (url.pathname === "/api/auth/verify-device" && request.method === "POST") {
       try {
         const { sessionToken, fingerprint } = await request.json();
@@ -428,14 +372,12 @@ export default {
       }
     }
 
-    // ۹. وب‌سوکت
     if (url.pathname === "/api/ws") {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("Expected WebSocket", { status: 426 });
       const id = env.CHAT_ROOM.idFromName("global_room");
       return env.CHAT_ROOM.get(id).fetch(request);
     }
 
-    // ۱۰. تاریخچه پیام‌ها
     if (url.pathname === "/api/messages") {
       try {
         const messageId = url.searchParams.get("id");
@@ -496,6 +438,14 @@ async function ensureDbSchema(db) {
   try { await db.prepare("ALTER TABLE messages ADD COLUMN media_file_size INTEGER").run(); } catch (e) {}
   try { await db.prepare("ALTER TABLE messages ADD COLUMN media_thumb_id TEXT").run(); } catch (e) {}
   try { await db.prepare("ALTER TABLE messages ADD COLUMN media_duration INTEGER DEFAULT 0").run(); } catch (e) {}
+
+  // فیلدهای اختصاصی پست‌های فورواردشده و آلبوم‌ها
+  try { await db.prepare("ALTER TABLE messages ADD COLUMN forward_from_name TEXT").run(); } catch (e) {}
+  try { await db.prepare("ALTER TABLE messages ADD COLUMN forward_channel_username TEXT").run(); } catch (e) {}
+  try { await db.prepare("ALTER TABLE messages ADD COLUMN forward_post_id INTEGER").run(); } catch (e) {}
+  try { await db.prepare("ALTER TABLE messages ADD COLUMN forward_chat_id TEXT").run(); } catch (e) {}
+  try { await db.prepare("ALTER TABLE messages ADD COLUMN media_group_id TEXT").run(); } catch (e) {}
+
   try { await db.prepare("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)").run(); } catch (e) {}
   try {
     await db.prepare(`
@@ -618,7 +568,6 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // ری‌اکشن از تلگرام به وب و اپلیکیشن
   if (update.message_reaction && update.message_reaction.chat) {
     const mr = update.message_reaction;
     const tgMsgId = mr.message_id;
@@ -654,7 +603,6 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // ادیت پیام در تلگرام
   if (update.edited_message && update.edited_message.chat) {
     const editMsg = update.edited_message;
     const newText = editMsg.text || editMsg.caption || "";
@@ -667,7 +615,6 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // پین پیام در تلگرام
   if (update.message && update.message.pinned_message) {
     const pinnedTgId = update.message.pinned_message.message_id;
     await env.DB.prepare("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1").run();
@@ -683,7 +630,6 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // ثبت‌نام / احراز هویت اولیه ربات
   if (update.message && update.message.text && update.message.text.startsWith("/start auth_")) {
     const token = update.message.text.split(" ")[1].replace("auth_", "");
     const tgUser = update.message.from;
@@ -715,7 +661,7 @@ async function handleTelegramUpdate(update, env, ctx) {
     return new Response("OK");
   }
 
-  // پیام ورودی جدید از گروه تلگرام (پشتیبانی کامل از voice و video_note)
+  // استخراج پیام‌های ورودی از تلگرام به همراه اطلاعات کامل فوروارد و آلبوم
   if (update.message && update.message.chat) {
     const incomingChatId = update.message.chat.id.toString();
     const targetGroupId = env.TELEGRAM_GROUP_ID.toString();
@@ -733,6 +679,39 @@ async function handleTelegramUpdate(update, env, ctx) {
       const timestamp = Date.now();
       const text = msg.text || msg.caption || "";
 
+      // شناسه آلبوم تلگرام (برای چیدمان شبکه‌ای عکس‌ها و فیلم‌ها)
+      const mediaGroupId = msg.media_group_id || null;
+
+      // استخراج اطلاعات فوروارد تلگرام
+      let forwardFromName = null;
+      let forwardChannelUsername = null;
+      let forwardPostId = null;
+      let forwardChatId = null;
+
+      if (msg.forward_origin) {
+        const fo = msg.forward_origin;
+        if (fo.type === "channel" && fo.chat) {
+          forwardFromName = fo.chat.title || "کانال تلگرام";
+          forwardChannelUsername = fo.chat.username || null;
+          forwardPostId = fo.message_id || null;
+          forwardChatId = fo.chat.id ? fo.chat.id.toString() : null;
+        } else if (fo.type === "user" && fo.sender_user) {
+          forwardFromName = `${fo.sender_user.first_name || ""} ${fo.sender_user.last_name || ""}`.trim();
+          forwardChannelUsername = fo.sender_user.username || null;
+        } else if (fo.type === "chat" && fo.sender_chat) {
+          forwardFromName = fo.sender_chat.title || "گروه";
+          forwardChannelUsername = fo.sender_chat.username || null;
+        }
+      } else if (msg.forward_from_chat) {
+        forwardFromName = msg.forward_from_chat.title || "کانال تلگرام";
+        forwardChannelUsername = msg.forward_from_chat.username || null;
+        forwardPostId = msg.forward_from_message_id || null;
+        forwardChatId = msg.forward_from_chat.id ? msg.forward_from_chat.id.toString() : null;
+      } else if (msg.forward_from) {
+        forwardFromName = `${msg.forward_from.first_name || ""} ${msg.forward_from.last_name || ""}`.trim();
+        forwardChannelUsername = msg.forward_from.username || null;
+      }
+
       let replyToName = null, replyToText = null, replyToId = null;
       if (msg.reply_to_message) {
         const rFrom = msg.reply_to_message.from;
@@ -745,10 +724,6 @@ async function handleTelegramUpdate(update, env, ctx) {
 
       if (msg.photo && msg.photo.length > 0) {
         mediaType = "photo"; fileId = msg.photo[msg.photo.length - 1].file_id; fileSize = msg.photo[msg.photo.length - 1].file_size; fileName = "photo.jpg";
-      } else if (msg.video_note) {
-        mediaType = "video_note"; fileId = msg.video_note.file_id; fileSize = msg.video_note.file_size; fileName = "video_note.mp4"; duration = msg.video_note.duration || 0;
-        const th = msg.video_note.thumbnail || msg.video_note.thumb;
-        if (th) thumbId = th.file_id;
       } else if (msg.video) {
         mediaType = "video"; fileId = msg.video.file_id; fileSize = msg.video.file_size; fileName = msg.video.file_name || "video.mp4"; duration = msg.video.duration || 0;
         const th = msg.video.thumbnail || msg.video.thumb;
@@ -765,9 +740,20 @@ async function handleTelegramUpdate(update, env, ctx) {
 
       if (text || mediaType) {
         await env.DB.prepare(`
-          INSERT INTO messages (id, sender_id, sender_name, text, is_from_telegram, timestamp, reply_to_name, reply_to_text, reply_to_id, tg_msg_id, is_read, read_at, is_edited, media_type, media_file_id, media_file_name, media_file_size, media_thumb_id, media_duration, reactions)
-          VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?, ?, ?, ?, '{}')
-        `).bind(msgId, msg.from.id.toString(), senderName, text, timestamp, replyToName, replyToText, replyToId, msg.message_id, mediaType, fileId, fileName, fileSize, thumbId, duration).run();
+          INSERT INTO messages (
+            id, sender_id, sender_name, text, is_from_telegram, timestamp,
+            reply_to_name, reply_to_text, reply_to_id, tg_msg_id,
+            is_read, read_at, is_edited, media_type, media_file_id, media_file_name,
+            media_file_size, media_thumb_id, media_duration, reactions,
+            forward_from_name, forward_channel_username, forward_post_id, forward_chat_id, media_group_id
+          )
+          VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+        `).bind(
+          msgId, msg.from.id.toString(), senderName, text, timestamp,
+          replyToName, replyToText, replyToId, msg.message_id,
+          mediaType, fileId, fileName, fileSize, thumbId, duration,
+          forwardFromName, forwardChannelUsername, forwardPostId, forwardChatId, mediaGroupId
+        ).run();
 
         const roomId = env.CHAT_ROOM.idFromName("global_room");
         await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
@@ -779,16 +765,19 @@ async function handleTelegramUpdate(update, env, ctx) {
               timestamp, reply_to_name: replyToName, reply_to_text: replyToText, reply_to_id: replyToId,
               tg_msg_id: msg.message_id, is_read: 0, read_at: null, is_edited: 0, media_type: mediaType,
               media_file_id: fileId, media_file_name: fileName, media_file_size: fileSize, media_thumb_id: thumbId,
-              media_duration: duration, reactions: "{}"
+              media_duration: duration, reactions: "{}",
+              forward_from_name: forwardFromName,
+              forward_channel_username: forwardChannelUsername,
+              forward_post_id: forwardPostId,
+              forward_chat_id: forwardChatId,
+              media_group_id: mediaGroupId
             }
           })
         });
 
-        // وب‌پوش
         let pushBody = text;
         if (!pushBody) {
           if (mediaType === "voice") pushBody = "🎤 [پیام صوتی]";
-          else if (mediaType === "video_note") pushBody = "⭕ [ویدیو مسیج]";
           else pushBody = mediaType ? `[ارسال ${mediaType}]` : "پیام جدید";
         }
 
@@ -1005,7 +994,7 @@ export class ChatRoom extends DurableObject {
           const tgBody = { chat_id: this.env.TELEGRAM_GROUP_ID, text: caption, parse_mode: "HTML" };
           if (replyTgId) tgBody.reply_parameters = { message_id: replyTgId };
 
-          await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(tgBody)
           });
         } catch (err) {}

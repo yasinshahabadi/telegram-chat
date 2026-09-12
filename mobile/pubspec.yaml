@@ -12,12 +12,17 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  # شبکه، سوکت و پروتکل‌ها
+  # شبکه، سوکت و اینترنت
   http: ^1.2.2
   http_parser: ^4.1.2
   web_socket_channel: ^3.0.1
   url_launcher: ^6.3.0
   cached_network_image: ^3.4.1
+  connectivity_plus: ^6.1.0
+
+  # آپدیت درون‌برنامه‌ای و نصب APK
+  open_filex: ^4.5.0
+  package_info_plus: ^8.1.0
 
   # مالتی‌مدیا و ضبط صدا
   record: ^5.2.0

@@ -1,4 +1,4 @@
-gradle.startParameter.isOffline = true
+// gradle.startParameter.isOffline = true
 pluginManagement {
     val flutterSdkPath =
         run {
