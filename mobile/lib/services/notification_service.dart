@@ -5,6 +5,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import '../config.dart';
+import 'cache_service.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -53,20 +54,10 @@ class NotificationService {
     }
   }
 
-  // دانلود موقت آواتار فرستنده جهت قرار گرفتن در دایره نوتیفیکیشن
+  // دریافت آواتار فرستنده از سرویس کش پایدار
   Future<String?> _downloadAvatar(String? userId) async {
     if (userId == null || userId.isEmpty) return null;
-    try {
-      final res = await http.get(Uri.parse("${AppConfig.baseUrl}/api/avatar?userId=$userId"));
-      if (res.statusCode == 200) {
-        final dir = await getTemporaryDirectory();
-        final filePath = "${dir.path}/avatar_$userId.jpg";
-        final file = File(filePath);
-        await file.writeAsBytes(res.bodyBytes);
-        return filePath;
-      }
-    } catch (_) {}
-    return null;
+    return await CacheService.getOrFetchAvatar(userId);
   }
 
   // پاک کردن تاریخچه پیام‌های اعلان هنگام ورود به برنامه

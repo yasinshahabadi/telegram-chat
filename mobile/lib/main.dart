@@ -28,6 +28,8 @@ import 'models/chat_message.dart';
 import 'services/notification_service.dart';
 import 'services/foreground_service.dart';
 import 'services/update_service.dart';
+import 'services/cache_service.dart';
+import 'screens/settings_screen.dart';
 
 class ProgressMultipartRequest extends http.MultipartRequest {
   final void Function(int bytesSent, int totalBytes)? onProgress;
@@ -128,6 +130,8 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
   final FocusNode _msgFocusNode = FocusNode();
 
   bool _hasTextContent = false;
+  String? _floatingHintText;
+  Timer? _floatingHintTimer;
 
   bool _isUploading = false;
   double _uploadProgress = 0.0;
@@ -206,7 +210,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
       }
     });
 
-    // بررسی هوشمند روشن شدن اینترنت و اتصال مجدد
     _connectivitySubscription = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       final bool hasNet = results.any((r) => r != ConnectivityResult.none);
       if (hasNet && _currentUser != null) {
@@ -245,7 +248,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     ForegroundServiceManager.setAppLifecycle(_isAppResumed);
 
     if (_isAppResumed) {
-      // پاک کردن اعلان‌های قبلی از نوار اعلان‌ها به محض باز شدن برنامه
       NotificationService().clearNotificationHistory();
       _sendPresence(true);
       _fetchLatestMessages();
@@ -261,6 +263,152 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         "type": "presence",
         "status": isOnline ? "online" : "offline"
       }));
+    }
+  }
+
+  Future<void> _initApp() async {
+    final cached = await CacheService.getCachedMessages();
+    if (cached.isNotEmpty) {
+      setState(() {
+        _messages.clear();
+        _seenMessageIds.clear();
+        for (var m in cached) {
+          _seenMessageIds.add(m.id);
+          _messages.add(m);
+        }
+        _isLoading = false;
+      });
+      _scrollToBottom();
+    }
+
+    CacheService.pruneOldCache();
+
+    final prefs = await SharedPreferences.getInstance();
+    _sessionToken = prefs.getString('chat_token');
+    if (_sessionToken == null) {
+      _sessionToken = const Uuid().v4().replaceAll('-', '');
+      await prefs.setString('chat_token', _sessionToken!);
+    }
+
+    _fingerprint = prefs.getString('fingerprint');
+    if (_fingerprint == null) {
+      final deviceInfo = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final androidInfo = await deviceInfo.androidInfo;
+        _fingerprint = "DEVICE_${androidInfo.model}_${androidInfo.id}".replaceAll(" ", "_");
+      } else {
+        _fingerprint = "DEVICE_${const Uuid().v4().substring(0, 8)}";
+      }
+      await prefs.setString('fingerprint', _fingerprint!);
+    }
+
+    await _checkAuthStatus();
+    _checkForAppUpdate();
+  }
+
+  Future<void> _checkAuthStatus() async {
+    try {
+      final response = await http.post(
+        Uri.parse("${AppConfig.baseUrl}/api/auth/verify-device"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "sessionToken": _sessionToken,
+          "fingerprint": _fingerprint,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (data['status'] == 'ok') {
+        _authPollTimer?.cancel();
+        setState(() {
+          _currentUser = data['user'];
+          _isLoading = false;
+          _avatarCacheBuster = DateTime.now().millisecondsSinceEpoch;
+        });
+
+        ForegroundServiceManager.start(
+          userName: data['user']['full_name'] ?? 'کاربر',
+          userId: data['user']['id'],
+          tgId: data['user']['telegram_id']?.toString(),
+        );
+
+        _connectWebSocket();
+        _fetchInitialMessages();
+        _startPolling();
+      } else if (data['status'] == 'pending') {
+        setState(() {
+          _isLoading = false;
+          _statusMessage = "درخواست شما ثبت شده و در انتظار تایید مدیر در تلگرام است...";
+        });
+      } else {
+        setState(() {
+          _isLoading = false;
+          _statusMessage = "جهت استفاده از برنامه، وارد حساب تلگرام شوید.";
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _statusMessage = "خطا در اتصال به سرور. آدرس دامنه در config.dart را بررسی کنید.";
+      });
+    }
+  }
+
+  void _openTelegramLogin() async {
+    final Uri tgAppUri = Uri.parse("tg://resolve?domain=${AppConfig.botUsername}&start=auth_$_sessionToken");
+    final Uri webUri = Uri.parse("https://t.me/${AppConfig.botUsername}?start=auth_$_sessionToken");
+
+    try {
+      if (await canLaunchUrl(tgAppUri)) {
+        await launchUrl(tgAppUri, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(webUri, mode: LaunchMode.externalApplication);
+      }
+      _authPollTimer?.cancel();
+      _authPollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _checkAuthStatus());
+    } catch (_) {
+      await launchUrl(webUri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  void _logout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF182533),
+        title: const Text("خروج از حساب", style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: const Text("آیا مطمئن هستید که می‌خواهید خارج شوید؟", style: TextStyle(color: Colors.grey)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("انصراف")),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("خروج", style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await http.post(
+          Uri.parse("${AppConfig.baseUrl}/api/auth/logout"),
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({"sessionToken": _sessionToken}),
+        );
+      } catch (_) {}
+
+      ForegroundServiceManager.stop();
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('chat_token');
+      _wsChannel?.sink.close();
+      setState(() {
+        _currentUser = null;
+        _messages.clear();
+        _statusMessage = "خارج شدید.";
+      });
+      _initApp();
     }
   }
 
@@ -369,6 +517,844 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
         }
       },
     );
+  }
+
+  void _connectWebSocket() {
+    try {
+      _wsChannel = WebSocketChannel.connect(Uri.parse(AppConfig.wsUrl));
+
+      _wsChannel!.stream.listen((message) {
+        final data = jsonDecode(message);
+        _handleWsEvent(data);
+      }, onDone: () {
+        if (mounted) {
+          setState(() => _isConnected = false);
+          Future.delayed(const Duration(seconds: 3), () {
+            if (_currentUser != null) _connectWebSocket();
+          });
+        }
+      }, onError: (_) {
+        if (mounted) setState(() => _isConnected = false);
+      });
+
+      _wsChannel!.sink.add(jsonEncode({
+        "type": "identify",
+        "userName": _currentUser?['full_name'] ?? 'کاربر',
+        "userId": _currentUser?['id'],
+        "tgId": _currentUser?['telegram_id'],
+        "isOnline": _isAppResumed
+      }));
+
+      _pingTimer?.cancel();
+      _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+        if (_wsChannel != null && _isConnected) {
+          _wsChannel!.sink.add(jsonEncode({"type": "presence", "status": _isAppResumed ? "online" : "offline"}));
+        }
+      });
+
+      setState(() => _isConnected = true);
+    } catch (_) {
+      setState(() => _isConnected = false);
+    }
+  }
+
+  void _handleWsEvent(Map<String, dynamic> data) {
+    final type = data['type'];
+    final myName = _currentUser?['full_name'] ?? '';
+
+    if (type == 'new_message' && data['message'] != null) {
+      final msg = ChatMessage.fromJson(data['message']);
+      if (!_seenMessageIds.contains(msg.id)) {
+        _seenMessageIds.add(msg.id);
+        setState(() {
+          _messages.add(msg);
+        });
+        _scrollToBottom();
+        CacheService.saveMessages(_messages);
+
+        if (msg.timestamp > 0) {
+          ForegroundServiceManager.syncLastMessageTime(msg.timestamp);
+        }
+
+        if (_isAppResumed && msg.senderName != myName) {
+          _markAsRead([msg.id]);
+        } else if (!_isAppResumed && msg.senderName != myName) {
+          String notifBody = msg.text;
+          if (notifBody.isEmpty) {
+            if (msg.mediaType == 'photo') notifBody = '📷 [تصویر]';
+            else if (msg.mediaType == 'video') notifBody = '📹 [ویدیو]';
+            else if (msg.mediaType == 'voice') notifBody = '🎤 [پیام صوتی]';
+            else if (msg.mediaType == 'audio') notifBody = '🎵 [موزیک]';
+            else notifBody = '📁 [فایل]';
+          }
+
+          final title = msg.isFromTelegram ? "📱 تلگرام: ${msg.senderName}" : "🌐 وب: ${msg.senderName}";
+
+          NotificationService().showMessageNotification(
+            senderName: msg.senderName,
+            body: notifBody,
+            senderId: msg.isFromTelegram ? msg.senderId : null,
+            messageId: msg.id,
+            timestamp: msg.timestamp,
+          );
+        }
+      }
+    } else if (type == 'messages_read' && data['messageIds'] != null) {
+      final List ids = data['messageIds'];
+      final int? readAtTime = data['readAt'];
+      setState(() {
+        for (var m in _messages) {
+          if (ids.contains(m.id)) {
+            m.isRead = 1;
+            if (readAtTime != null) m.readAt = readAtTime;
+          }
+        }
+      });
+      CacheService.saveMessages(_messages);
+    } else if (type == 'reaction_updated') {
+      final msgId = data['messageId'];
+      dynamic rx = data['reactions'];
+      if (rx is String) {
+        try {
+          rx = jsonDecode(rx);
+        } catch (_) {}
+      }
+      setState(() {
+        final idx = _messages.indexWhere((m) => m.id == msgId);
+        if (idx != -1 && rx is Map) {
+          Map<String, List<String>> newRx = {};
+          rx.forEach((k, v) {
+            if (v is List) newRx[k.toString()] = v.map((e) => e.toString()).toList();
+          });
+          _messages[idx].reactions = newRx;
+        }
+      });
+      CacheService.saveMessages(_messages);
+    } else if (type == 'message_edited') {
+      final msgId = data['messageId'];
+      final newText = data['text'] ?? '';
+      setState(() {
+        final idx = _messages.indexWhere((m) => m.id == msgId);
+        if (idx != -1) {
+          _messages[idx].text = newText;
+          _messages[idx].isEdited = true;
+        }
+      });
+      CacheService.saveMessages(_messages);
+    } else if (type == 'message_pinned' && data['message'] != null) {
+      setState(() {
+        _pinnedMessage = ChatMessage.fromJson(data['message']);
+      });
+    } else if (type == 'message_unpinned') {
+      setState(() {
+        _pinnedMessage = null;
+      });
+    } else if (type == 'online_users') {
+      final List users = data['users'] ?? [];
+      setState(() {
+        _onlineUsersCount = users.length;
+      });
+    } else if (type == 'typing') {
+      final name = data['userName'] ?? 'شخصی';
+      setState(() {
+        _typingStatus = "$name در حال نوشتن...";
+      });
+      _typingTimer?.cancel();
+      _typingTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) setState(() => _typingStatus = null);
+      });
+    }
+  }
+
+  void _markAsRead(List<String> ids) {
+    if (_wsChannel != null && _isConnected && ids.isNotEmpty && _isAppResumed) {
+      _wsChannel!.sink.add(jsonEncode({
+        "type": "mark_read",
+        "messageIds": ids,
+      }));
+    }
+  }
+
+  void _markVisibleUnreadMessages() {
+    if (!_isAppResumed) return;
+    final myName = _currentUser?['full_name'] ?? '';
+    final unreadIds = _messages
+        .where((m) => m.isRead == 0 && m.senderName != myName)
+        .map((m) => m.id)
+        .toList();
+    if (unreadIds.isNotEmpty) {
+      _markAsRead(unreadIds);
+    }
+  }
+
+  Future<void> _fetchInitialMessages() async {
+    try {
+      final res = await http.get(Uri.parse("${AppConfig.baseUrl}/api/messages?limit=40"));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final List list = data['messages'] ?? [];
+        if (data['pinned'] != null) {
+          _pinnedMessage = ChatMessage.fromJson(data['pinned']);
+        }
+        _messages.clear();
+        _seenMessageIds.clear();
+        for (var item in list) {
+          final m = ChatMessage.fromJson(item);
+          _seenMessageIds.add(m.id);
+          _messages.add(m);
+        }
+        setState(() {});
+        _scrollToBottom();
+        _markVisibleUnreadMessages();
+
+        CacheService.saveMessages(_messages);
+
+        if (_messages.isNotEmpty) {
+          ForegroundServiceManager.syncLastMessageTime(_messages.last.timestamp);
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _startPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 4), (_) => _fetchLatestMessages());
+  }
+
+  Future<void> _fetchLatestMessages() async {
+    if (_messages.isEmpty) return;
+    final lastTime = _messages.last.timestamp;
+    try {
+      final res = await http.get(Uri.parse("${AppConfig.baseUrl}/api/messages?since=$lastTime"));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final List list = data['messages'] ?? [];
+        bool added = false;
+        for (var item in list) {
+          final m = ChatMessage.fromJson(item);
+          if (!_seenMessageIds.contains(m.id)) {
+            _seenMessageIds.add(m.id);
+            _messages.add(m);
+            added = true;
+
+            if (!_isAppResumed) {
+              final myName = _currentUser?['full_name'] ?? '';
+              if (m.senderName != myName) {
+                NotificationService().showMessageNotification(
+                  senderName: m.senderName,
+                  body: m.text.isNotEmpty ? m.text : "[فایل رسانه]",
+                  senderId: m.isFromTelegram ? m.senderId : null,
+                  messageId: m.id,
+                  timestamp: m.timestamp,
+                );
+              }
+            }
+          }
+        }
+        if (added) {
+          setState(() {});
+          _scrollToBottom();
+          _markVisibleUnreadMessages();
+          CacheService.saveMessages(_messages);
+          ForegroundServiceManager.syncLastMessageTime(_messages.last.timestamp);
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _sendMessage() async {
+    final text = _msgController.text.trim();
+
+    if (_editingMessage != null) {
+      if (text.isEmpty) return;
+      _wsChannel?.sink.add(jsonEncode({
+        "type": "edit_message",
+        "messageId": _editingMessage!.id,
+        "newText": text,
+      }));
+      setState(() => _editingMessage = null);
+      _msgController.clear();
+      return;
+    }
+
+    if (_selectedAttachment != null) {
+      final fileToSend = _selectedAttachment!;
+      setState(() {
+        _selectedAttachment = null;
+        _replyTarget = null;
+      });
+      _msgController.clear();
+      _uploadMedia(file: fileToSend, caption: text);
+      return;
+    }
+
+    if (text.isEmpty || _wsChannel == null) return;
+
+    Map<String, dynamic>? replyData;
+    if (_replyTarget != null) {
+      replyData = {
+        "id": _replyTarget!.id,
+        "name": _replyTarget!.senderName,
+        "text": _replyTarget!.text.isNotEmpty ? _replyTarget!.text : (_replyTarget!.mediaType ?? 'مدیا'),
+        "tgMsgId": _replyTarget!.tgMsgId,
+      };
+    }
+
+    _wsChannel!.sink.add(jsonEncode({
+      "type": "chat_message",
+      "text": text,
+      "replyTo": replyData,
+    }));
+
+    _msgController.clear();
+    setState(() => _replyTarget = null);
+  }
+
+  Future<void> _pickAttachment() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'png', 'jpeg', 'webp', 'mp4', 'mov', 'mp3', 'ogg', 'm4a', 'pdf', 'zip', 'doc', 'docx'],
+    );
+
+    if (result != null && result.files.single.path != null) {
+      final file = File(result.files.single.path!);
+      final length = await file.length();
+      if (length > 20 * 1024 * 1024) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("حجم فایل نباید بیش از ۲۰ مگابایت باشد")),
+          );
+        }
+        return;
+      }
+      setState(() {
+        _selectedAttachment = file;
+      });
+    }
+  }
+
+  MediaType _resolveMediaType(String path, {String? customType}) {
+    if (customType == "voice") return MediaType('audio', 'm4a');
+
+    final ext = path.split('.').last.toLowerCase();
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return MediaType('image', 'jpeg');
+      case 'png':
+        return MediaType('image', 'png');
+      case 'webp':
+        return MediaType('image', 'webp');
+      case 'mp4':
+        return MediaType('video', 'mp4');
+      case 'mov':
+        return MediaType('video', 'quicktime');
+      case 'mp3':
+        return MediaType('audio', 'mpeg');
+      case 'ogg':
+        return MediaType('audio', 'ogg');
+      case 'm4a':
+        return MediaType('audio', 'mp4');
+      default:
+        return MediaType('application', 'octet-stream');
+    }
+  }
+
+  Future<void> _uploadMedia({required File file, String caption = '', String? customType}) async {
+    try {
+      final fileSize = await file.length();
+      if (fileSize > 20 * 1024 * 1024) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("حجم فایل بیش از ۲۰ مگابایت است و ارسال نشد")),
+          );
+        }
+        return;
+      }
+
+      setState(() {
+        _isUploading = true;
+        _uploadProgress = 0.0;
+        _uploadBytesSent = 0;
+        _uploadTotalBytes = fileSize;
+      });
+
+      final uri = Uri.parse("${AppConfig.baseUrl}/api/upload");
+      final request = ProgressMultipartRequest(
+        "POST",
+        uri,
+        onProgress: (bytesSent, totalBytes) {
+          if (mounted) {
+            setState(() {
+              _uploadBytesSent = bytesSent;
+              _uploadTotalBytes = totalBytes;
+              if (totalBytes > 0) {
+                _uploadProgress = (bytesSent / totalBytes).clamp(0.0, 1.0);
+              }
+            });
+          }
+        },
+      );
+
+      request.fields['sessionToken'] = _sessionToken ?? '';
+      request.fields['caption'] = caption;
+      if (customType != null) {
+        request.fields['mediaType'] = customType;
+      }
+
+      if (_replyTarget != null) {
+        request.fields['replyTo'] = jsonEncode({
+          "id": _replyTarget!.id,
+          "name": _replyTarget!.senderName,
+          "text": _replyTarget!.text.isNotEmpty ? _replyTarget!.text : (_replyTarget!.mediaType ?? 'مدیا'),
+          "tgMsgId": _replyTarget!.tgMsgId,
+        });
+      }
+
+      final mime = _resolveMediaType(file.path, customType: customType);
+      request.files.add(await http.MultipartFile.fromPath(
+        'file',
+        file.path,
+        contentType: mime,
+      ));
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode != 200) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("خطا در ارسال مدیا: ${response.statusCode}")),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("خطای شبکه در آپلود فایل")),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          _uploadProgress = 0.0;
+        });
+      }
+    }
+  }
+
+  Future<void> _startRecordingAudio() async {
+    if (await _audioRecorder.hasPermission()) {
+      _triggerVibration(duration: 40);
+      final dir = await getTemporaryDirectory();
+      final filePath = '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+
+      await _audioRecorder.start(
+        const RecordConfig(encoder: AudioEncoder.aacLc),
+        path: filePath,
+      );
+
+      setState(() {
+        _isRecordingAudio = true;
+        _isRecordingAudioLocked = false;
+        _audioRecordSeconds = 0;
+      });
+
+      _audioRecordTimer?.cancel();
+      _audioRecordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _audioRecordSeconds++);
+      });
+    }
+  }
+
+  Future<void> _stopRecordingAudio({bool cancel = false}) async {
+    _audioRecordTimer?.cancel();
+    final path = await _audioRecorder.stop();
+    if (mounted) {
+      setState(() {
+        _isRecordingAudio = false;
+        _isRecordingAudioLocked = false;
+      });
+    }
+
+    if (!cancel && path != null) {
+      _triggerVibration(duration: 50);
+      await _uploadMedia(file: File(path), customType: "voice");
+    } else if (path != null) {
+      try { File(path).deleteSync(); } catch (_) {}
+    }
+  }
+
+  Future<void> _toggleAudioPlay(ChatMessage msg) async {
+    final audioSourceUrl = _localMediaPaths[msg.id] ?? msg.mediaUrl;
+    if (audioSourceUrl == null) return;
+
+    if (_currentlyPlayingMsgId == msg.id && _playerState == PlayerState.playing) {
+      await _audioPlayer.pause();
+    } else {
+      _triggerVibration(duration: 30);
+      _currentlyPlayingMsgId = msg.id;
+
+      try {
+        if (_localMediaPaths.containsKey(msg.id)) {
+          await _audioPlayer.play(DeviceFileSource(_localMediaPaths[msg.id]!));
+        } else {
+          await _audioPlayer.play(UrlSource(msg.mediaUrl!));
+        }
+      } catch (_) {
+        _startDownloadingMedia(msg).then((_) {
+          if (_localMediaPaths.containsKey(msg.id)) {
+            _audioPlayer.play(DeviceFileSource(_localMediaPaths[msg.id]!));
+          }
+        });
+      }
+    }
+  }
+
+  void _toggleReaction(String messageId, String emoji) {
+    _triggerVibration(duration: 40);
+    if (_wsChannel != null && _isConnected) {
+      _wsChannel!.sink.add(jsonEncode({
+        "type": "toggle_reaction",
+        "messageId": messageId,
+        "emoji": emoji,
+      }));
+    }
+  }
+
+  void _showContextMenu(ChatMessage msg) {
+    _triggerVibration(duration: 60);
+    final myName = _currentUser?['full_name'] ?? '';
+    final isMe = msg.senderName == myName;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        margin: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF182533),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Colors.white10)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: ['❤️', '👍', '👎', '🔥', '🥰', '👏', '😁'].map((emoji) {
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _toggleReaction(msg.id, emoji);
+                    },
+                    child: Text(emoji, style: const TextStyle(fontSize: 26)),
+                  );
+                }).toList(),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  Text(
+                    msg.isRead == 1
+                        ? "✓✓ خوانده شده در ${msg.formattedReadTime}"
+                        : "✓ ارسال شده (در انتظار خوانده شدن)",
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: msg.isRead == 1 ? const Color(0xFF50A2E9) : Colors.grey,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: Colors.white10),
+            ListTile(
+              leading: const Icon(Icons.reply_rounded, color: Color(0xFF50A2E9)),
+              title: const Text("پاسخ (Reply)", style: TextStyle(fontSize: 14)),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _replyTarget = msg;
+                  _editingMessage = null;
+                });
+              },
+            ),
+
+            if (msg.text.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.copy_rounded, color: Color(0xFF50A2E9)),
+                title: const Text("کپی کردن (Copy)", style: TextStyle(fontSize: 14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Clipboard.setData(ClipboardData(text: msg.text));
+                  _triggerVibration(duration: 35);
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      duration: Duration(seconds: 1),
+                      backgroundColor: Color(0xFF182533),
+                      content: Text("متن پیام کپی شد", style: TextStyle(color: Colors.white, fontSize: 12)),
+                    ),
+                  );
+                },
+              ),
+
+            if (isMe && msg.mediaType == null)
+              ListTile(
+                leading: const Icon(Icons.edit_rounded, color: Colors.amber),
+                title: const Text("ویرایش (Edit)", style: TextStyle(fontSize: 14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  setState(() {
+                    _editingMessage = msg;
+                    _replyTarget = null;
+                    _msgController.text = msg.text;
+                  });
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.push_pin_rounded, color: Colors.orangeAccent),
+              title: const Text("سنجاق کردن (Pin)", style: TextStyle(fontSize: 14)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _wsChannel?.sink.add(jsonEncode({
+                  "type": "pin_message",
+                  "messageId": msg.id,
+                }));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _scrollToMessage(String targetId) {
+    final cleanId = targetId.startsWith('tg_') ? targetId.replaceFirst('tg_', '') : targetId;
+    final index = _messages.indexWhere((m) => m.id == cleanId || m.tgMsgId?.toString() == cleanId);
+
+    if (index == -1) return;
+
+    final foundMsgId = _messages[index].id;
+
+    if (_scrollController.hasClients) {
+      final targetOffset = (index / _messages.length) * _scrollController.position.maxScrollExtent;
+      _scrollController.animateTo(
+        targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOutCubic,
+      ).then((_) {
+        _triggerVibration(duration: 50);
+        setState(() => _highlightedMessageId = foundMsgId);
+        Timer(const Duration(milliseconds: 1800), () {
+          if (mounted) setState(() => _highlightedMessageId = null);
+        });
+      });
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _startDownloadingMedia(ChatMessage msg) async {
+    if (msg.mediaUrl == null) return;
+    final client = http.Client();
+    _activeClients[msg.id] = client;
+
+    setState(() {
+      _downloadingMediaIds.add(msg.id);
+      _downloadProgress[msg.id] = 0.0;
+      _downloadedBytes[msg.id] = 0;
+    });
+
+    try {
+      final request = http.Request('GET', Uri.parse(msg.mediaUrl!));
+      final response = await client.send(request);
+
+      final totalBytes = response.contentLength ?? (msg.mediaFileSize ?? 0);
+      List<int> bytes = [];
+
+      await for (var chunk in response.stream) {
+        bytes.addAll(chunk);
+        setState(() {
+          _downloadedBytes[msg.id] = bytes.length;
+          if (totalBytes > 0) {
+            _downloadProgress[msg.id] = (bytes.length / totalBytes).clamp(0.0, 1.0);
+          }
+        });
+      }
+
+      String ext = 'bin';
+      if (msg.mediaType == 'video') ext = 'mp4';
+      else if (msg.mediaType == 'photo') ext = 'jpg';
+      else if (msg.mediaType == 'voice') ext = 'm4a';
+      else if (msg.mediaType == 'audio') ext = 'mp3';
+
+      final savedPath = await CacheService.saveMediaToCache(msg.id, bytes, ext);
+
+      if (savedPath != null) {
+        setState(() {
+          _localMediaPaths[msg.id] = savedPath;
+          _downloadingMediaIds.remove(msg.id);
+          _downloadedMediaIds.add(msg.id);
+          _activeClients.remove(msg.id);
+        });
+      }
+
+      _triggerVibration(duration: 45);
+    } catch (_) {
+      setState(() {
+        _downloadingMediaIds.remove(msg.id);
+        _activeClients.remove(msg.id);
+      });
+    }
+  }
+
+  void _cancelDownload(String msgId) {
+    _activeClients[msgId]?.close();
+    _activeClients.remove(msgId);
+    setState(() {
+      _downloadingMediaIds.remove(msgId);
+      _downloadProgress.remove(msgId);
+      _downloadedBytes.remove(msgId);
+    });
+  }
+
+  void _openLightbox({String? url, String? localPath, required String fileName}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black87,
+            title: Text(fileName, style: const TextStyle(fontSize: 14)),
+            actions: [
+              if (url != null)
+                IconButton(
+                  icon: const Icon(Icons.download_rounded),
+                  onPressed: () {
+                    launchUrl(
+                      Uri.parse("$url&download=1&name=${Uri.encodeComponent(fileName)}"),
+                      mode: LaunchMode.externalApplication,
+                    );
+                  },
+                ),
+            ],
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: localPath != null
+                  ? Image.file(File(localPath), fit: BoxFit.contain)
+                  : CachedNetworkImage(
+                      imageUrl: url!,
+                      fit: BoxFit.contain,
+                      placeholder: (_, __) => const Center(child: CircularProgressIndicator(color: Color(0xFF50A2E9))),
+                      errorWidget: (_, __, ___) => const Icon(Icons.broken_image, size: 60, color: Colors.grey),
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openVideoPlayer({String? videoUrl, String? localPath, required String fileName}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerModal(
+          videoUrl: videoUrl,
+          localPath: localPath,
+          fileName: fileName,
+        ),
+      ),
+    );
+  }
+
+  static Future<void> openLinkOrUsername(String input, {int? postId}) async {
+    String url = input.trim();
+    if (url.startsWith('@')) {
+      final username = url.substring(1);
+      final tgUri = Uri.parse(postId != null
+          ? "tg://resolve?domain=$username&post=$postId"
+          : "tg://resolve?domain=$username");
+      final webUri = Uri.parse(postId != null
+          ? "https://t.me/$username/$postId"
+          : "https://t.me/$username");
+
+      if (await canLaunchUrl(tgUri)) {
+        await launchUrl(tgUri, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(webUri, mode: LaunchMode.externalApplication);
+      }
+      return;
+    }
+
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'https://$url';
+    }
+
+    final uri = Uri.tryParse(url);
+    if (uri != null) {
+      if (uri.host == 't.me' || uri.host == 'telegram.me') {
+        final segments = uri.pathSegments;
+        if (segments.isNotEmpty) {
+          final domain = segments[0];
+          final pId = segments.length > 1 ? segments[1] : null;
+          final tgUri = Uri.parse(pId != null
+              ? "tg://resolve?domain=$domain&post=$pId"
+              : "tg://resolve?domain=$domain");
+          if (await canLaunchUrl(tgUri)) {
+            await launchUrl(tgUri, mode: LaunchMode.externalApplication);
+            return;
+          }
+        }
+      }
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  Color _getUserColor(String name) {
+    var hash = 0;
+    for (var i = 0; i < name.length; i++) {
+      hash = name.codeUnitAt(i) + ((hash << 5) - hash);
+    }
+    return tgColors[hash.abs() % tgColors.length];
+  }
+
+  void _triggerVibration({int duration = 50}) {
+    try {
+      _vibrateChannel.invokeMethod('vibrate', {'duration': duration});
+    } catch (_) {
+      HapticFeedback.vibrate();
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   @override
@@ -482,6 +1468,27 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, color: Colors.white70),
+            tooltip: "تنظیمات و حافظه",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SettingsScreen(
+                    currentUser: _currentUser!,
+                    onClearCache: () {
+                      setState(() {
+                        _downloadedMediaIds.clear();
+                        _localMediaPaths.clear();
+                        _avatarCacheBuster = DateTime.now().millisecondsSinceEpoch;
+                      });
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.power_settings_new_rounded, color: Colors.grey),
             tooltip: "خروج",
@@ -877,6 +1884,136 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildTelegramFormattedText(String fullText) {
+    if (fullText.trim().isEmpty) return const SizedBox.shrink();
+
+    final lines = fullText.split('\n');
+    List<Widget> textWidgets = [];
+    List<String> currentQuote = [];
+    List<String> currentRegular = [];
+
+    void flushRegular() {
+      if (currentRegular.isNotEmpty) {
+        textWidgets.add(_buildRichTextSpans(currentRegular.join('\n')));
+        currentRegular.clear();
+      }
+    }
+
+    void flushQuote() {
+      if (currentQuote.isNotEmpty) {
+        final quoteText = currentQuote.join('\n');
+        textWidgets.add(
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF50A2E9).withOpacity(0.16),
+              borderRadius: BorderRadius.circular(8),
+              border: const Border(
+                right: BorderSide(color: Color(0xFF50A2E9), width: 3.5),
+              ),
+            ),
+            child: Stack(
+              children: [
+                _buildRichTextSpans(quoteText, isQuote: true),
+                const Positioned(
+                  left: 0,
+                  bottom: -2,
+                  child: Text(
+                    "”",
+                    style: TextStyle(color: Color(0xFF50A2E9), fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+        currentQuote.clear();
+      }
+    }
+
+    for (var line in lines) {
+      if (line.trim().startsWith('>')) {
+        flushRegular();
+        currentQuote.add(line.trim().substring(1).trim());
+      } else if (line.trim().startsWith('«') && line.trim().endsWith('»')) {
+        flushRegular();
+        currentQuote.add(line.trim());
+      } else {
+        flushQuote();
+        currentRegular.add(line);
+      }
+    }
+    flushRegular();
+    flushQuote();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: textWidgets,
+    );
+  }
+
+  Widget _buildRichTextSpans(String text, {bool isQuote = false}) {
+    final RegExp linkExp = RegExp(
+      r'(@[a-zA-Z0-9_]{3,32})|((https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(\/[^\s]*)?)',
+      caseSensitive: false,
+    );
+
+    List<TextSpan> spans = [];
+    int lastMatchEnd = 0;
+
+    for (final Match match in linkExp.allMatches(text)) {
+      if (match.start > lastMatchEnd) {
+        spans.add(TextSpan(
+          text: text.substring(lastMatchEnd, match.start),
+          style: TextStyle(
+            fontSize: isQuote ? 13 : 14,
+            color: isQuote ? Colors.white70 : Colors.white,
+            height: 1.38,
+          ),
+        ));
+      }
+
+      final String matchedText = match.group(0)!;
+      spans.add(
+        TextSpan(
+          text: matchedText,
+          style: TextStyle(
+            fontSize: isQuote ? 13 : 14,
+            color: const Color(0xFF50A2E9),
+            fontWeight: FontWeight.bold,
+            decoration: TextDecoration.underline,
+            decorationColor: const Color(0xFF50A2E9),
+            height: 1.38,
+          ),
+          recognizer: TapGestureRecognizer()
+            ..onTap = () {
+              _triggerVibration(duration: 25);
+              openLinkOrUsername(matchedText);
+            },
+        ),
+      );
+
+      lastMatchEnd = match.end;
+    }
+
+    if (lastMatchEnd < text.length) {
+      spans.add(TextSpan(
+        text: text.substring(lastMatchEnd),
+        style: TextStyle(
+          fontSize: isQuote ? 13 : 14,
+          color: isQuote ? Colors.white70 : Colors.white,
+          height: 1.38,
+        ),
+      ));
+    }
+
+    return SelectableText.rich(
+      TextSpan(children: spans),
+      style: const TextStyle(fontFamily: 'Roboto'),
     );
   }
 
@@ -1550,1105 +2687,6 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> with WidgetsBindingObse
     }
 
     return const SizedBox.shrink();
-  }
-
-  Widget _buildTelegramFormattedText(String fullText) {
-    if (fullText.trim().isEmpty) return const SizedBox.shrink();
-
-    final lines = fullText.split('\n');
-    List<Widget> textWidgets = [];
-    List<String> currentQuote = [];
-    List<String> currentRegular = [];
-
-    void flushRegular() {
-      if (currentRegular.isNotEmpty) {
-        textWidgets.add(_buildRichTextSpans(currentRegular.join('\n')));
-        currentRegular.clear();
-      }
-    }
-
-    void flushQuote() {
-      if (currentQuote.isNotEmpty) {
-        final quoteText = currentQuote.join('\n');
-        textWidgets.add(
-          Container(
-            margin: const EdgeInsets.symmetric(vertical: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF50A2E9).withOpacity(0.16),
-              borderRadius: BorderRadius.circular(8),
-              border: const Border(
-                right: BorderSide(color: Color(0xFF50A2E9), width: 3.5),
-              ),
-            ),
-            child: Stack(
-              children: [
-                _buildRichTextSpans(quoteText, isQuote: true),
-                const Positioned(
-                  left: 0,
-                  bottom: -2,
-                  child: Text(
-                    "”",
-                    style: TextStyle(color: Color(0xFF50A2E9), fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-        currentQuote.clear();
-      }
-    }
-
-    for (var line in lines) {
-      if (line.trim().startsWith('>')) {
-        flushRegular();
-        currentQuote.add(line.trim().substring(1).trim());
-      } else if (line.trim().startsWith('«') && line.trim().endsWith('»')) {
-        flushRegular();
-        currentQuote.add(line.trim());
-      } else {
-        flushQuote();
-        currentRegular.add(line);
-      }
-    }
-    flushRegular();
-    flushQuote();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: textWidgets,
-    );
-  }
-
-  Widget _buildRichTextSpans(String text, {bool isQuote = false}) {
-    final RegExp linkExp = RegExp(
-      r'(@[a-zA-Z0-9_]{3,32})|((https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(\/[^\s]*)?)',
-      caseSensitive: false,
-    );
-
-    List<TextSpan> spans = [];
-    int lastMatchEnd = 0;
-
-    for (final Match match in linkExp.allMatches(text)) {
-      if (match.start > lastMatchEnd) {
-        spans.add(TextSpan(
-          text: text.substring(lastMatchEnd, match.start),
-          style: TextStyle(
-            fontSize: isQuote ? 13 : 14,
-            color: isQuote ? Colors.white70 : Colors.white,
-            height: 1.38,
-          ),
-        ));
-      }
-
-      final String matchedText = match.group(0)!;
-      spans.add(
-        TextSpan(
-          text: matchedText,
-          style: TextStyle(
-            fontSize: isQuote ? 13 : 14,
-            color: const Color(0xFF50A2E9),
-            fontWeight: FontWeight.bold,
-            decoration: TextDecoration.underline,
-            decorationColor: const Color(0xFF50A2E9),
-            height: 1.38,
-          ),
-          recognizer: TapGestureRecognizer()
-            ..onTap = () {
-              _triggerVibration(duration: 25);
-              openLinkOrUsername(matchedText);
-            },
-        ),
-      );
-
-      lastMatchEnd = match.end;
-    }
-
-    if (lastMatchEnd < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(lastMatchEnd),
-        style: TextStyle(
-          fontSize: isQuote ? 13 : 14,
-          color: isQuote ? Colors.white70 : Colors.white,
-          height: 1.38,
-        ),
-      ));
-    }
-
-    return SelectableText.rich(
-      TextSpan(children: spans),
-      style: const TextStyle(fontFamily: 'Roboto'),
-    );
-  }
-
-  static Future<void> openLinkOrUsername(String input, {int? postId}) async {
-    String url = input.trim();
-    if (url.startsWith('@')) {
-      final username = url.substring(1);
-      final tgUri = Uri.parse(postId != null
-          ? "tg://resolve?domain=$username&post=$postId"
-          : "tg://resolve?domain=$username");
-      final webUri = Uri.parse(postId != null
-          ? "https://t.me/$username/$postId"
-          : "https://t.me/$username");
-
-      if (await canLaunchUrl(tgUri)) {
-        await launchUrl(tgUri, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(webUri, mode: LaunchMode.externalApplication);
-      }
-      return;
-    }
-
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://$url';
-    }
-
-    final uri = Uri.tryParse(url);
-    if (uri != null) {
-      if (uri.host == 't.me' || uri.host == 'telegram.me') {
-        final segments = uri.pathSegments;
-        if (segments.isNotEmpty) {
-          final domain = segments[0];
-          final pId = segments.length > 1 ? segments[1] : null;
-          final tgUri = Uri.parse(pId != null
-              ? "tg://resolve?domain=$domain&post=$pId"
-              : "tg://resolve?domain=$domain");
-          if (await canLaunchUrl(tgUri)) {
-            await launchUrl(tgUri, mode: LaunchMode.externalApplication);
-            return;
-          }
-        }
-      }
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  Color _getUserColor(String name) {
-    var hash = 0;
-    for (var i = 0; i < name.length; i++) {
-      hash = name.codeUnitAt(i) + ((hash << 5) - hash);
-    }
-    return tgColors[hash.abs() % tgColors.length];
-  }
-
-  void _triggerVibration({int duration = 50}) {
-    try {
-      _vibrateChannel.invokeMethod('vibrate', {'duration': duration});
-    } catch (_) {
-      HapticFeedback.vibrate();
-    }
-  }
-
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
-
-  Future<void> _initApp() async {
-    final prefs = await SharedPreferences.getInstance();
-    _sessionToken = prefs.getString('chat_token');
-    if (_sessionToken == null) {
-      _sessionToken = const Uuid().v4().replaceAll('-', '');
-      await prefs.setString('chat_token', _sessionToken!);
-    }
-
-    _fingerprint = prefs.getString('fingerprint');
-    if (_fingerprint == null) {
-      final deviceInfo = DeviceInfoPlugin();
-      if (Platform.isAndroid) {
-        final androidInfo = await deviceInfo.androidInfo;
-        _fingerprint = "DEVICE_${androidInfo.model}_${androidInfo.id}".replaceAll(" ", "_");
-      } else {
-        _fingerprint = "DEVICE_${const Uuid().v4().substring(0, 8)}";
-      }
-      await prefs.setString('fingerprint', _fingerprint!);
-    }
-
-    await _checkAuthStatus();
-    _checkForAppUpdate();
-  }
-
-  Future<void> _checkAuthStatus() async {
-    try {
-      final response = await http.post(
-        Uri.parse("${AppConfig.baseUrl}/api/auth/verify-device"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "sessionToken": _sessionToken,
-          "fingerprint": _fingerprint,
-        }),
-      );
-
-      final data = jsonDecode(response.body);
-
-      if (data['status'] == 'ok') {
-        _authPollTimer?.cancel();
-        setState(() {
-          _currentUser = data['user'];
-          _isLoading = false;
-          _avatarCacheBuster = DateTime.now().millisecondsSinceEpoch;
-        });
-
-        ForegroundServiceManager.start(
-          userName: data['user']['full_name'] ?? 'کاربر',
-          userId: data['user']['id'],
-          tgId: data['user']['telegram_id']?.toString(),
-        );
-
-        _connectWebSocket();
-        _fetchInitialMessages();
-        _startPolling();
-      } else if (data['status'] == 'pending') {
-        setState(() {
-          _isLoading = false;
-          _statusMessage = "درخواست شما ثبت شده و در انتظار تایید مدیر در تلگرام است...";
-        });
-      } else {
-        setState(() {
-          _isLoading = false;
-          _statusMessage = "جهت استفاده از برنامه، وارد حساب تلگرام شوید.";
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _statusMessage = "خطا در اتصال به سرور. آدرس دامنه در config.dart را بررسی کنید.";
-      });
-    }
-  }
-
-  void _openTelegramLogin() async {
-    final Uri tgAppUri = Uri.parse("tg://resolve?domain=${AppConfig.botUsername}&start=auth_$_sessionToken");
-    final Uri webUri = Uri.parse("https://t.me/${AppConfig.botUsername}?start=auth_$_sessionToken");
-
-    try {
-      if (await canLaunchUrl(tgAppUri)) {
-        await launchUrl(tgAppUri, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(webUri, mode: LaunchMode.externalApplication);
-      }
-      _authPollTimer?.cancel();
-      _authPollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _checkAuthStatus());
-    } catch (_) {
-      await launchUrl(webUri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  void _logout() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF182533),
-        title: const Text("خروج از حساب", style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: const Text("آیا مطمئن هستید که می‌خواهید خارج شوید؟", style: TextStyle(color: Colors.grey)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("انصراف")),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("خروج", style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      try {
-        await http.post(
-          Uri.parse("${AppConfig.baseUrl}/api/auth/logout"),
-          headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"sessionToken": _sessionToken}),
-        );
-      } catch (_) {}
-
-      ForegroundServiceManager.stop();
-
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('chat_token');
-      _wsChannel?.sink.close();
-      setState(() {
-        _currentUser = null;
-        _messages.clear();
-        _statusMessage = "خارج شدید.";
-      });
-      _initApp();
-    }
-  }
-
-  void _connectWebSocket() {
-    try {
-      _wsChannel = WebSocketChannel.connect(Uri.parse(AppConfig.wsUrl));
-
-      _wsChannel!.stream.listen((message) {
-        final data = jsonDecode(message);
-        _handleWsEvent(data);
-      }, onDone: () {
-        if (mounted) {
-          setState(() => _isConnected = false);
-          Future.delayed(const Duration(seconds: 3), () {
-            if (_currentUser != null) _connectWebSocket();
-          });
-        }
-      }, onError: (_) {
-        if (mounted) setState(() => _isConnected = false);
-      });
-
-      _wsChannel!.sink.add(jsonEncode({
-        "type": "identify",
-        "userName": _currentUser?['full_name'] ?? 'کاربر',
-        "userId": _currentUser?['id'],
-        "tgId": _currentUser?['telegram_id'],
-        "isOnline": _isAppResumed
-      }));
-
-      _pingTimer?.cancel();
-      _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-        if (_wsChannel != null && _isConnected) {
-          _wsChannel!.sink.add(jsonEncode({"type": "presence", "status": _isAppResumed ? "online" : "offline"}));
-        }
-      });
-
-      setState(() => _isConnected = true);
-    } catch (_) {
-      setState(() => _isConnected = false);
-    }
-  }
-
-void _handleWsEvent(Map<String, dynamic> data) {
-    final type = data['type'];
-    final myName = _currentUser?['full_name'] ?? '';
-
-    if (type == 'new_message' && data['message'] != null) {
-      final msg = ChatMessage.fromJson(data['message']);
-      if (!_seenMessageIds.contains(msg.id)) {
-        _seenMessageIds.add(msg.id);
-        setState(() {
-          _messages.add(msg);
-        });
-        _scrollToBottom();
-
-        if (msg.timestamp > 0) {
-          ForegroundServiceManager.syncLastMessageTime(msg.timestamp);
-        }
-
-        // فقط اگر کاربر داخل برنامه است و فرستنده شخص دیگری است، علامت خوانده‌شده بزن
-        if (_isAppResumed && msg.senderName != myName) {
-          _markAsRead([msg.id]);
-        } else if (!_isAppResumed && msg.senderName != myName) {
-          // اگر برنامه در پس‌زمینه است، نوتیفیکیشن تجمیعی تلگرام با آواتار بفرست
-          String notifBody = msg.text;
-          if (notifBody.isEmpty) {
-            if (msg.mediaType == 'photo') {
-              notifBody = '📷 [تصویر]';
-            } else if (msg.mediaType == 'video') {
-              notifBody = '📹 [ویدیو]';
-            } else if (msg.mediaType == 'voice') {
-              notifBody = '🎤 [پیام صوتی]';
-            } else if (msg.mediaType == 'audio') {
-              notifBody = '🎵 [موزیک]';
-            } else {
-              notifBody = '📁 [فایل]';
-            }
-          }
-
-          NotificationService().showMessageNotification(
-            senderName: msg.senderName,
-            body: notifBody,
-            senderId: msg.isFromTelegram ? msg.senderId : null,
-            messageId: msg.id,
-            timestamp: msg.timestamp,
-          );
-        }
-      }
-    } else if (type == 'messages_read' && data['messageIds'] != null) {
-      final List ids = data['messageIds'];
-      final int? readAtTime = data['readAt'];
-      setState(() {
-        for (var m in _messages) {
-          if (ids.contains(m.id)) {
-            m.isRead = 1;
-            if (readAtTime != null) m.readAt = readAtTime;
-          }
-        }
-      });
-    } else if (type == 'reaction_updated') {
-      final msgId = data['messageId'];
-      dynamic rx = data['reactions'];
-      if (rx is String) {
-        try {
-          rx = jsonDecode(rx);
-        } catch (_) {}
-      }
-      setState(() {
-        final idx = _messages.indexWhere((m) => m.id == msgId);
-        if (idx != -1 && rx is Map) {
-          Map<String, List<String>> newRx = {};
-          rx.forEach((k, v) {
-            if (v is List) newRx[k.toString()] = v.map((e) => e.toString()).toList();
-          });
-          _messages[idx].reactions = newRx;
-        }
-      });
-    } else if (type == 'message_edited') {
-      final msgId = data['messageId'];
-      final newText = data['text'] ?? '';
-      setState(() {
-        final idx = _messages.indexWhere((m) => m.id == msgId);
-        if (idx != -1) {
-          _messages[idx].text = newText;
-          _messages[idx].isEdited = true;
-        }
-      });
-    } else if (type == 'message_pinned' && data['message'] != null) {
-      setState(() {
-        _pinnedMessage = ChatMessage.fromJson(data['message']);
-      });
-    } else if (type == 'message_unpinned') {
-      setState(() {
-        _pinnedMessage = null;
-      });
-    } else if (type == 'online_users') {
-      final List users = data['users'] ?? [];
-      setState(() {
-        _onlineUsersCount = users.length;
-      });
-    } else if (type == 'typing') {
-      final name = data['userName'] ?? 'شخصی';
-      setState(() {
-        _typingStatus = "$name در حال نوشتن...";
-      });
-      _typingTimer?.cancel();
-      _typingTimer = Timer(const Duration(seconds: 3), () {
-        if (mounted) setState(() => _typingStatus = null);
-      });
-    }
-  }
-
-  void _markAsRead(List<String> ids) {
-    if (_wsChannel != null && _isConnected && ids.isNotEmpty && _isAppResumed) {
-      _wsChannel!.sink.add(jsonEncode({
-        "type": "mark_read",
-        "messageIds": ids,
-      }));
-    }
-  }
-
-  void _markVisibleUnreadMessages() {
-    if (!_isAppResumed) return;
-    final myName = _currentUser?['full_name'] ?? '';
-    final unreadIds = _messages
-        .where((m) => m.isRead == 0 && m.senderName != myName)
-        .map((m) => m.id)
-        .toList();
-    if (unreadIds.isNotEmpty) {
-      _markAsRead(unreadIds);
-    }
-  }
-
-  Future<void> _fetchInitialMessages() async {
-    try {
-      final res = await http.get(Uri.parse("${AppConfig.baseUrl}/api/messages?limit=40"));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        final List list = data['messages'] ?? [];
-        if (data['pinned'] != null) {
-          _pinnedMessage = ChatMessage.fromJson(data['pinned']);
-        }
-        _messages.clear();
-        _seenMessageIds.clear();
-        for (var item in list) {
-          final m = ChatMessage.fromJson(item);
-          _seenMessageIds.add(m.id);
-          _messages.add(m);
-        }
-        setState(() {});
-        _scrollToBottom();
-        _markVisibleUnreadMessages();
-
-        if (_messages.isNotEmpty) {
-          ForegroundServiceManager.syncLastMessageTime(_messages.last.timestamp);
-        }
-      }
-    } catch (_) {}
-  }
-
-  void _startPolling() {
-    _pollingTimer?.cancel();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 4), (_) => _fetchLatestMessages());
-  }
-
-  Future<void> _fetchLatestMessages() async {
-    if (_messages.isEmpty) return;
-    final lastTime = _messages.last.timestamp;
-    try {
-      final res = await http.get(Uri.parse("${AppConfig.baseUrl}/api/messages?since=$lastTime"));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        final List list = data['messages'] ?? [];
-        bool added = false;
-        for (var item in list) {
-          final m = ChatMessage.fromJson(item);
-          if (!_seenMessageIds.contains(m.id)) {
-            _seenMessageIds.add(m.id);
-            _messages.add(m);
-            added = true;
-
-            // اعلان برای پیام‌های دریافتی در زمان بسته بودن برنامه
-            if (!_isAppResumed) {
-                final myName = _currentUser?['full_name'] ?? '';
-                if (m.senderName != myName) {
-                  NotificationService().showMessageNotification(
-                    senderName: m.senderName,
-                    body: m.text.isNotEmpty ? m.text : "[فایل رسانه]",
-                    senderId: m.isFromTelegram ? m.senderId : null,
-                    messageId: m.id,
-                    timestamp: m.timestamp,
-                  );
-                }
-              }
-          }
-        }
-        if (added) {
-          setState(() {});
-          _scrollToBottom();
-          _markVisibleUnreadMessages();
-          ForegroundServiceManager.syncLastMessageTime(_messages.last.timestamp);
-        }
-      }
-    } catch (_) {}
-  }
-
-  void _sendMessage() async {
-    final text = _msgController.text.trim();
-
-    if (_editingMessage != null) {
-      if (text.isEmpty) return;
-      _wsChannel?.sink.add(jsonEncode({
-        "type": "edit_message",
-        "messageId": _editingMessage!.id,
-        "newText": text,
-      }));
-      setState(() => _editingMessage = null);
-      _msgController.clear();
-      return;
-    }
-
-    if (_selectedAttachment != null) {
-      final fileToSend = _selectedAttachment!;
-      setState(() {
-        _selectedAttachment = null;
-        _replyTarget = null;
-      });
-      _msgController.clear();
-      _uploadMedia(file: fileToSend, caption: text);
-      return;
-    }
-
-    if (text.isEmpty || _wsChannel == null) return;
-
-    Map<String, dynamic>? replyData;
-    if (_replyTarget != null) {
-      replyData = {
-        "id": _replyTarget!.id,
-        "name": _replyTarget!.senderName,
-        "text": _replyTarget!.text.isNotEmpty ? _replyTarget!.text : (_replyTarget!.mediaType ?? 'مدیا'),
-        "tgMsgId": _replyTarget!.tgMsgId,
-      };
-    }
-
-    _wsChannel!.sink.add(jsonEncode({
-      "type": "chat_message",
-      "text": text,
-      "replyTo": replyData,
-    }));
-
-    _msgController.clear();
-    setState(() => _replyTarget = null);
-  }
-
-  Future<void> _pickAttachment() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['jpg', 'png', 'jpeg', 'webp', 'mp4', 'mov', 'mp3', 'ogg', 'm4a', 'pdf', 'zip', 'doc', 'docx'],
-    );
-
-    if (result != null && result.files.single.path != null) {
-      final file = File(result.files.single.path!);
-      final length = await file.length();
-      if (length > 20 * 1024 * 1024) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("حجم فایل نباید بیش از ۲۰ مگابایت باشد")),
-          );
-        }
-        return;
-      }
-      setState(() {
-        _selectedAttachment = file;
-      });
-    }
-  }
-
-  MediaType _resolveMediaType(String path, {String? customType}) {
-    if (customType == "voice") return MediaType('audio', 'm4a');
-
-    final ext = path.split('.').last.toLowerCase();
-    switch (ext) {
-      case 'jpg':
-      case 'jpeg':
-        return MediaType('image', 'jpeg');
-      case 'png':
-        return MediaType('image', 'png');
-      case 'webp':
-        return MediaType('image', 'webp');
-      case 'mp4':
-        return MediaType('video', 'mp4');
-      case 'mov':
-        return MediaType('video', 'quicktime');
-      case 'mp3':
-        return MediaType('audio', 'mpeg');
-      case 'ogg':
-        return MediaType('audio', 'ogg');
-      case 'm4a':
-        return MediaType('audio', 'mp4');
-      default:
-        return MediaType('application', 'octet-stream');
-    }
-  }
-
-  Future<void> _uploadMedia({required File file, String caption = '', String? customType}) async {
-    try {
-      final fileSize = await file.length();
-      if (fileSize > 20 * 1024 * 1024) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("حجم فایل بیش از ۲۰ مگابایت است و ارسال نشد")),
-          );
-        }
-        return;
-      }
-
-      setState(() {
-        _isUploading = true;
-        _uploadProgress = 0.0;
-        _uploadBytesSent = 0;
-        _uploadTotalBytes = fileSize;
-      });
-
-      final uri = Uri.parse("${AppConfig.baseUrl}/api/upload");
-      final request = ProgressMultipartRequest(
-        "POST",
-        uri,
-        onProgress: (bytesSent, totalBytes) {
-          if (mounted) {
-            setState(() {
-              _uploadBytesSent = bytesSent;
-              _uploadTotalBytes = totalBytes;
-              if (totalBytes > 0) {
-                _uploadProgress = (bytesSent / totalBytes).clamp(0.0, 1.0);
-              }
-            });
-          }
-        },
-      );
-
-      request.fields['sessionToken'] = _sessionToken ?? '';
-      request.fields['caption'] = caption;
-      if (customType != null) {
-        request.fields['mediaType'] = customType;
-      }
-
-      if (_replyTarget != null) {
-        request.fields['replyTo'] = jsonEncode({
-          "id": _replyTarget!.id,
-          "name": _replyTarget!.senderName,
-          "text": _replyTarget!.text.isNotEmpty ? _replyTarget!.text : (_replyTarget!.mediaType ?? 'مدیا'),
-          "tgMsgId": _replyTarget!.tgMsgId,
-        });
-      }
-
-      final mime = _resolveMediaType(file.path, customType: customType);
-      request.files.add(await http.MultipartFile.fromPath(
-        'file',
-        file.path,
-        contentType: mime,
-      ));
-
-      final streamedResponse = await request.send();
-      final response = await http.Response.fromStream(streamedResponse);
-
-      if (response.statusCode != 200) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("خطا در ارسال مدیا: ${response.statusCode}")),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("خطای شبکه در آپلود فایل")),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isUploading = false;
-          _uploadProgress = 0.0;
-        });
-      }
-    }
-  }
-
-  Future<void> _startRecordingAudio() async {
-    if (await _audioRecorder.hasPermission()) {
-      _triggerVibration(duration: 40);
-      final dir = await getTemporaryDirectory();
-      final filePath = '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-
-      await _audioRecorder.start(
-        const RecordConfig(encoder: AudioEncoder.aacLc),
-        path: filePath,
-      );
-
-      setState(() {
-        _isRecordingAudio = true;
-        _isRecordingAudioLocked = false;
-        _audioRecordSeconds = 0;
-      });
-
-      _audioRecordTimer?.cancel();
-      _audioRecordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _audioRecordSeconds++);
-      });
-    }
-  }
-
-  Future<void> _stopRecordingAudio({bool cancel = false}) async {
-    _audioRecordTimer?.cancel();
-    final path = await _audioRecorder.stop();
-    if (mounted) {
-      setState(() {
-        _isRecordingAudio = false;
-        _isRecordingAudioLocked = false;
-      });
-    }
-
-    if (!cancel && path != null) {
-      _triggerVibration(duration: 50);
-      await _uploadMedia(file: File(path), customType: "voice");
-    } else if (path != null) {
-      try { File(path).deleteSync(); } catch (_) {}
-    }
-  }
-
-  Future<void> _toggleAudioPlay(ChatMessage msg) async {
-    final audioSourceUrl = _localMediaPaths[msg.id] ?? msg.mediaUrl;
-    if (audioSourceUrl == null) return;
-
-    if (_currentlyPlayingMsgId == msg.id && _playerState == PlayerState.playing) {
-      await _audioPlayer.pause();
-    } else {
-      _triggerVibration(duration: 30);
-      _currentlyPlayingMsgId = msg.id;
-
-      try {
-        if (_localMediaPaths.containsKey(msg.id)) {
-          await _audioPlayer.play(DeviceFileSource(_localMediaPaths[msg.id]!));
-        } else {
-          await _audioPlayer.play(UrlSource(msg.mediaUrl!));
-        }
-      } catch (_) {
-        _startDownloadingMedia(msg).then((_) {
-          if (_localMediaPaths.containsKey(msg.id)) {
-            _audioPlayer.play(DeviceFileSource(_localMediaPaths[msg.id]!));
-          }
-        });
-      }
-    }
-  }
-
-  void _toggleReaction(String messageId, String emoji) {
-    _triggerVibration(duration: 40);
-    if (_wsChannel != null && _isConnected) {
-      _wsChannel!.sink.add(jsonEncode({
-        "type": "toggle_reaction",
-        "messageId": messageId,
-        "emoji": emoji,
-      }));
-    }
-  }
-
-  void _showContextMenu(ChatMessage msg) {
-    _triggerVibration(duration: 60);
-    final myName = _currentUser?['full_name'] ?? '';
-    final isMe = msg.senderName == myName;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        margin: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF182533),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: Colors.white10)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: ['❤️', '👍', '👎', '🔥', '🥰', '👏', '😁'].map((emoji) {
-                  return GestureDetector(
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _toggleReaction(msg.id, emoji);
-                    },
-                    child: Text(emoji, style: const TextStyle(fontSize: 26)),
-                  );
-                }).toList(),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Row(
-                children: [
-                  Text(
-                    msg.isRead == 1
-                        ? "✓✓ خوانده شده در ${msg.formattedReadTime}"
-                        : "✓ ارسال شده (در انتظار خوانده شدن)",
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: msg.isRead == 1 ? const Color(0xFF50A2E9) : Colors.grey,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1, color: Colors.white10),
-            ListTile(
-              leading: const Icon(Icons.reply_rounded, color: Color(0xFF50A2E9)),
-              title: const Text("پاسخ (Reply)", style: TextStyle(fontSize: 14)),
-              onTap: () {
-                Navigator.pop(ctx);
-                setState(() {
-                  _replyTarget = msg;
-                  _editingMessage = null;
-                });
-              },
-            ),
-
-            if (msg.text.isNotEmpty)
-              ListTile(
-                leading: const Icon(Icons.copy_rounded, color: Color(0xFF50A2E9)),
-                title: const Text("کپی کردن (Copy)", style: TextStyle(fontSize: 14)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  Clipboard.setData(ClipboardData(text: msg.text));
-                  _triggerVibration(duration: 35);
-                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      duration: Duration(seconds: 1),
-                      backgroundColor: Color(0xFF182533),
-                      content: Text("متن پیام کپی شد", style: TextStyle(color: Colors.white, fontSize: 12)),
-                    ),
-                  );
-                },
-              ),
-
-            if (isMe && msg.mediaType == null)
-              ListTile(
-                leading: const Icon(Icons.edit_rounded, color: Colors.amber),
-                title: const Text("ویرایش (Edit)", style: TextStyle(fontSize: 14)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  setState(() {
-                    _editingMessage = msg;
-                    _replyTarget = null;
-                    _msgController.text = msg.text;
-                  });
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.push_pin_rounded, color: Colors.orangeAccent),
-              title: const Text("سنجاق کردن (Pin)", style: TextStyle(fontSize: 14)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _wsChannel?.sink.add(jsonEncode({
-                  "type": "pin_message",
-                  "messageId": msg.id,
-                }));
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _scrollToMessage(String targetId) {
-    final cleanId = targetId.startsWith('tg_') ? targetId.replaceFirst('tg_', '') : targetId;
-    final index = _messages.indexWhere((m) => m.id == cleanId || m.tgMsgId?.toString() == cleanId);
-
-    if (index == -1) return;
-
-    final foundMsgId = _messages[index].id;
-
-    if (_scrollController.hasClients) {
-      final targetOffset = (index / _messages.length) * _scrollController.position.maxScrollExtent;
-      _scrollController.animateTo(
-        targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOutCubic,
-      ).then((_) {
-        _triggerVibration(duration: 50);
-        setState(() => _highlightedMessageId = foundMsgId);
-        Timer(const Duration(milliseconds: 1800), () {
-          if (mounted) setState(() => _highlightedMessageId = null);
-        });
-      });
-    }
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  Future<void> _startDownloadingMedia(ChatMessage msg) async {
-    if (msg.mediaUrl == null) return;
-    final client = http.Client();
-    _activeClients[msg.id] = client;
-
-    setState(() {
-      _downloadingMediaIds.add(msg.id);
-      _downloadProgress[msg.id] = 0.0;
-      _downloadedBytes[msg.id] = 0;
-    });
-
-    try {
-      final request = http.Request('GET', Uri.parse(msg.mediaUrl!));
-      final response = await client.send(request);
-
-      final totalBytes = response.contentLength ?? (msg.mediaFileSize ?? 0);
-      List<int> bytes = [];
-
-      await for (var chunk in response.stream) {
-        bytes.addAll(chunk);
-        setState(() {
-          _downloadedBytes[msg.id] = bytes.length;
-          if (totalBytes > 0) {
-            _downloadProgress[msg.id] = (bytes.length / totalBytes).clamp(0.0, 1.0);
-          }
-        });
-      }
-
-      final dir = await getApplicationDocumentsDirectory();
-      String ext = 'bin';
-      if (msg.mediaType == 'video') ext = 'mp4';
-      else if (msg.mediaType == 'photo') ext = 'jpg';
-      else if (msg.mediaType == 'voice') ext = 'm4a';
-      else if (msg.mediaType == 'audio') ext = 'mp3';
-
-      final fileName = msg.mediaFileName ?? "media_${msg.id.substring(0, 8)}.$ext";
-      final file = File("${dir.path}/$fileName");
-      await file.writeAsBytes(bytes);
-
-      setState(() {
-        _localMediaPaths[msg.id] = file.path;
-        _downloadingMediaIds.remove(msg.id);
-        _downloadedMediaIds.add(msg.id);
-        _activeClients.remove(msg.id);
-      });
-
-      _triggerVibration(duration: 45);
-    } catch (_) {
-      setState(() {
-        _downloadingMediaIds.remove(msg.id);
-        _activeClients.remove(msg.id);
-      });
-    }
-  }
-
-  void _cancelDownload(String msgId) {
-    _activeClients[msgId]?.close();
-    _activeClients.remove(msgId);
-    setState(() {
-      _downloadingMediaIds.remove(msgId);
-      _downloadProgress.remove(msgId);
-      _downloadedBytes.remove(msgId);
-    });
-  }
-
-  void _openLightbox({String? url, String? localPath, required String fileName}) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => Scaffold(
-          backgroundColor: Colors.black,
-          appBar: AppBar(
-            backgroundColor: Colors.black87,
-            title: Text(fileName, style: const TextStyle(fontSize: 14)),
-            actions: [
-              if (url != null)
-                IconButton(
-                  icon: const Icon(Icons.download_rounded),
-                  onPressed: () {
-                    launchUrl(
-                      Uri.parse("$url&download=1&name=${Uri.encodeComponent(fileName)}"),
-                      mode: LaunchMode.externalApplication,
-                    );
-                  },
-                ),
-            ],
-          ),
-          body: Center(
-            child: InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 4.0,
-              child: localPath != null
-                  ? Image.file(File(localPath), fit: BoxFit.contain)
-                  : CachedNetworkImage(
-                      imageUrl: url!,
-                      fit: BoxFit.contain,
-                      placeholder: (_, __) => const Center(child: CircularProgressIndicator(color: Color(0xFF50A2E9))),
-                      errorWidget: (_, __, ___) => const Icon(Icons.broken_image, size: 60, color: Colors.grey),
-                    ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _openVideoPlayer({String? videoUrl, String? localPath, required String fileName}) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => VideoPlayerModal(
-          videoUrl: videoUrl,
-          localPath: localPath,
-          fileName: fileName,
-        ),
-      ),
-    );
   }
 }
 
