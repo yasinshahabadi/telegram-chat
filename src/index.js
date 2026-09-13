@@ -4,6 +4,7 @@ import { Router } from "./core/router.js";
 import { jsonResponse, errorResponse } from "./core/response.js";
 import { handleVerifyDevice, handleGetMe, handleLogout } from "./auth/authController.js";
 import { handleGetMessages } from "./chat/messagesController.js";
+import { handleSyncEvents, handleGetLatestCursor } from "./sync/syncController.js";
 import { handleTelegramWebhook } from "./telegram/webhookHandler.js";
 import { handleWebSocketUpgrade } from "./realtime/wsHandler.js";
 import { escapeXml } from "./telegram/telegramClient.js";
@@ -26,13 +27,17 @@ router.post("/api/auth/logout", (req, env) => handleLogout(req, env));
 // ۲. اندپوینت پیام‌ها و تاریخچه چت (فاز ۵)
 router.get("/api/messages", (req, env) => handleGetMessages(req, env));
 
-// ۳. اندپوینت ارتقا به وب‌سوکت بلادرنگ با احراز هویت الزامی (فاز ۷ - رفع آسیب‌پذیری C-02)
+// ۳. اندپوینت‌های موتور همگام‌سازی آفلاین (فاز ۸ - دلتا سینک بر پایه Cursor)
+router.get("/api/sync", (req, env) => handleSyncEvents(req, env));
+router.get("/api/sync/latest-cursor", (req, env) => handleGetLatestCursor(req, env));
+
+// ۴. اندپوینت ارتقا به وب‌سوکت بلادرنگ با احراز هویت الزامی (فاز ۷ - رفع آسیب‌پذیری C-02)
 router.get("/api/ws", (req, env) => handleWebSocketUpgrade(req, env));
 
-// ۴. وب‌هوک امن تلگرام (فاز ۶ - اعتبارسنجی Secret Token و Group Guard)
+// ۵. وب‌هوک امن تلگرام (فاز ۶ - اعتبارسنجی Secret Token و Group Guard)
 router.post("/api/telegram-webhook", (req, env, ctx) => handleTelegramWebhook(req, env, ctx));
 
-// ۵. دریافت آواتار تلگرام
+// ۶. دریافت آواتار تلگرام
 router.get("/api/avatar", async (req, env) => {
   const url = new URL(req.url);
   const userId = url.searchParams.get("userId");
@@ -60,7 +65,7 @@ router.get("/api/avatar", async (req, env) => {
   return errorResponse("آواتار یافت نشد.", 404);
 });
 
-// ۶. دریافت مدیا از تلگرام (پروکسی موقت تا زمان استقرار باکت R2 در فاز ۹)
+// ۷. دریافت مدیا از تلگرام (پروکسی موقت تا زمان استقرار باکت R2 در فاز ۹)
 router.get("/api/media", async (req, env) => {
   const url = new URL(req.url);
   const fileId = url.searchParams.get("fileId");
@@ -123,7 +128,7 @@ router.get("/api/media", async (req, env) => {
   return errorResponse("فایل یافت نشد.", 404);
 });
 
-// ۷. آپلود موقت مدیا (تا زمان اتصال Presigned URL در R2 در فاز ۹)
+// ۸. آپلود موقت مدیا (تا زمان اتصال Presigned URL در R2 در فاز ۹)
 router.post("/api/upload", async (req, env) => {
   try {
     const formData = await req.formData();
@@ -239,7 +244,7 @@ router.post("/api/upload", async (req, env) => {
   }
 });
 
-// ۸. اندپوینت‌های وب‌پوش قدیمی (حفظ موقت تا زمان اتصال کامل FCM در فاز ۱۱)
+// ۹. اندپوینت‌های وب‌پوش قدیمی (حفظ موقت تا زمان اتصال کامل FCM در فاز ۱۱)
 router.get("/api/vapid-public-key", (req, env) => jsonResponse({ publicKey: env.VAPID_PUBLIC_KEY || null }));
 router.post("/api/push-subscribe", async (req, env) => {
   try {
