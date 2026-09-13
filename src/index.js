@@ -1,24 +1,15 @@
 ﻿// src/index.js - Telegram Chat Worker Entrypoint (Modular Architecture v2)
 
 import { DurableObject } from "cloudflare:workers";
-import { buildPushPayload } from "@block65/webcrypto-web-push";
 
 import { Router } from "./core/router.js";
 import { jsonResponse, errorResponse } from "./core/response.js";
-import { handleVerifyDevice, handleGetMe, handleLogout, processTelegramAuthStart } from "./auth/authController.js";
+import { handleVerifyDevice, handleGetMe, handleLogout } from "./auth/authController.js";
 import { handleGetMessages } from "./chat/messagesController.js";
+import { handleTelegramWebhook } from "./telegram/webhookHandler.js";
+import { escapeXml } from "./telegram/telegramClient.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
-
-export function escapeXml(str) {
-  return String(str || "").replace(/[&<>"']/g, m => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  }[m]));
-}
 
 // ==========================================
 // تعریف روتر ماژولار API
@@ -42,15 +33,8 @@ router.get("/api/ws", (req, env) => {
   return env.CHAT_ROOM.get(id).fetch(req);
 });
 
-// ۴. وب‌هوک تلگرام
-router.post("/api/telegram-webhook", async (req, env, ctx) => {
-  try {
-    const update = await req.json();
-    return await handleTelegramUpdate(update, env, ctx);
-  } catch (e) {
-    return new Response("OK");
-  }
-});
+// ۴. وب‌هوک امن تلگرام (فاز ۶ - اعتبارسنجی Secret Token و Group Guard)
+router.post("/api/telegram-webhook", (req, env, ctx) => handleTelegramWebhook(req, env, ctx));
 
 // ۵. دریافت آواتار تلگرام
 router.get("/api/avatar", async (req, env) => {
@@ -259,7 +243,7 @@ router.post("/api/upload", async (req, env) => {
   }
 });
 
-// ۸. اندپوینت‌های وب‌پوش قدیمی (حفظ جهت سازگاری تا پیاده‌سازی کامل FCM در فاز ۱۱)
+// ۸. اندپوینت‌های وب‌پوش قدیمی (حفظ موقت تا زمان اتصال کامل FCM در فاز ۱۱)
 router.get("/api/vapid-public-key", (req, env) => jsonResponse({ publicKey: env.VAPID_PUBLIC_KEY || null }));
 router.post("/api/push-subscribe", async (req, env) => {
   try {
@@ -288,7 +272,7 @@ export default {
   async fetch(request, env, ctx) {
     const res = await router.handle(request, env, ctx);
 
-    // در صورتی که روتر مسیر را پیدا نکرد، فایل‌های استاتیک وب را بررسی کن (اگر وجود داشته باشد)
+    // بررسی فایل‌های استاتیک وب در صورت وجود
     if (res.status === 404 && env.ASSETS) {
       return env.ASSETS.fetch(request);
     }
@@ -297,220 +281,11 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // پاکسازی خودکار پیام‌های قدیمی‌تر از ۲۴ ساعت در جدول messages
+    // پاکسازی پیام‌های بیش از ۲۴ ساعت در جدول messages
     const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
     await env.DB.prepare("DELETE FROM messages WHERE created_at < ?").bind(oneDayAgo).run().catch(() => {});
   }
 };
-
-// ==========================================
-// هندلر آپدیت‌های تلگرام
-// ==========================================
-async function handleTelegramUpdate(update, env, ctx) {
-  if (update.callback_query) {
-    const cb = update.callback_query;
-    const data = cb.data || "";
-    if (cb.from.id.toString() !== env.ADMIN_TELEGRAM_ID.toString()) return new Response("Unauthorized");
-
-    if (data === "admin_users_list") {
-      const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE is_approved = 1").all();
-      const buttons = (users || []).map(u => [{
-        text: `👤 ${u.full_name} (${u.username !== "ندارد" ? '@' + u.username : u.telegram_id})`,
-        callback_data: `manage_u:${u.id}`
-      }]);
-      buttons.push([{ text: "🔄 رفرش لیست", callback_data: "admin_users_list" }]);
-
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: cb.message.chat.id, message_id: cb.message.message_id,
-          text: `⚙️ <b>داشبورد مدیریت کاربران اپلیکیشن</b>\n\n👥 تعداد کل تاییدشده: <b>${users ? users.length : 0}</b> نفر:`,
-          parse_mode: "HTML", reply_markup: { inline_keyboard: buttons }
-        })
-      });
-      return new Response("OK");
-    }
-
-    if (data.startsWith("manage_u:")) {
-      const targetUserId = data.replace("manage_u:", "");
-      const u = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(targetUserId).first();
-      if (!u) return new Response("OK");
-
-      const text = `👤 <b>مشخصات کاربر:</b>\n\n` +
-                   `• نام: ${escapeXml(u.full_name)}\n` +
-                   `• یوزرنیم: @${escapeXml(u.username)}\n` +
-                   `• شناسه تلگرام: <code>${u.telegram_id}</code>`;
-
-      const buttons = [
-        [{ text: "❌ حذف کامل کاربر", callback_data: `del_u:${u.id}` }],
-        [{ text: "🔙 بازگشت به لیست", callback_data: "admin_users_list" }]
-      ];
-
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: cb.message.chat.id, message_id: cb.message.message_id, text, parse_mode: "HTML", reply_markup: { inline_keyboard: buttons } })
-      });
-      return new Response("OK");
-    }
-
-    if (data.startsWith("del_u:")) {
-      const targetUserId = data.replace("del_u:", "");
-      const u = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(targetUserId).first();
-      if (u) {
-        await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(targetUserId).run();
-        await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(targetUserId).run();
-
-        const roomId = env.CHAT_ROOM.idFromName("global_room");
-        await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
-          method: "POST", body: JSON.stringify({ type: "user_kicked", userId: targetUserId, tgId: u.telegram_id })
-        });
-
-        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: cb.message.chat.id, message_id: cb.message.message_id,
-            text: `✅ کاربر <b>${escapeXml(u.full_name)}</b> با موفقیت حذف شد.`,
-            parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "🔙 بازگشت به لیست", callback_data: "admin_users_list" }]] }
-          })
-        });
-      }
-      return new Response("OK");
-    }
-
-    const [action, userId] = data.split(":");
-    if (action === "approve") {
-      await env.DB.prepare("UPDATE users SET is_approved = 1, updated_at = ? WHERE id = ?").bind(Date.now(), userId).run();
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: cb.message.chat.id, message_id: cb.message.message_id, text: `${cb.message.text}\n\n✅ دسترسی تایید شد.` })
-      });
-    } else if (action === "reject") {
-      await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: cb.message.chat.id, message_id: cb.message.message_id, text: `${cb.message.text}\n\n❌ رد شد.` })
-      });
-    }
-    return new Response("OK");
-  }
-
-  if (update.message && update.message.text === "/admin") {
-    if (update.message.from.id.toString() !== env.ADMIN_TELEGRAM_ID.toString()) return new Response("Unauthorized");
-    const { results: users } = await env.DB.prepare("SELECT * FROM users WHERE is_approved = 1").all();
-    const buttons = (users || []).map(u => [{
-      text: `👤 ${u.full_name} (${u.username !== "ندارد" ? '@' + u.username : u.telegram_id})`,
-      callback_data: `manage_u:${u.id}`
-    }]);
-    buttons.push([{ text: "🔄 رفرش لیست", callback_data: "admin_users_list" }]);
-
-    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: env.ADMIN_TELEGRAM_ID,
-        text: `⚙️ <b>داشبورد مدیریت کاربران اپلیکیشن</b>\n\n👥 تعداد کل: <b>${users ? users.length : 0}</b> نفر:`,
-        parse_mode: "HTML", reply_markup: { inline_keyboard: buttons }
-      })
-    });
-    return new Response("OK");
-  }
-
-  // فرآیند استارت و ورود عمیق (/start auth_<token>)
-  if (update.message && update.message.text && update.message.text.startsWith("/start auth_")) {
-    const token = update.message.text.split(" ")[1].replace("auth_", "");
-    const tgUser = update.message.from;
-
-    const authResult = await processTelegramAuthStart(env, tgUser, token);
-
-    if (!authResult.isAdmin && !authResult.isApproved) {
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: env.ADMIN_TELEGRAM_ID,
-          text: `🔔 <b>درخواست عضویت جدید اپلیکیشن</b>\n\n👤 نام: ${escapeXml(tgUser.first_name || "")}\n🆔 آیدی: @${tgUser.username || "ندارد"}\n🔢 شناسه: <code>${tgUser.id}</code>`,
-          parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "✅ تایید دسترسی", callback_data: `approve:${authResult.userId}` }, { text: "❌ رد", callback_data: `reject:${authResult.userId}` }]] }
-        })
-      });
-    }
-
-    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: tgUser.id,
-        text: authResult.isAdmin
-          ? "شما مدیر هستید. دسترسی به اپلیکیشن تایید شد!"
-          : "درخواست برای مدیر ارسال شد. پس از تایید مدیر، اپلیکیشن شما فعال خواهد شد."
-      })
-    });
-    return new Response("OK");
-  }
-
-  // پیام جدید از سوپرگروه تلگرام
-  if (update.message && update.message.chat) {
-    const incomingChatId = update.message.chat.id.toString();
-    const targetGroupId = env.TELEGRAM_GROUP_ID.toString();
-
-    const isMatch = (
-      incomingChatId === targetGroupId ||
-      incomingChatId === targetGroupId.replace("-", "-100") ||
-      incomingChatId.replace("-100", "-") === targetGroupId
-    );
-
-    if (isMatch && !update.message.from.is_bot) {
-      const msg = update.message;
-      const msgId = crypto.randomUUID();
-      const senderName = `${msg.from.first_name || ""} ${msg.from.last_name || ""}`.trim();
-      const timestamp = Date.now();
-      const text = msg.text || msg.caption || "";
-
-      let mediaType = null, fileId = null, fileName = null, fileSize = null, thumbId = null, duration = 0;
-
-      if (msg.photo && msg.photo.length > 0) {
-        mediaType = "photo"; fileId = msg.photo[msg.photo.length - 1].file_id; fileSize = msg.photo[msg.photo.length - 1].file_size; fileName = "photo.jpg";
-      } else if (msg.video) {
-        mediaType = "video"; fileId = msg.video.file_id; fileSize = msg.video.file_size; fileName = msg.video.file_name || "video.mp4"; duration = msg.video.duration || 0;
-        const th = msg.video.thumbnail || msg.video.thumb;
-        if (th) thumbId = th.file_id;
-      } else if (msg.voice) {
-        mediaType = "voice"; fileId = msg.voice.file_id; fileSize = msg.voice.file_size; fileName = "voice.ogg"; duration = msg.voice.duration || 0;
-      } else if (msg.audio) {
-        mediaType = "audio"; fileId = msg.audio.file_id; fileSize = msg.audio.file_size; fileName = msg.audio.file_name || "audio.mp3"; duration = msg.audio.duration || 0;
-      } else if (msg.document) {
-        mediaType = "document"; fileId = msg.document.file_id; fileSize = msg.document.file_size; fileName = msg.document.file_name || "file";
-      }
-
-      if (text || mediaType) {
-        // ثبت در جدول پیام‌های استاندارد D1
-        await env.DB.prepare(`
-          INSERT INTO messages (id, sender_id, text, is_from_telegram, created_at, updated_at, telegram_message_id)
-          VALUES (?, ?, ?, 1, ?, ?, ?)
-        `).bind(msgId, msg.from.id.toString(), text, timestamp, timestamp, msg.message_id).run();
-
-        if (fileId) {
-          await env.DB.prepare(`
-            INSERT INTO attachments (id, message_id, media_type, telegram_file_id, file_name, file_size, duration, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(crypto.randomUUID(), msgId, mediaType, fileId, fileName, fileSize, duration, timestamp).run();
-        }
-
-        const roomId = env.CHAT_ROOM.idFromName("global_room");
-        await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
-          method: "POST",
-          body: JSON.stringify({
-            type: "new_message",
-            message: {
-              id: msgId, sender_id: msg.from.id.toString(), sender_name: senderName, text, is_from_telegram: 1,
-              timestamp, tg_msg_id: msg.message_id, is_read: 0, read_at: null, is_edited: 0, media_type: mediaType,
-              media_file_id: fileId, media_file_name: fileName, media_file_size: fileSize, media_thumb_id: thumbId,
-              media_duration: duration, reactions: "{}"
-            }
-          })
-        });
-      }
-    }
-  }
-
-  return new Response("OK");
-}
 
 // ==========================================
 // کلاس بلادرنگ Durable Object (ChatRoom)
