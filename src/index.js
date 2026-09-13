@@ -1,13 +1,15 @@
 ﻿// src/index.js - Telegram Chat Worker Entrypoint (Modular Architecture v2)
 
-import { DurableObject } from "cloudflare:workers";
-
 import { Router } from "./core/router.js";
 import { jsonResponse, errorResponse } from "./core/response.js";
 import { handleVerifyDevice, handleGetMe, handleLogout } from "./auth/authController.js";
 import { handleGetMessages } from "./chat/messagesController.js";
 import { handleTelegramWebhook } from "./telegram/webhookHandler.js";
+import { handleWebSocketUpgrade } from "./realtime/wsHandler.js";
 import { escapeXml } from "./telegram/telegramClient.js";
+
+// اکسپورت رسمی کلاس Durable Object جهت شناختن در زیرساخت کلودفلر
+export { ChatRoom } from "./realtime/ChatRoom.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
@@ -24,14 +26,8 @@ router.post("/api/auth/logout", (req, env) => handleLogout(req, env));
 // ۲. اندپوینت پیام‌ها و تاریخچه چت (فاز ۵)
 router.get("/api/messages", (req, env) => handleGetMessages(req, env));
 
-// ۳. اندپوینت ارتقا به وب‌سوکت بلادرنگ
-router.get("/api/ws", (req, env) => {
-  if (req.headers.get("Upgrade") !== "websocket") {
-    return new Response("Expected WebSocket", { status: 426 });
-  }
-  const id = env.CHAT_ROOM.idFromName("global_room");
-  return env.CHAT_ROOM.get(id).fetch(req);
-});
+// ۳. اندپوینت ارتقا به وب‌سوکت بلادرنگ با احراز هویت الزامی (فاز ۷ - رفع آسیب‌پذیری C-02)
+router.get("/api/ws", (req, env) => handleWebSocketUpgrade(req, env));
 
 // ۴. وب‌هوک امن تلگرام (فاز ۶ - اعتبارسنجی Secret Token و Group Guard)
 router.post("/api/telegram-webhook", (req, env, ctx) => handleTelegramWebhook(req, env, ctx));
@@ -272,7 +268,6 @@ export default {
   async fetch(request, env, ctx) {
     const res = await router.handle(request, env, ctx);
 
-    // بررسی فایل‌های استاتیک وب در صورت وجود
     if (res.status === 404 && env.ASSETS) {
       return env.ASSETS.fetch(request);
     }
@@ -281,103 +276,7 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // پاکسازی پیام‌های بیش از ۲۴ ساعت در جدول messages
     const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
     await env.DB.prepare("DELETE FROM messages WHERE created_at < ?").bind(oneDayAgo).run().catch(() => {});
   }
 };
-
-// ==========================================
-// کلاس بلادرنگ Durable Object (ChatRoom)
-// ==========================================
-export class ChatRoom extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-    this.env = env;
-  }
-
-  async fetch(request) {
-    const url = new URL(request.url);
-    if (url.pathname === "/broadcast") {
-      this.broadcast(await request.json());
-      return new Response("OK");
-    }
-
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    this.ctx.acceptWebSocket(server);
-    return new Response(null, { status: 101, webSocket: client });
-  }
-
-  async webSocketMessage(ws, message) {
-    try {
-      const data = JSON.parse(message);
-
-      if (data.type === "identify") {
-        ws.serializeAttachment({ 
-          userName: data.userName, 
-          userId: data.userId, 
-          tgId: data.tgId, 
-          isOnline: data.isOnline !== false 
-        });
-        this.broadcastOnline();
-        return;
-      }
-
-      if (data.type === "presence") {
-        const att = ws.deserializeAttachment() || {};
-        att.isOnline = (data.status === "online");
-        ws.serializeAttachment(att);
-        this.broadcastOnline();
-        return;
-      }
-
-      if (data.type === "typing") {
-        const user = ws.deserializeAttachment();
-        if (user) {
-          this.broadcast({ type: "typing", userName: user.userName }, ws);
-        }
-      }
-    } catch (e) {}
-  }
-
-  async webSocketClose(ws) {
-    try {
-      const att = ws.deserializeAttachment() || {};
-      att.isOnline = false;
-      ws.serializeAttachment(att);
-    } catch (e) {}
-    this.broadcastOnline();
-  }
-
-  async webSocketError(ws, error) {
-    try {
-      const att = ws.deserializeAttachment() || {};
-      att.isOnline = false;
-      ws.serializeAttachment(att);
-    } catch (e) {}
-    this.broadcastOnline();
-  }
-
-  broadcast(data, excludeWs = null) {
-    const str = JSON.stringify(data);
-    for (const ws of this.ctx.getWebSockets()) {
-      if (ws !== excludeWs) {
-        try { ws.send(str); } catch (e) {}
-      }
-    }
-  }
-
-  broadcastOnline() {
-    const online = [];
-    for (const ws of this.ctx.getWebSockets()) {
-      try {
-        const att = ws.deserializeAttachment();
-        if (att && att.userName && att.isOnline === true) {
-          online.push(att.userName);
-        }
-      } catch (e) {}
-    }
-    this.broadcast({ type: "online_users", users: Array.from(new Set(online)) });
-  }
-}
