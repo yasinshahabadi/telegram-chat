@@ -6,6 +6,7 @@ import { handleVerifyDevice, handleGetMe, handleLogout } from "./auth/authContro
 import { handleGetMessages } from "./chat/messagesController.js";
 import { handleSyncEvents, handleGetLatestCursor } from "./sync/syncController.js";
 import { handleMediaUpload, handleMediaDownload } from "./media/mediaController.js";
+import { handleRegisterFcmToken, handleUnregisterFcmToken } from "./notifications/notificationController.js";
 import { handleTelegramWebhook } from "./telegram/webhookHandler.js";
 import { handleWebSocketUpgrade } from "./realtime/wsHandler.js";
 
@@ -69,27 +70,9 @@ router.get("/api/avatar", async (req, env) => {
   return errorResponse("آواتار یافت نشد.", 404);
 });
 
-// ۸. اندپوینت‌های وب‌پوش قدیمی (حفظ موقت تا زمان اتصال کامل FCM در فاز ۱۱)
-router.get("/api/vapid-public-key", (req, env) => jsonResponse({ publicKey: env.VAPID_PUBLIC_KEY || null }));
-router.post("/api/push-subscribe", async (req, env) => {
-  try {
-    const { endpoint, p256dh, auth, sessionToken } = await req.json();
-    let userId = null;
-    if (sessionToken) {
-      const user = await env.DB.prepare("SELECT user_id FROM sessions WHERE token = ?").bind(sessionToken).first();
-      if (user) userId = user.user_id;
-    }
-
-    await env.DB.prepare(`
-      INSERT OR REPLACE INTO push_subscriptions (endpoint, p256dh, auth, user_id)
-      VALUES (?, ?, ?, ?)
-    `).bind(endpoint, p256dh, auth, userId).run().catch(() => {});
-
-    return jsonResponse({ ok: true });
-  } catch (e) {
-    return errorResponse("خطا در ثبت اشتراک پوش", 500);
-  }
-});
+// ۸. اندپوینت‌های مدیریت نوتیفیکیشن بومی FCM اندروید (فاز ۱۱ - جایگزین وب‌پوش قدیمی)
+router.post("/api/notifications/register-token", (req, env) => handleRegisterFcmToken(req, env));
+router.post("/api/notifications/unregister-token", (req, env) => handleUnregisterFcmToken(req, env));
 
 // ==========================================
 // اکسپورت ورکر و مدیریت رویدادها

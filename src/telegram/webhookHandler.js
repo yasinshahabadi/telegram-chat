@@ -1,5 +1,5 @@
 ﻿/**
- * Secure Telegram Webhook Handler (Integrated with Asynchronous Job Queue)
+ * Secure Telegram Webhook Handler (Integrated with Job Queue & FCM Notifications)
  * Enforces X-Telegram-Bot-Api-Secret-Token validation and offloads heavy tasks to background queue.
  */
 
@@ -12,6 +12,7 @@ import {
 } from "./normalizer.js";
 import { processTelegramAuthStart } from "../auth/authController.js";
 import { enqueueJob } from "../queue/jobQueue.js";
+import { dispatchNewMessagePush } from "../notifications/fcmService.js";
 
 /**
  * متد اصلی پردازش درخواست‌های وب‌هوک تلگرام
@@ -107,7 +108,7 @@ export async function handleTelegramWebhook(request, env, ctx) {
       if (isTargetChat && !update.message.from?.is_bot) {
         const normalized = await normalizeIncomingTelegramMessage(env.DB, update.message);
         if (normalized && normalized.message) {
-          // واگذاری برودکست و ارسال نوتیفیکیشن به صف پس‌زمینه با تلاش مجدد خودکار
+          // الف) برودکست فوری به روم زنده وب‌سوکت
           enqueueJob(ctx, env, {
             type: "BROADCAST_NEW_MESSAGE",
             payload: {
@@ -115,6 +116,13 @@ export async function handleTelegramWebhook(request, env, ctx) {
               message: normalized.message
             },
             handler: async (p, e) => broadcastToChatRoom(e, p)
+          });
+
+          // ب) ارسال موازی پوش‌نوتیفیکیشن بومی FCM به تمام گوشی‌های اندروید (فاز ۱۱)
+          enqueueJob(ctx, env, {
+            type: "DISPATCH_FCM_PUSH",
+            payload: normalized.message,
+            handler: async (msg, e) => dispatchNewMessagePush(e, msg)
           });
         }
       }
