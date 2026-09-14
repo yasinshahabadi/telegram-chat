@@ -41,6 +41,8 @@ dependencies:
   # سرویس پس‌زمینه و نوتیفیکیشن نیتیو اندروید
   flutter_foreground_task: ^8.17.0
   flutter_local_notifications: ^17.2.3
+  sqflite: ^2.4.4
+  path: ^1.9.1
 
 dependency_overrides:
   record_platform_interface: 1.2.0
