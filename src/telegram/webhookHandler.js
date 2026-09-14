@@ -1,6 +1,6 @@
 ﻿/**
- * Secure Telegram Webhook Handler
- * Enforces X-Telegram-Bot-Api-Secret-Token validation and routes Telegram updates.
+ * Secure Telegram Webhook Handler (Integrated with Asynchronous Job Queue)
+ * Enforces X-Telegram-Bot-Api-Secret-Token validation and offloads heavy tasks to background queue.
  */
 
 import { escapeXml, sendTelegramMessage, editTelegramMessageText } from "./telegramClient.js";
@@ -11,6 +11,7 @@ import {
   normalizeTelegramPin
 } from "./normalizer.js";
 import { processTelegramAuthStart } from "../auth/authController.js";
+import { enqueueJob } from "../queue/jobQueue.js";
 
 /**
  * متد اصلی پردازش درخواست‌های وب‌هوک تلگرام
@@ -50,7 +51,11 @@ export async function handleTelegramWebhook(request, env, ctx) {
     if (update.message && update.message.pinned_message) {
       const pinResult = await normalizeTelegramPin(env.DB, update.message.pinned_message.message_id);
       if (pinResult) {
-        await broadcastToChatRoom(env, { type: "message_pinned", message: pinResult.payload });
+        enqueueJob(ctx, env, {
+          type: "BROADCAST_PIN",
+          payload: { type: "message_pinned", message: pinResult.payload },
+          handler: async (p, e) => broadcastToChatRoom(e, p)
+        });
       }
       return new Response("OK");
     }
@@ -61,10 +66,14 @@ export async function handleTelegramWebhook(request, env, ctx) {
       if (isTargetChat) {
         const rxResult = await normalizeTelegramReaction(env.DB, update.message_reaction);
         if (rxResult) {
-          await broadcastToChatRoom(env, {
-            type: "reaction_updated",
-            messageId: rxResult.payload.messageId,
-            reactions: rxResult.payload.reactions
+          enqueueJob(ctx, env, {
+            type: "BROADCAST_REACTION",
+            payload: {
+              type: "reaction_updated",
+              messageId: rxResult.payload.messageId,
+              reactions: rxResult.payload.reactions
+            },
+            handler: async (p, e) => broadcastToChatRoom(e, p)
           });
         }
       }
@@ -77,11 +86,15 @@ export async function handleTelegramWebhook(request, env, ctx) {
       if (isTargetChat) {
         const editResult = await normalizeTelegramEdit(env.DB, update.edited_message);
         if (editResult) {
-          await broadcastToChatRoom(env, {
-            type: "message_edited",
-            messageId: editResult.payload.messageId,
-            tgMsgId: editResult.payload.telegramMessageId,
-            text: editResult.payload.text
+          enqueueJob(ctx, env, {
+            type: "BROADCAST_EDIT",
+            payload: {
+              type: "message_edited",
+              messageId: editResult.payload.messageId,
+              tgMsgId: editResult.payload.telegramMessageId,
+              text: editResult.payload.text
+            },
+            handler: async (p, e) => broadcastToChatRoom(e, p)
           });
         }
       }
@@ -94,16 +107,20 @@ export async function handleTelegramWebhook(request, env, ctx) {
       if (isTargetChat && !update.message.from?.is_bot) {
         const normalized = await normalizeIncomingTelegramMessage(env.DB, update.message);
         if (normalized && normalized.message) {
-          await broadcastToChatRoom(env, {
-            type: "new_message",
-            message: normalized.message
+          // واگذاری برودکست و ارسال نوتیفیکیشن به صف پس‌زمینه با تلاش مجدد خودکار
+          enqueueJob(ctx, env, {
+            type: "BROADCAST_NEW_MESSAGE",
+            payload: {
+              type: "new_message",
+              message: normalized.message
+            },
+            handler: async (p, e) => broadcastToChatRoom(e, p)
           });
         }
       }
       return new Response("OK");
     }
   } catch (err) {
-    // بازگرداندن پاسخ ۲۰۰ به تلگرام جهت جلوگیری از تلاش مجدد (Retry Loop) در مواجهه با خطای داخلی
     return new Response("OK");
   }
 
@@ -125,13 +142,11 @@ function checkIsTargetGroup(chatId, targetGroupId) {
 
 // برودکست رویداد به Durable Object اتاق چت
 async function broadcastToChatRoom(env, payload) {
-  try {
-    const roomId = env.CHAT_ROOM.idFromName("global_room");
-    await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-  } catch (err) {}
+  const roomId = env.CHAT_ROOM.idFromName("global_room");
+  await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 // هندلر دکمه‌های اینلاین ادمین
