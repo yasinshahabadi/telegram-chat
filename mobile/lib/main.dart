@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/database/app_database.dart';
 import 'core/database/local_chat_dao.dart';
+import 'core/network/network_monitor.dart';
 import 'features/auth/data/auth_local_storage.dart';
 import 'features/auth/data/auth_remote_service.dart';
 import 'features/auth/data/auth_repository.dart';
@@ -12,13 +13,14 @@ import 'features/auth/presentation/screens/login_screen.dart';
 import 'features/auth/presentation/screens/pending_approval_screen.dart';
 import 'features/chat/data/chat_repository.dart';
 import 'features/chat/data/chat_websocket_client.dart';
+import 'features/chat/data/sync_engine.dart';
 import 'features/chat/presentation/screens/chat_screen.dart';
 import 'features/notifications/data/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ۱. مقداردهی اولیه پایگاه داده محلی SQLite و تنظیمات
+  // ۱. مقداردهی اولیه پایگاه داده محلی SQLite و حافظه محلی
   final prefs = await SharedPreferences.getInstance();
   final localDao = LocalChatDao(appDatabase: AppDatabase.instance);
 
@@ -35,12 +37,31 @@ void main() async {
     socketClient: socketClient,
   );
 
-  // ۲. راه‌اندازی سرویس اعلان‌های نیتیو اندروید و ثبت کانال‌ها
+  // ۲. راه‌اندازی موتور همگام‌سازی دلتا و پایشگر شبکه
+  final syncEngine = SyncEngine(localDao: localDao);
+  final networkMonitor = NetworkMonitor.instance;
+  await networkMonitor.initialize();
+
+  // اتصال رویداد بازیابی شبکه: به محض وصل شدن اینترنت، سوکت متصل شده و دلتا سینک اجرا می‌شود
+  networkMonitor.onNetworkRestored = () async {
+    final token = authStorage.getSessionToken();
+    if (token != null && token.isNotEmpty) {
+      if (!socketClient.isConnected) {
+        socketClient.connect(token);
+      }
+      await syncEngine.syncMissedEvents(token, onSyncCompleted: () {
+        chatRepository.loadLocalMessages();
+        chatRepository.processPendingQueue();
+      });
+    }
+  };
+
+  // ۳. راه‌اندازی سرویس اعلان‌های نیتیو اندروید
   final notifService = NotificationService.instance;
   await notifService.initialize();
   await notifService.requestPermission();
 
-  // ۳. اتصال قابلیت پاسخ مستقیم از نوار اعلان (Android RemoteInput)
+  // اتصال پاسخ مستقیم از نوار نوتیفیکیشن
   notifService.onDirectReplyReceived = (replyText, payload) async {
     final currentUser = authRepository.currentUser;
     if (currentUser != null && replyText.trim().isNotEmpty) {
@@ -51,7 +72,7 @@ void main() async {
     }
   };
 
-  // ۴. بررسی اولیه وضعیت نشست (پشتیبانی آفلاین در صورت قطعی اینترنت)
+  // ۴. بررسی اولیه نشست کاربر (لود آفلاین در صورت نبود اینترنت)
   await authRepository.initialize();
 
   runApp(TelegramChatApp(
@@ -60,6 +81,7 @@ void main() async {
     chatRepository: chatRepository,
     socketClient: socketClient,
     notifService: notifService,
+    syncEngine: syncEngine,
   ));
 }
 
@@ -70,6 +92,7 @@ class TelegramChatApp extends StatelessWidget {
   final ChatRepository chatRepository;
   final ChatWebSocketClient socketClient;
   final NotificationService notifService;
+  final SyncEngine syncEngine;
 
   const TelegramChatApp({
     super.key,
@@ -78,12 +101,20 @@ class TelegramChatApp extends StatelessWidget {
     required this.chatRepository,
     required this.socketClient,
     required this.notifService,
+    required this.syncEngine,
   });
 
-  void _ensureSocketConnected() {
+  void _ensureConnectedAndSynced() {
     final token = authStorage.getSessionToken();
-    if (token != null && token.isNotEmpty && !socketClient.isConnected) {
-      socketClient.connect(token);
+    if (token != null && token.isNotEmpty) {
+      if (!socketClient.isConnected) {
+        socketClient.connect(token);
+      }
+      // اجرای همگام‌سازی پس‌زمینه برای رویدادهای از دست رفته
+      syncEngine.syncMissedEvents(token, onSyncCompleted: () {
+        chatRepository.loadLocalMessages();
+        chatRepository.processPendingQueue();
+      });
     }
   }
 
@@ -105,7 +136,7 @@ class TelegramChatApp extends StatelessWidget {
         GlobalCupertinoLocalizations.delegate,
       ],
 
-      // تم متریال ۳ الهام‌گرفته از استایل استاندارد تلگرام
+      // تم متریال ۳ تلگرامی
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -130,7 +161,7 @@ class TelegramChatApp extends StatelessWidget {
       ),
       themeMode: ThemeMode.system,
 
-      // مسیریابی هوشمند و واکنشی بر اساس وضعیت نشست
+      // مسیریابی هوشمند بر اساس وضعیت احراز هویت
       home: ListenableBuilder(
         listenable: authRepository,
         builder: (context, _) {
@@ -148,24 +179,24 @@ class TelegramChatApp extends StatelessWidget {
             return LoginScreen(
               authRepository: authRepository,
               onAuthenticated: () {
-                _ensureSocketConnected();
+                _ensureConnectedAndSynced();
               },
             );
           }
 
-          // اگر کاربر در انتظار تایید مدیر در تلگرام باشد
+          // اگر در انتظار تایید مدیر باشد
           if (authRepository.status == AuthStatus.pendingApproval) {
             return PendingApprovalScreen(
               authRepository: authRepository,
               onApproved: () {
-                _ensureSocketConnected();
+                _ensureConnectedAndSynced();
               },
             );
           }
 
-          // اگر کاربر احراز هویت شده باشد (آنلاین یا آفلاین)
+          // اگر کاربر تایید و وارد شده باشد (آنلاین یا آفلاین)
           if (authRepository.isAuthenticated) {
-            _ensureSocketConnected();
+            _ensureConnectedAndSynced();
             notifService.cancelAllNotifications();
 
             return ChatScreen(
@@ -182,7 +213,7 @@ class TelegramChatApp extends StatelessWidget {
           return LoginScreen(
             authRepository: authRepository,
             onAuthenticated: () {
-              _ensureSocketConnected();
+              _ensureConnectedAndSynced();
             },
           );
         },
