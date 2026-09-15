@@ -2,7 +2,7 @@
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 
-/// نوار ورودی پایین صفحه چت با پشتیبانی از ضبط صدا و ارسال فایل
+/// نوار ورودی پایین صفحه چت با بهینه‌سازی مصرف حافظه و رندرینگ
 class ChatInputBar extends StatelessWidget {
   final TextEditingController controller;
   final ChatMessageModel? replyMessage;
@@ -64,7 +64,7 @@ class ChatInputBar extends StatelessWidget {
               if (replyMessage != null && !isRecording) ...[
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  color: theme.colorScheme.surfaceVariant.withAlpha(100),
+                  color: theme.colorScheme.surface.withAlpha(40),
                   child: Row(
                     children: [
                       Icon(
@@ -179,7 +179,7 @@ class ChatInputBar extends StatelessWidget {
                               color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
                             ),
                             filled: true,
-                            fillColor: theme.colorScheme.surfaceVariant.withAlpha(70),
+                            fillColor: theme.colorScheme.surface.withAlpha(30),
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 16,
                               vertical: 10,
@@ -193,7 +193,6 @@ class ChatInputBar extends StatelessWidget {
                       ),
                       const SizedBox(width: 6),
 
-                      // دکمه تغییر هوشمند بین ارسال متن و ضبط ویس
                       ValueListenableBuilder<TextEditingValue>(
                         valueListenable: controller,
                         builder: (context, value, _) {

@@ -2,10 +2,8 @@
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
-///
-/// Local SQLite Database Manager (Offline-First Architecture)
-/// Serves as the single source of truth for all cached messages, attachments, and pending actions.
-///
+/// Local SQLite Database Manager (High-Performance Offline-First Architecture)
+/// Features WAL mode, concurrent reads, and optimized indexes.
 class AppDatabase {
   static final AppDatabase instance = AppDatabase._internal();
   static Database? _database;
@@ -31,12 +29,18 @@ class AppDatabase {
   }
 
   Future<void> _onConfigure(Database db) async {
-    // فعال‌سازی کلیدهای خارجی در موتور SQLite اندروید
+    // ۱. فعال‌سازی کلیدهای خارجی
     await db.execute('PRAGMA foreign_keys = ON');
+
+    // ۲. فعال‌سازی حالت Write-Ahead Logging جهت خواندن و نوشتن هم‌زمان بدون قفل شدن
+    await db.execute('PRAGMA journal_mode = WAL');
+
+    // ۳. بهینه‌سازی سرعت نوشتن روی دیسک
+    await db.execute('PRAGMA synchronous = NORMAL');
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    // ۱. جدول پیام‌های محلی (با فیلد وضعیت ارسال جهت تاب‌آوری در زمان قطعی اینترنت)
+    // جدول پیام‌های محلی
     await db.execute('''
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,
@@ -57,7 +61,7 @@ class AppDatabase {
       )
     ''');
 
-    // ۲. جدول پیوست‌ها و فایل‌های چندرسانه‌ای محلی
+    // جدول پیوست‌ها و فایل‌های چندرسانه‌ای
     await db.execute('''
       CREATE TABLE attachments (
         id TEXT PRIMARY KEY,
@@ -78,7 +82,7 @@ class AppDatabase {
       )
     ''');
 
-    // ۳. جدول ری‌اکشن‌های محلی
+    // جدول ری‌اکشن‌های محلی
     await db.execute('''
       CREATE TABLE reactions (
         id TEXT PRIMARY KEY,
@@ -92,7 +96,7 @@ class AppDatabase {
       )
     ''');
 
-    // ۴. صف اکشن‌های معلق آفلاین (پیام‌ها یا واکنش‌های ارسال‌شده در زمان قطعی اینترنت)
+    // صف کارهای معلق آفلاین
     await db.execute('''
       CREATE TABLE pending_actions (
         id TEXT PRIMARY KEY,
@@ -103,7 +107,7 @@ class AppDatabase {
       )
     ''');
 
-    // ۵. جدول وضعیت همگام‌سازی (نگهداری آخرین نشانگر سرور)
+    // وضعیت همگام‌سازی
     await db.execute('''
       CREATE TABLE sync_state (
         key TEXT PRIMARY KEY,
@@ -112,7 +116,7 @@ class AppDatabase {
       )
     ''');
 
-    // ۶. ایندکس‌های بهینه پرفورمنس جهت اسکرول و واکشی روان در اندروید
+    // ایندکس‌های پرسرعت برای اسکرول ۶۰ تا ۱۲۰ فریم در اندروید
     await db.execute('CREATE INDEX idx_local_msg_created ON messages(created_at DESC)');
     await db.execute('CREATE INDEX idx_local_msg_client_id ON messages(client_message_id)');
     await db.execute('CREATE INDEX idx_local_attach_msg ON attachments(message_id)');

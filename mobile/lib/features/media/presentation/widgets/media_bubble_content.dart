@@ -4,7 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 
-/// ویجت اختصاصی نمایش محتوای چندرسانه‌ای درون بالون پیام
+/// ویجت اختصاصی نمایش محتوای چندرسانه‌ای درون بالون پیام با بهینه‌سازی مصرف حافظه رم
 class MediaBubbleContent extends StatefulWidget {
   final MediaAttachmentModel attachment;
   final bool isMe;
@@ -73,7 +73,7 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
     final att = widget.attachment;
     final theme = Theme.of(context);
 
-    // ۱. نمایش تصویر
+    // ۱. نمایش تصویر با بهینه‌سازی حداکثری رم (memCacheWidth)
     if (att.isPhoto) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
@@ -85,13 +85,19 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
                 ? Image.file(
                     File(att.localPath!),
                     fit: BoxFit.cover,
+                    // دیکود تصویر با رزولوشن بهینه جهت عدم اشغال رم
+                    cacheWidth: 600,
                   )
                 : CachedNetworkImage(
                     imageUrl: att.getDownloadUrl(widget.baseUrl),
                     fit: BoxFit.cover,
+                    // جلوگیری از دیکود تصاویر حجیم دوربین در رم
+                    memCacheWidth: 600,
+                    maxWidthDiskCache: 1000,
+                    maxHeightDiskCache: 1000,
                     placeholder: (_, __) => Container(
                       height: 180,
-                      color: theme.colorScheme.surfaceVariant.withAlpha(80),
+                      color: theme.colorScheme.surface.withAlpha(50),
                       child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
                     ),
                     errorWidget: (_, __, ___) => Container(
@@ -116,7 +122,7 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
         decoration: BoxDecoration(
           color: widget.isMe
               ? theme.colorScheme.primaryContainer.withAlpha(100)
-              : theme.colorScheme.surfaceVariant.withAlpha(120),
+              : theme.colorScheme.surface.withAlpha(80),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
@@ -185,7 +191,7 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
       decoration: BoxDecoration(
         color: widget.isMe
             ? theme.colorScheme.primaryContainer.withAlpha(100)
-            : theme.colorScheme.surfaceVariant.withAlpha(120),
+            : theme.colorScheme.surface.withAlpha(80),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(

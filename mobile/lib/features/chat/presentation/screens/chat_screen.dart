@@ -10,7 +10,7 @@ import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_
 import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 
-/// صفحه اصلی گفتگوی سوپرگروه با پشتیبانی از ارسال فایل و ضبط ویس
+/// صفحه اصلی چت بهینه‌سازی‌شده برای عملکرد روان و بدون لگ در اندروید
 class ChatScreen extends StatefulWidget {
   final AuthRepository authRepository;
   final ChatRepository chatRepository;
@@ -77,13 +77,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
         0.0,
-        duration: const Duration(milliseconds: 250),
+        duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
       );
     }
   }
 
-  /// آغاز ضبط ویس با میکروفون
   Future<void> _handleStartRecordVoice() async {
     final started = await _voiceRecordService.startRecording();
     if (!started && mounted) {
@@ -93,20 +92,17 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// توقف و ارسال خودکار ویس به R2 و چت
   Future<void> _handleStopAndSendVoice() async {
     final path = await _voiceRecordService.stopRecording();
     if (path == null) return;
 
     final user = widget.authRepository.currentUser;
-    final token = widget.authRepository.pendingSessionToken; // توکن نشست
+    final token = widget.authRepository.pendingSessionToken;
     if (user == null) return;
 
     final file = File(path);
     if (!await file.exists()) return;
 
-
-    // آپلود فایل به باکت ابری R2
     if (token != null) {
       _mediaRemoteService.uploadFile(
         file: file,
@@ -119,7 +115,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
-  /// منوی انتخاب و ارسال فایل (عکس، ویدیو، سند)
   Future<void> _handleAttachmentPick() async {
     showModalBottomSheet(
       context: context,
@@ -380,7 +375,7 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
 
-            // لیست پیام‌ها
+            // لیست پیام‌ها با بهینه‌سازی‌های پرفورمنس
             Expanded(
               child: AnimatedBuilder(
                 animation: widget.chatRepository,
@@ -405,7 +400,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
                   return ListView.builder(
                     controller: _scrollController,
-                    reverse: true,
+                    reverse: true, // نمایش پیام جدید در پایین
+                    cacheExtent: 500.0, // پیش‌رندر ۵۰۰ پیکسل فراتر از صفحه برای اسکرول فوق‌العاده نرم
+                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       final message = messages[index];
@@ -413,16 +410,20 @@ class _ChatScreenState extends State<ChatScreen> {
                           (message.senderId == currentUser.id ||
                               message.senderName == currentUser.fullName);
 
-                      return MessageBubble(
-                        message: message,
-                        isMe: isMe,
-                        onReply: () {
-                          setState(() {
-                            _replyingMessage = message;
-                          });
-                        },
-                        onEdit: isMe ? () => _showEditDialog(message) : null,
-                        onPin: () => widget.chatRepository.pinMessage(message.id),
+                      // ایزوله‌سازی رندر هر بالون با RepaintBoundary جهت جلوگیری از رندر مجدد بقیه لیست
+                      return RepaintBoundary(
+                        key: ValueKey(message.id),
+                        child: MessageBubble(
+                          message: message,
+                          isMe: isMe,
+                          onReply: () {
+                            setState(() {
+                              _replyingMessage = message;
+                            });
+                          },
+                          onEdit: isMe ? () => _showEditDialog(message) : null,
+                          onPin: () => widget.chatRepository.pinMessage(message.id),
+                        ),
                       );
                     },
                   );

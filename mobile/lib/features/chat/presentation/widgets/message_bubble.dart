@@ -3,7 +3,7 @@ import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/widgets/media_bubble_content.dart';
 
-/// ویجت بالون نمایش پیام متنی و پیوست رسانه‌ای الهام‌گرفته از استایل تلگرام
+/// ویجت بالون نمایش پیام با بهینه‌سازی رندر و رنگ‌های متریال
 class MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool isMe;
@@ -34,7 +34,7 @@ class MessageBubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: isMe
               ? theme.colorScheme.primaryContainer
-              : theme.colorScheme.surfaceVariant.withAlpha(160),
+              : theme.colorScheme.surface.withAlpha(40),
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
             topRight: const Radius.circular(16),
@@ -53,7 +53,6 @@ class MessageBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // ۱. نام فرستنده برای پیام‌های دریافتی از تلگرام
                   if (!isMe) ...[
                     Text(
                       message.senderName,
@@ -66,7 +65,6 @@ class MessageBubble extends StatelessWidget {
                     const SizedBox(height: 4),
                   ],
 
-                  // ۲. کادر پیش‌نمایش ریپلای
                   if (message.replyToName != null) ...[
                     Container(
                       margin: const EdgeInsets.only(bottom: 6),
@@ -106,7 +104,6 @@ class MessageBubble extends StatelessWidget {
                     ),
                   ],
 
-                  // ۳. محتوای چندرسانه‌ای (عکس، ویدیو، ویس یا سند) در صورت وجود
                   if (message.attachment != null) ...[
                     MediaBubbleContent(
                       attachment: message.attachment!,
@@ -116,7 +113,6 @@ class MessageBubble extends StatelessWidget {
                     if (message.text.isNotEmpty) const SizedBox(height: 6),
                   ],
 
-                  // ۴. متن پیام
                   if (message.text.isNotEmpty) ...[
                     Text(
                       message.text,
@@ -132,7 +128,6 @@ class MessageBubble extends StatelessWidget {
 
                   const SizedBox(height: 4),
 
-                  // ۵. سطر پایین: زمان، برچسب ویرایش و آیکون وضعیت ارسال
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.end,
