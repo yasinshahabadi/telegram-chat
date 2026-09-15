@@ -1,4 +1,6 @@
-﻿/// وضعیت ارسال پیام در شرایط آنلاین و آفلاین
+﻿import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
+
+/// وضعیت ارسال پیام در شرایط آنلاین و آفلاین
 enum MessageStatus {
   /// در صف ارسال (آفلاین یا منتظر سوکت)
   pending,
@@ -29,7 +31,7 @@ enum MessageStatus {
   String get name => toString().split('.').last;
 }
 
-/// مدل داده‌ای پیام چت
+/// مدل داده‌ای پیام چت همراه با پیوست چندرسانه‌ای
 class ChatMessageModel {
   final String id;
   final String? clientMessageId;
@@ -47,6 +49,7 @@ class ChatMessageModel {
   final int createdAt;
   final int updatedAt;
   final Map<String, int> reactions;
+  final MediaAttachmentModel? attachment;
 
   const ChatMessageModel({
     required this.id,
@@ -65,10 +68,15 @@ class ChatMessageModel {
     required this.createdAt,
     required this.updatedAt,
     this.reactions = const {},
+    this.attachment,
   });
 
   /// ایجاد شیء از رکورد دیتابیس محلی SQLite
-  factory ChatMessageModel.fromDbMap(Map<String, dynamic> map, {Map<String, int> reactions = const {}}) {
+  factory ChatMessageModel.fromDbMap(
+    Map<String, dynamic> map, {
+    Map<String, int> reactions = const {},
+    MediaAttachmentModel? attachment,
+  }) {
     return ChatMessageModel(
       id: map['id'] as String? ?? '',
       clientMessageId: map['client_message_id'] as String?,
@@ -86,6 +94,7 @@ class ChatMessageModel {
       createdAt: map['created_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: map['updated_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       reactions: reactions,
+      attachment: attachment,
     );
   }
 
@@ -112,6 +121,11 @@ class ChatMessageModel {
 
   /// ایجاد شیء از خروجی وب‌سوکت یا REST API سرور
   factory ChatMessageModel.fromJson(Map<String, dynamic> json) {
+    MediaAttachmentModel? att;
+    if (json['attachment'] != null && json['attachment'] is Map<String, dynamic>) {
+      att = MediaAttachmentModel.fromJson(json['attachment'] as Map<String, dynamic>);
+    }
+
     return ChatMessageModel(
       id: json['id'] as String? ?? '',
       clientMessageId: json['clientMessageId'] as String? ?? json['client_message_id'] as String?,
@@ -128,6 +142,7 @@ class ChatMessageModel {
       status: MessageStatus.synced,
       createdAt: json['createdAt'] as int? ?? json['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: json['updatedAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+      attachment: att,
     );
   }
 
@@ -148,6 +163,7 @@ class ChatMessageModel {
     int? createdAt,
     int? updatedAt,
     Map<String, int>? reactions,
+    MediaAttachmentModel? attachment,
   }) {
     return ChatMessageModel(
       id: id ?? this.id,
@@ -166,6 +182,7 @@ class ChatMessageModel {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       reactions: reactions ?? this.reactions,
+      attachment: attachment ?? this.attachment,
     );
   }
 

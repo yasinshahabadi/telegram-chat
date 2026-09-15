@@ -1,7 +1,9 @@
 ﻿import 'package:flutter/material.dart';
-import '../../domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/config.dart';
+import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/media/presentation/widgets/media_bubble_content.dart';
 
-/// ویجت بالون نمایش پیام متنی الهام‌گرفته از استایل تلگرام
+/// ویجت بالون نمایش پیام متنی و پیوست رسانه‌ای الهام‌گرفته از استایل تلگرام
 class MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool isMe;
@@ -32,7 +34,7 @@ class MessageBubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: isMe
               ? theme.colorScheme.primaryContainer
-              : theme.colorScheme.surfaceVariant.withOpacity(0.7),
+              : theme.colorScheme.surfaceVariant.withAlpha(160),
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
             topRight: const Radius.circular(16),
@@ -51,7 +53,7 @@ class MessageBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // نام فرستنده برای پیام‌های دریافتی از تلگرام یا دیگران
+                  // ۱. نام فرستنده برای پیام‌های دریافتی از تلگرام
                   if (!isMe) ...[
                     Text(
                       message.senderName,
@@ -64,13 +66,13 @@ class MessageBubble extends StatelessWidget {
                     const SizedBox(height: 4),
                   ],
 
-                  // کادر پیش‌نمایش ریپلای
+                  // ۲. کادر پیش‌نمایش ریپلای
                   if (message.replyToName != null) ...[
                     Container(
                       margin: const EdgeInsets.only(bottom: 6),
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.onSurface.withOpacity(0.06),
+                        color: theme.colorScheme.onSurface.withAlpha(16),
                         borderRadius: BorderRadius.circular(6),
                         border: Border(
                           right: BorderSide(
@@ -104,21 +106,33 @@ class MessageBubble extends StatelessWidget {
                     ),
                   ],
 
-                  // متن اصلی پیام
-                  Text(
-                    message.text,
-                    style: TextStyle(
-                      fontSize: 15,
-                      height: 1.35,
-                      color: isMe
-                          ? theme.colorScheme.onPrimaryContainer
-                          : theme.colorScheme.onSurface,
+                  // ۳. محتوای چندرسانه‌ای (عکس، ویدیو، ویس یا سند) در صورت وجود
+                  if (message.attachment != null) ...[
+                    MediaBubbleContent(
+                      attachment: message.attachment!,
+                      isMe: isMe,
+                      baseUrl: AppConfig.baseUrl,
                     ),
-                  ),
+                    if (message.text.isNotEmpty) const SizedBox(height: 6),
+                  ],
+
+                  // ۴. متن پیام
+                  if (message.text.isNotEmpty) ...[
+                    Text(
+                      message.text,
+                      style: TextStyle(
+                        fontSize: 15,
+                        height: 1.35,
+                        color: isMe
+                            ? theme.colorScheme.onPrimaryContainer
+                            : theme.colorScheme.onSurface,
+                      ),
+                    ),
+                  ],
 
                   const SizedBox(height: 4),
 
-                  // سطر پایین: زمان پیام، وضعیت ادیت و آیکون وضعیت ارسال
+                  // ۵. سطر پایین: زمان، برچسب ویرایش و آیکون وضعیت ارسال
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.end,
@@ -129,7 +143,7 @@ class MessageBubble extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 10,
                             fontStyle: FontStyle.italic,
-                            color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
+                            color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
                           ),
                         ),
                       ],
@@ -137,7 +151,7 @@ class MessageBubble extends StatelessWidget {
                         message.formattedTime,
                         style: TextStyle(
                           fontSize: 11,
-                          color: theme.colorScheme.onSurfaceVariant.withOpacity(0.8),
+                          color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
                         ),
                       ),
                       if (isMe) ...[
@@ -155,13 +169,12 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  /// ساخت آیکون زنده وضعیت ارسال
   Widget _buildStatusIcon(ThemeData theme) {
     if (message.isPending || message.isSending) {
       return Icon(
         Icons.access_time_rounded,
         size: 13,
-        color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
+        color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
       );
     }
 
@@ -198,7 +211,7 @@ class MessageBubble extends StatelessWidget {
                 onReply?.call();
               },
             ),
-            if (isMe)
+            if (isMe && message.text.isNotEmpty)
               ListTile(
                 leading: const Icon(Icons.edit_rounded),
                 title: const Text('ویرایش متن'),

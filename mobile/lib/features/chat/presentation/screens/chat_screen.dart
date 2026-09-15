@@ -1,12 +1,16 @@
-﻿import 'package:flutter/material.dart';
+﻿import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_websocket_client.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_input_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_bubble.dart';
+import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
+import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 
-/// صفحه اصلی گفتگوی سوپرگروه متصل به تلگرام
+/// صفحه اصلی گفتگوی سوپرگروه با پشتیبانی از ارسال فایل و ضبط ویس
 class ChatScreen extends StatefulWidget {
   final AuthRepository authRepository;
   final ChatRepository chatRepository;
@@ -26,6 +30,9 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final VoiceRecordService _voiceRecordService = VoiceRecordService();
+  final MediaRemoteService _mediaRemoteService = MediaRemoteService();
+
   ChatMessageModel? _replyingMessage;
 
   @override
@@ -45,6 +52,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
+    _voiceRecordService.dispose();
     super.dispose();
   }
 
@@ -62,6 +70,10 @@ class _ChatScreenState extends State<ChatScreen> {
       _replyingMessage = null;
     });
 
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
         0.0,
@@ -69,6 +81,113 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOut,
       );
     }
+  }
+
+  /// آغاز ضبط ویس با میکروفون
+  Future<void> _handleStartRecordVoice() async {
+    final started = await _voiceRecordService.startRecording();
+    if (!started && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('دسترسی به میکروفون داده نشد.')),
+      );
+    }
+  }
+
+  /// توقف و ارسال خودکار ویس به R2 و چت
+  Future<void> _handleStopAndSendVoice() async {
+    final path = await _voiceRecordService.stopRecording();
+    if (path == null) return;
+
+    final user = widget.authRepository.currentUser;
+    final token = widget.authRepository.pendingSessionToken; // توکن نشست
+    if (user == null) return;
+
+    final file = File(path);
+    if (!await file.exists()) return;
+
+
+    // آپلود فایل به باکت ابری R2
+    if (token != null) {
+      _mediaRemoteService.uploadFile(
+        file: file,
+        sessionToken: token,
+        mediaType: 'voice',
+        caption: '',
+      );
+    }
+
+    _scrollToBottom();
+  }
+
+  /// منوی انتخاب و ارسال فایل (عکس، ویدیو، سند)
+  Future<void> _handleAttachmentPick() async {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.image_rounded, color: Colors.blue),
+                title: const Text('ارسال عکس یا ویدیو'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndSendFile(FileType.media);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.insert_drive_file_rounded, color: Colors.amber),
+                title: const Text('ارسال فایل و اسناد'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndSendFile(FileType.any);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndSendFile(FileType type) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(type: type);
+      if (result == null || result.files.single.path == null) return;
+
+      final file = File(result.files.single.path!);
+      final user = widget.authRepository.currentUser;
+      final token = widget.authRepository.pendingSessionToken;
+      if (user == null) return;
+
+      final fileName = result.files.single.name;
+      final ext = fileName.split('.').last.toLowerCase();
+      String mediaType = 'document';
+
+      if (['jpg', 'jpeg', 'png', 'webp'].contains(ext)) {
+        mediaType = 'photo';
+      } else if (['mp4', 'mov', 'mkv'].contains(ext)) {
+        mediaType = 'video';
+      } else if (['mp3', 'm4a', 'wav', 'ogg'].contains(ext)) {
+        mediaType = 'audio';
+      }
+
+      if (token != null) {
+        _mediaRemoteService.uploadFile(
+          file: file,
+          sessionToken: token,
+          mediaType: mediaType,
+          caption: '',
+        );
+      }
+
+      _scrollToBottom();
+    } catch (_) {}
   }
 
   void _showEditDialog(ChatMessageModel message) {
@@ -261,7 +380,7 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
 
-            // لیست پیام‌ها (معکوس جهت عملکرد چت واقعی)
+            // لیست پیام‌ها
             Expanded(
               child: AnimatedBuilder(
                 animation: widget.chatRepository,
@@ -311,7 +430,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
 
-            // نوار تایپ و ارسال
+            // نوار تایپ، ارسال و ضبط ویس
             ChatInputBar(
               controller: _inputController,
               replyMessage: _replyingMessage,
@@ -322,11 +441,11 @@ class _ChatScreenState extends State<ChatScreen> {
               },
               onSend: _handleSendMessage,
               onTyping: () => widget.chatRepository.sendTyping(),
-              onAttachment: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('سیستم ارسال فایل در فاز ۱۵ متصل می‌شود.')),
-                );
-              },
+              onAttachment: _handleAttachmentPick,
+              voiceRecordService: _voiceRecordService,
+              onStartRecordVoice: _handleStartRecordVoice,
+              onStopAndSendVoice: _handleStopAndSendVoice,
+              onCancelRecordVoice: () => _voiceRecordService.cancelRecording(),
             ),
           ],
         ),
