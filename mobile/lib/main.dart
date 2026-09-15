@@ -13,11 +13,12 @@ import 'features/auth/presentation/screens/pending_approval_screen.dart';
 import 'features/chat/data/chat_repository.dart';
 import 'features/chat/data/chat_websocket_client.dart';
 import 'features/chat/presentation/screens/chat_screen.dart';
+import 'features/notifications/data/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ۱. مقداردهی اولیه سرویس‌های داده‌ای و پایگاه داده محلی SQLite
+  // ۱. مقداردهی اولیه پایگاه داده محلی SQLite و تنظیمات
   final prefs = await SharedPreferences.getInstance();
   final localDao = LocalChatDao(appDatabase: AppDatabase.instance);
 
@@ -34,7 +35,23 @@ void main() async {
     socketClient: socketClient,
   );
 
-  // ۲. بررسی اولیه وضعیت نشست (پشتیبانی از بالا آمدن آفلاین در صورت قطعی اینترنت)
+  // ۲. راه‌اندازی سرویس اعلان‌های نیتیو اندروید و ثبت کانال‌ها
+  final notifService = NotificationService.instance;
+  await notifService.initialize();
+  await notifService.requestPermission();
+
+  // ۳. اتصال قابلیت پاسخ مستقیم از نوار اعلان (Android RemoteInput)
+  notifService.onDirectReplyReceived = (replyText, payload) async {
+    final currentUser = authRepository.currentUser;
+    if (currentUser != null && replyText.trim().isNotEmpty) {
+      await chatRepository.sendMessage(
+        text: replyText.trim(),
+        currentUser: currentUser,
+      );
+    }
+  };
+
+  // ۴. بررسی اولیه وضعیت نشست (پشتیبانی آفلاین در صورت قطعی اینترنت)
   await authRepository.initialize();
 
   runApp(TelegramChatApp(
@@ -42,6 +59,7 @@ void main() async {
     authStorage: authStorage,
     chatRepository: chatRepository,
     socketClient: socketClient,
+    notifService: notifService,
   ));
 }
 
@@ -51,6 +69,7 @@ class TelegramChatApp extends StatelessWidget {
   final AuthLocalStorage authStorage;
   final ChatRepository chatRepository;
   final ChatWebSocketClient socketClient;
+  final NotificationService notifService;
 
   const TelegramChatApp({
     super.key,
@@ -58,6 +77,7 @@ class TelegramChatApp extends StatelessWidget {
     required this.authStorage,
     required this.chatRepository,
     required this.socketClient,
+    required this.notifService,
   });
 
   void _ensureSocketConnected() {
@@ -85,7 +105,7 @@ class TelegramChatApp extends StatelessWidget {
         GlobalCupertinoLocalizations.delegate,
       ],
 
-      // تم متریال ۳ الهام‌گرفته از رنگ‌آمیزی استاندارد تلگرام
+      // تم متریال ۳ الهام‌گرفته از استایل استاندارد تلگرام
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -110,11 +130,11 @@ class TelegramChatApp extends StatelessWidget {
       ),
       themeMode: ThemeMode.system,
 
-      // مسیریابی خودکار بر اساس تغییرات وضعیت احراز هویت
+      // مسیریابی هوشمند و واکنشی بر اساس وضعیت نشست
       home: ListenableBuilder(
         listenable: authRepository,
         builder: (context, _) {
-          // وضعیت لودینگ اولیه
+          // وضعیت بارگذاری اولیه
           if (authRepository.isLoading && authRepository.status == AuthStatus.initial) {
             return const Scaffold(
               body: Center(
@@ -146,11 +166,14 @@ class TelegramChatApp extends StatelessWidget {
           // اگر کاربر احراز هویت شده باشد (آنلاین یا آفلاین)
           if (authRepository.isAuthenticated) {
             _ensureSocketConnected();
+            notifService.cancelAllNotifications();
+
             return ChatScreen(
               authRepository: authRepository,
               chatRepository: chatRepository,
               onLogout: () async {
                 socketClient.disconnect();
+                await notifService.cancelAllNotifications();
                 await authRepository.logout();
               },
             );
