@@ -1,7 +1,7 @@
-﻿// src/index.js - Telegram Chat Worker Entrypoint (Modular Architecture v2)
+﻿// src/index.js - Guysgram Backend Worker Entrypoint (Modular Android-Only v2)
 
 import { Router } from "./core/router.js";
-import { jsonResponse, errorResponse } from "./core/response.js";
+import { errorResponse } from "./core/response.js";
 import { handleVerifyDevice, handleGetMe, handleLogout } from "./auth/authController.js";
 import { handleGetMessages } from "./chat/messagesController.js";
 import { handleSyncEvents, handleGetLatestCursor } from "./sync/syncController.js";
@@ -70,7 +70,7 @@ router.get("/api/avatar", async (req, env) => {
   return errorResponse("آواتار یافت نشد.", 404);
 });
 
-// ۸. اندپوینت‌های مدیریت نوتیفیکیشن بومی FCM اندروید (فاز ۱۱ - جایگزین وب‌پوش قدیمی)
+// ۸. اندپوینت‌های مدیریت نوتیفیکیشن بومی FCM اندروید (فاز ۱۱)
 router.post("/api/notifications/register-token", (req, env) => handleRegisterFcmToken(req, env));
 router.post("/api/notifications/unregister-token", (req, env) => handleUnregisterFcmToken(req, env));
 
@@ -79,13 +79,7 @@ router.post("/api/notifications/unregister-token", (req, env) => handleUnregiste
 // ==========================================
 export default {
   async fetch(request, env, ctx) {
-    const res = await router.handle(request, env, ctx);
-
-    if (res.status === 404 && env.ASSETS) {
-      return env.ASSETS.fetch(request);
-    }
-
-    return res;
+    return await router.handle(request, env, ctx);
   },
 
   async scheduled(event, env, ctx) {
