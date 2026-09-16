@@ -121,7 +121,7 @@ class TelegramChatApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'پیام‌رسان تلگرام',
+      title: 'Guysgram',
       debugShowCheckedModeBanner: false,
 
       // پیکربندی بومی زبان فارسی و راست‌چین

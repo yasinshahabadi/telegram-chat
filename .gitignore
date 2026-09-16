@@ -1,6 +1,41 @@
+﻿# Cloudflare & Node Environment
 node_modules/
 .env
 .dev.vars
 .wrangler/
 dist/
 backups/
+
+# Private Keys & Service Accounts
+*.pem
+*.key
+*.crt
+*service-account*.json
+firebase-adminsdk*.json
+
+# Firebase Client Configuration (Critical Security)
+**/google-services.json
+google-services.json
+
+# Android Release Keystores
+*.keystore
+*.jks
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Flutter & Dart Build Artifacts
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.packages
+mobile/build/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/app/release/
