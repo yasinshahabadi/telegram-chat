@@ -2,12 +2,12 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
-import '../../../core/database/local_chat_dao.dart';
-import '../../auth/domain/models/auth_user.dart';
-import '../domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
+import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
+import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
 import 'chat_websocket_client.dart';
 
-/// ریپازیتوری و مدیر وضعیت گفتگوی زنده و آفلاین
+/// ریپازیتوری چت مجهز به لاگ‌های زنده عیب‌یابی
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
@@ -33,54 +33,61 @@ class ChatRepository extends ChangeNotifier {
   bool get isLoading => _isLoading;
   SocketConnectionState get connectionState => _socketClient.state;
 
-  /// بارگذاری پیام‌های اولیه از دیتابیس محلی SQLite جهت رندر آنی
   Future<void> initialize(AuthUser currentUser) async {
+    debugPrint('[CHAT] Initializing ChatRepository for user: ${currentUser.fullName} (${currentUser.id})');
     _isLoading = true;
     notifyListeners();
 
-    // ۱. خواندن سریع تاریخچه از SQLite (بدون معطلی برای اینترنت)
-    await loadLocalMessages();
-
-    // ۲. گوش دادن به وضعیت اتصال سوکت و تخلیه صف آفلاین پس از وصل شدن
-    _socketStateSubscription?.cancel();
-    _socketStateSubscription = _socketClient.stateStream.listen((state) {
-      if (state == SocketConnectionState.connected) {
-        processPendingQueue();
-      }
-      notifyListeners();
-    });
-
-    // ۳. گوش دادن به پیام‌های ورودی از سوکت زنده
-    _socketSubscription?.cancel();
-    _socketSubscription = _socketClient.messageStream.listen((event) {
-      _handleIncomingSocketEvent(event, currentUser);
-    });
-
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  /// بارگذاری تاریخچه پیام‌ها از پایگاه داده محلی SQLite
-  Future<void> loadLocalMessages({int limit = 50}) async {
-    final rawList = await _localDao.getMessagesList(limit: limit);
-    _messages = rawList.map((m) => ChatMessageModel.fromDbMap(m)).toList();
-
-    // شناسایی پیام پین‌شده محلی
     try {
-      _pinnedMessage = _messages.firstWhere((m) => m.isPinned);
-    } catch (_) {
-      _pinnedMessage = null;
-    }
+      await loadLocalMessages();
 
-    notifyListeners();
+      _socketStateSubscription?.cancel();
+      _socketStateSubscription = _socketClient.stateStream.listen((state) {
+        debugPrint('[CHAT] Socket state changed to: $state');
+        if (state == SocketConnectionState.connected) {
+          processPendingQueue();
+        }
+        notifyListeners();
+      });
+
+      _socketSubscription?.cancel();
+      _socketSubscription = _socketClient.messageStream.listen((event) {
+        debugPrint('[CHAT] Incoming socket event: ${event['type']}');
+        _handleIncomingSocketEvent(event, currentUser);
+      });
+    } catch (e) {
+      debugPrint('[CHAT ERROR] Error in initialize: $e');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
-  /// ارسال پیام جدید با الگوی خوش‌بینانه (Optimistic UI)
+  Future<void> loadLocalMessages({int limit = 50}) async {
+    try {
+      final rawList = await _localDao.getMessagesList(limit: limit);
+      _messages = rawList.map((m) => ChatMessageModel.fromDbMap(m)).toList();
+      debugPrint('[CHAT] Loaded ${_messages.length} messages from local SQLite');
+
+      try {
+        _pinnedMessage = _messages.firstWhere((m) => m.isPinned);
+      } catch (_) {
+        _pinnedMessage = null;
+      }
+    } catch (e) {
+      debugPrint('[CHAT ERROR] Failed to load messages from SQLite: $e');
+      _messages = [];
+    } finally {
+      notifyListeners();
+    }
+  }
+
   Future<void> sendMessage({
     required String text,
     required AuthUser currentUser,
     ChatMessageModel? replyTo,
   }) async {
+    debugPrint('[CHAT] -> sendMessage called with text: "$text"');
     final now = DateTime.now().millisecondsSinceEpoch;
     final messageId = const Uuid().v4();
     final clientMessageId = const Uuid().v4();
@@ -100,31 +107,43 @@ class ChatRepository extends ChangeNotifier {
       updatedAt: now,
     );
 
-    // ۱. درج فوری در دیتابیس محلی SQLite
-    await _localDao.saveMessage(newMessage.toDbMap());
-
-    // ۲. نمایش آنی در بالای لیست (رندر بدون لگ برای کاربر)
+    // ۱. نمایش آنی و تضمینی در بالای لیست (Optimistic UI)
     _messages.insert(0, newMessage);
     notifyListeners();
+    debugPrint('[CHAT] Message inserted into memory list. Total in UI: ${_messages.length}');
+
+    // ۲. درج در دیتابیس محلی با هندل کردن خطا
+    try {
+      await _localDao.saveMessage(newMessage.toDbMap());
+      debugPrint('[CHAT] Message saved to SQLite database successfully');
+    } catch (dbError) {
+      debugPrint('[CHAT ERROR] Failed to save message to SQLite: $dbError');
+    }
 
     // ۳. ذخیره در صف کارهای معلق آفلاین
-    final payloadJson = jsonEncode({
-      'messageId': messageId,
-      'clientMessageId': clientMessageId,
-      'text': text,
-      'replyTo': replyTo != null
-          ? {
-              'id': replyTo.id,
-              'name': replyTo.senderName,
-              'text': replyTo.text,
-              'tgMsgId': replyTo.telegramMessageId,
-            }
-          : null,
-    });
-    await _localDao.enqueuePendingAction(messageId, 'send_message', payloadJson);
+    try {
+      final payloadJson = jsonEncode({
+        'messageId': messageId,
+        'clientMessageId': clientMessageId,
+        'text': text,
+        'replyTo': replyTo != null
+            ? {
+                'id': replyTo.id,
+                'name': replyTo.senderName,
+                'text': replyTo.text,
+                'tgMsgId': replyTo.telegramMessageId,
+              }
+            : null,
+      });
+      await _localDao.enqueuePendingAction(messageId, 'send_message', payloadJson);
+      debugPrint('[CHAT] Pending action enqueued');
+    } catch (qError) {
+      debugPrint('[CHAT ERROR] Failed to enqueue pending action: $qError');
+    }
 
     // ۴. ارسال از طریق وب‌سوکت در صورت آنلاین بودن
     if (_socketClient.isConnected) {
+      debugPrint('[CHAT] Socket is CONNECTED. Sending chat_message frame...');
       final sent = _socketClient.sendChatMessage(
         text: text,
         clientMessageId: clientMessageId,
@@ -138,17 +157,20 @@ class ChatRepository extends ChangeNotifier {
             : null,
       );
 
+      debugPrint('[CHAT] Frame dispatched to socket, success = $sent');
       if (sent) {
         await _localDao.updateMessageStatus(messageId, 'sending');
         _updateMessageStatusInMemory(messageId, MessageStatus.sending);
       }
+    } else {
+      debugPrint('[CHAT WARNING] Socket is NOT connected! Current state: ${_socketClient.state}');
     }
   }
 
-  /// پردازش و ارسال خودکار پیام‌های صف آفلاین پس از اتصال مجدد شبکه
   Future<void> processPendingQueue() async {
     final pendingActions = await _localDao.getPendingActions();
     if (pendingActions.isEmpty || !_socketClient.isConnected) return;
+    debugPrint('[CHAT] Processing ${pendingActions.length} pending actions...');
 
     for (final action in pendingActions) {
       final actionType = action['action_type'] as String;
@@ -164,17 +186,16 @@ class ChatRepository extends ChangeNotifier {
           );
 
           if (sent) {
-            // حذف تسک از صف و به‌روزرسانی وضعیت
             await _localDao.removePendingAction(actionId);
             await _localDao.updateMessageStatus(actionId, 'sending');
             _updateMessageStatusInMemory(actionId, MessageStatus.sending);
+            debugPrint('[CHAT] Dispatched queued message: $actionId');
           }
         } catch (_) {}
       }
     }
   }
 
-  /// پردازش رویدادهای زنده دریافتی از وب‌سوکت
   Future<void> _handleIncomingSocketEvent(Map<String, dynamic> event, AuthUser currentUser) async {
     final type = event['type'] as String?;
     if (type == null) return;
@@ -183,7 +204,6 @@ class ChatRepository extends ChangeNotifier {
       final msgJson = event['message'] as Map<String, dynamic>;
       final clientMsgId = msgJson['clientMessageId'] ?? msgJson['client_message_id'];
 
-      // الف) اگر پیام تایید پیام ارسالی خودمان است (Deduplication)
       if (clientMsgId != null) {
         final existingIndex = _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
         if (existingIndex != -1) {
@@ -199,18 +219,18 @@ class ChatRepository extends ChangeNotifier {
 
           _messages[existingIndex] = syncedMessage;
           notifyListeners();
+          debugPrint('[CHAT] Own message confirmed by server (synced): ${syncedMessage.id}');
           return;
         }
       }
 
-      // ب) اگر پیام جدید از تلگرام یا کاربر دیگری است
       final incoming = ChatMessageModel.fromJson(msgJson);
       await _localDao.saveMessage(incoming.toDbMap());
 
-      // جلوگیری از اضافه شدن تکراری
       _messages.removeWhere((m) => m.id == incoming.id);
       _messages.insert(0, incoming);
       notifyListeners();
+      debugPrint('[CHAT] Incoming new message added to UI: ${incoming.text}');
       return;
     }
 
@@ -268,7 +288,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ارسال درخواست ویرایش پیام
   Future<void> editMessage(String messageId, String newText) async {
     _socketClient.sendEditMessage(messageId: messageId, newText: newText);
     await _localDao.updateMessageText(messageId, newText);
@@ -280,17 +299,14 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ارسال درخواست پین کردن پیام
   void pinMessage(String messageId) {
     _socketClient.sendPinMessage(messageId);
   }
 
-  /// ارسال درخواست حذف پین
   void unpinMessage() {
     _socketClient.sendUnpinMessage();
   }
 
-  /// ارسال سیگنال در حال تایپ
   void sendTyping() {
     _socketClient.sendTyping();
   }

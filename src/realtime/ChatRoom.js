@@ -8,10 +8,11 @@ import {
   setTelegramMessageReaction
 } from "../telegram/telegramClient.js";
 import { emitSyncEvent } from "../telegram/normalizer.js";
+import { authenticateRequest } from "../auth/sessionService.js";
+import { errorResponse } from "../core/response.js";
 
 /**
- * ChatRoom Durable Object (Realtime Engine v2)
- * Features Cloudflare WebSocket Hibernation API, verified identity state, and D1 sync.
+ * ChatRoom Durable Object (Realtime Engine v2 - Secure Hibernation)
  */
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -22,55 +23,51 @@ export class ChatRoom extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // ۱. اندپوینت دریافت برودکست داخلی (از وب‌هوک تلگرام یا کنترلرها)
+    // ۱. دریافت برودکست‌های داخلی
     if (url.pathname === "/broadcast") {
       const payload = await request.json();
       this.broadcast(payload);
       return new Response("OK");
     }
 
-    // ۲. پذیرش اتصال وب‌سوکت با متادیتای احراز هویت شده
-    if (request.headers.get("Upgrade") === "websocket") {
-      const pair = new WebSocketPair();
-      const [client, server] = Object.values(pair);
-
-      // استخراج هویت تاییدشده از هدرهای داخلی
-      const userMeta = {
-        userId: request.headers.get("X-Auth-User-Id") || "anonymous",
-        fullName: decodeURIComponent(request.headers.get("X-Auth-Full-Name") || "کاربر"),
-        username: decodeURIComponent(request.headers.get("X-Auth-Username") || "ندارد"),
-        telegramId: request.headers.get("X-Auth-Telegram-Id") || null,
-        deviceId: request.headers.get("X-Auth-Device-Id") || null,
-        isAdmin: request.headers.get("X-Auth-Is-Admin") === "true",
-        isOnline: true
-      };
-
-      // تگ‌گذاری سوکت با شناسه کاربر برای مدیریت سریع
-      const tags = [userMeta.userId];
-      if (userMeta.deviceId) tags.push(`dev_${userMeta.deviceId}`);
-
-      // فعال‌سازی WebSocket Hibernation API
-      this.ctx.acceptWebSocket(server, tags);
-      server.serializeAttachment(userMeta);
-
-      this.broadcastOnline();
-
-      return new Response(null, {
-        status: 101,
-        webSocket: client
-      });
+    // ۲. احراز هویت مستقیم درخواست ارتقا به سوکت با پایگاه داده D1
+    const auth = await authenticateRequest(this.env.DB, request);
+    if (!auth.authenticated) {
+      return errorResponse(auth.message, auth.status, auth.error);
     }
 
-    return new Response("Not Found", { status: 404 });
+    // ۳. ایجاد جفت سوکت و پذیرش با WebSocket Hibernation API
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+
+    const userMeta = {
+      userId: auth.user.id,
+      fullName: auth.user.fullName,
+      username: auth.user.username,
+      telegramId: auth.user.telegramId,
+      deviceId: auth.device.id,
+      isAdmin: auth.user.isAdmin,
+      isOnline: true
+    };
+
+    const tags = [auth.user.id];
+    if (auth.device.id) tags.push(`dev_${auth.device.id}`);
+
+    this.ctx.acceptWebSocket(server, tags);
+    server.serializeAttachment(userMeta);
+
+    this.broadcastOnline();
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client
+    });
   }
 
-  /**
-   * پردازش پیام‌های دریافتی از کلاینت از طریق وب‌سوکت
-   */
   async webSocketMessage(ws, message) {
     try {
       const user = ws.deserializeAttachment();
-      if (!user || !user.userId || user.userId === "anonymous") {
+      if (!user || !user.userId) {
         ws.close(4401, "Unauthorized");
         return;
       }
@@ -78,7 +75,6 @@ export class ChatRoom extends DurableObject {
       const data = JSON.parse(message);
       const now = Date.now();
 
-      // ۱. رویداد وضعیت آنلاین بودن (Presence)
       if (data.type === "presence") {
         user.isOnline = (data.status === "online");
         ws.serializeAttachment(user);
@@ -86,7 +82,6 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ۲. وضعیت در حال تایپ (Typing Indicator)
       if (data.type === "typing") {
         this.broadcast({
           type: "typing",
@@ -96,7 +91,6 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ۳. علامت‌گذاری پیام‌ها به عنوان خوانده‌شده (Mark as Read)
       if (data.type === "mark_read" && Array.isArray(data.messageIds) && data.messageIds.length > 0) {
         for (const mId of data.messageIds) {
           await this.env.DB.prepare(`
@@ -114,12 +108,12 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ۴. ارسال پیام جدید متنی (Chat Message)
+      // ارسال پیام متنی جدید
       if (data.type === "chat_message" && data.text) {
         const clientMessageId = data.clientMessageId || null;
         const msgId = crypto.randomUUID();
 
-        // بررسی Idempotency برای جلوگیری از ثبت تکراری پیام در اختلالات اینترنت
+        // بررسی Idempotency
         if (clientMessageId) {
           const existing = await this.env.DB.prepare(
             "SELECT id FROM messages WHERE client_message_id = ?"
@@ -137,7 +131,6 @@ export class ChatRoom extends DurableObject {
           if (replyRow) tgReplyMsgId = replyRow.telegram_message_id;
         }
 
-        // درج در جدول messages
         await this.env.DB.prepare(`
           INSERT INTO messages (
             id, client_message_id, sender_id, text, is_from_telegram, created_at, updated_at, reply_to_message_id
@@ -157,18 +150,17 @@ export class ChatRoom extends DurableObject {
           reactions: []
         };
 
-        // ثبت رویداد ترتیبی همگام‌سازی آفلاین
         await emitSyncEvent(this.env.DB, "message_created", msgId, messagePayload);
 
-        // برودکست پیام به تمام کلاینت‌های متصل
+        // برودکست به تمام کاربران متصل
         this.broadcast({
           type: "new_message",
           message: messagePayload
         });
 
-        // ارسال موازی پیام به سوپرگروه تلگرام
+        // ارسال به سوپرگروه تلگرام
         try {
-          let caption = `🌐 <b>[برنامه اندروید]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n`;
+          let caption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n`;
           if (data.replyTo && !tgReplyMsgId) {
             caption += `↩️ <i>پاسخ به ${escapeXml(data.replyTo.name)}:</i> «${escapeXml((data.replyTo.text || "").substring(0, 35))}»\n`;
           }
@@ -185,17 +177,15 @@ export class ChatRoom extends DurableObject {
               "UPDATE messages SET telegram_message_id = ? WHERE id = ?"
             ).bind(tgRes.result.message_id, msgId).run();
           }
-        } catch (tgErr) {}
+        } catch (_) {}
         return;
       }
 
-      // ۵. ویرایش متن پیام (Edit Message)
       if (data.type === "edit_message" && data.messageId && data.newText) {
         const msgRow = await this.env.DB.prepare(
           "SELECT sender_id, telegram_message_id FROM messages WHERE id = ?"
         ).bind(data.messageId).first();
 
-        // بررسی اینکه کاربر مالک پیام است یا ادمین سیستم
         if (msgRow && (msgRow.sender_id === user.userId || user.isAdmin)) {
           await this.env.DB.prepare(
             "UPDATE messages SET text = ?, is_edited = 1, updated_at = ? WHERE id = ?"
@@ -216,19 +206,18 @@ export class ChatRoom extends DurableObject {
 
           if (msgRow.telegram_message_id) {
             try {
-              const newContent = `🌐 <b>[برنامه اندروید]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n💬 ${escapeXml(data.newText)}`;
+              const newContent = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n💬 ${escapeXml(data.newText)}`;
               await editTelegramMessageText(this.env.TELEGRAM_BOT_TOKEN, {
                 chatId: this.env.TELEGRAM_GROUP_ID,
                 messageId: msgRow.telegram_message_id,
                 text: newContent
               });
-            } catch (tgErr) {}
+            } catch (_) {}
           }
         }
         return;
       }
 
-      // ۶. تغییر وضعیت ری‌اکشن (Toggle Reaction)
       if (data.type === "toggle_reaction" && data.messageId && data.emoji) {
         const existing = await this.env.DB.prepare(
           "SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?"
@@ -262,7 +251,6 @@ export class ChatRoom extends DurableObject {
           ...rxPayload
         });
 
-        // همگام‌سازی ری‌اکشن با تلگرام
         const msgRow = await this.env.DB.prepare(
           "SELECT telegram_message_id FROM messages WHERE id = ?"
         ).bind(data.messageId).first();
@@ -274,12 +262,11 @@ export class ChatRoom extends DurableObject {
               messageId: msgRow.telegram_message_id,
               reaction: existing ? [] : [{ type: "emoji", emoji: data.emoji }]
             });
-          } catch (tgErr) {}
+          } catch (_) {}
         }
         return;
       }
 
-      // ۷. پین یا حذف پین پیام (Pin / Unpin Message)
       if (data.type === "pin_message" && data.messageId) {
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1").run();
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 1, updated_at = ? WHERE id = ?")
@@ -308,26 +295,24 @@ export class ChatRoom extends DurableObject {
               chatId: this.env.TELEGRAM_GROUP_ID,
               messageId: msgRow.telegram_message_id
             });
-          } catch (tgErr) {}
+          } catch (_) {}
         }
         return;
       }
 
       if (data.type === "unpin_message") {
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1").run();
-
         await emitSyncEvent(this.env.DB, "message_unpinned", "global", { unpinnedAt: now });
-
         this.broadcast({ type: "message_unpinned" });
 
         try {
           await unpinTelegramChatMessage(this.env.TELEGRAM_BOT_TOKEN, {
             chatId: this.env.TELEGRAM_GROUP_ID
           });
-        } catch (tgErr) {}
+        } catch (_) {}
         return;
       }
-    } catch (err) {}
+    } catch (_) {}
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
@@ -335,7 +320,7 @@ export class ChatRoom extends DurableObject {
       const user = ws.deserializeAttachment() || {};
       user.isOnline = false;
       ws.serializeAttachment(user);
-    } catch (e) {}
+    } catch (_) {}
     this.broadcastOnline();
   }
 
@@ -344,7 +329,7 @@ export class ChatRoom extends DurableObject {
       const user = ws.deserializeAttachment() || {};
       user.isOnline = false;
       ws.serializeAttachment(user);
-    } catch (e) {}
+    } catch (_) {}
     this.broadcastOnline();
   }
 
@@ -354,7 +339,7 @@ export class ChatRoom extends DurableObject {
       if (ws !== excludeWs) {
         try {
           ws.send(str);
-        } catch (err) {}
+        } catch (_) {}
       }
     }
   }
@@ -371,7 +356,7 @@ export class ChatRoom extends DurableObject {
             username: att.username
           });
         }
-      } catch (err) {}
+      } catch (_) {}
     }
     this.broadcast({
       type: "online_users",

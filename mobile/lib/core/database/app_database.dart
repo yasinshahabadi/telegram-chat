@@ -2,8 +2,7 @@
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
-/// Local SQLite Database Manager (High-Performance Offline-First Architecture)
-/// Features WAL mode, concurrent reads, and optimized indexes.
+/// Local SQLite Database Manager with fail-safe pragmas
 class AppDatabase {
   static final AppDatabase instance = AppDatabase._internal();
   static Database? _database;
@@ -29,18 +28,11 @@ class AppDatabase {
   }
 
   Future<void> _onConfigure(Database db) async {
-    // ۱. فعال‌سازی کلیدهای خارجی
-    await db.execute('PRAGMA foreign_keys = ON');
-
-    // ۲. فعال‌سازی حالت Write-Ahead Logging جهت خواندن و نوشتن هم‌زمان بدون قفل شدن
-    await db.execute('PRAGMA journal_mode = WAL');
-
-    // ۳. بهینه‌سازی سرعت نوشتن روی دیسک
-    await db.execute('PRAGMA synchronous = NORMAL');
+    try { await db.execute('PRAGMA foreign_keys = ON'); } catch (_) {}
+    try { await db.execute('PRAGMA synchronous = NORMAL'); } catch (_) {}
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    // جدول پیام‌های محلی
     await db.execute('''
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,
@@ -61,7 +53,6 @@ class AppDatabase {
       )
     ''');
 
-    // جدول پیوست‌ها و فایل‌های چندرسانه‌ای
     await db.execute('''
       CREATE TABLE attachments (
         id TEXT PRIMARY KEY,
@@ -82,7 +73,6 @@ class AppDatabase {
       )
     ''');
 
-    // جدول ری‌اکشن‌های محلی
     await db.execute('''
       CREATE TABLE reactions (
         id TEXT PRIMARY KEY,
@@ -96,7 +86,6 @@ class AppDatabase {
       )
     ''');
 
-    // صف کارهای معلق آفلاین
     await db.execute('''
       CREATE TABLE pending_actions (
         id TEXT PRIMARY KEY,
@@ -107,7 +96,6 @@ class AppDatabase {
       )
     ''');
 
-    // وضعیت همگام‌سازی
     await db.execute('''
       CREATE TABLE sync_state (
         key TEXT PRIMARY KEY,
@@ -116,7 +104,6 @@ class AppDatabase {
       )
     ''');
 
-    // ایندکس‌های پرسرعت برای اسکرول ۶۰ تا ۱۲۰ فریم در اندروید
     await db.execute('CREATE INDEX idx_local_msg_created ON messages(created_at DESC)');
     await db.execute('CREATE INDEX idx_local_msg_client_id ON messages(client_message_id)');
     await db.execute('CREATE INDEX idx_local_attach_msg ON attachments(message_id)');

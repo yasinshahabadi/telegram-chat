@@ -7,11 +7,6 @@ binding = "DB"
 database_name = "chat-db"
 database_id = "6b53e474-18eb-4be4-87cf-6fda96db3cf1"
 
-# باکت ذخیره‌سازی ابری چندرسانه‌ای R2 (محیط پروداکشن)
-[[r2_buckets]]
-binding = "MEDIA_BUCKET"
-bucket_name = "chat-media"
-
 [durable_objects]
 bindings = [
   { name = "CHAT_ROOM", class_name = "ChatRoom" }
@@ -37,10 +32,6 @@ name = "telegram-chat-staging"
 binding = "DB"
 database_name = "chat-db-staging"
 database_id = "1ecf41a0-8348-439c-b062-10b3cce3e99f"
-
-[[env.staging.r2_buckets]]
-binding = "MEDIA_BUCKET"
-bucket_name = "chat-media-staging"
 
 [env.staging.durable_objects]
 bindings = [
