@@ -1,7 +1,7 @@
-﻿// src/index.js - Guysgram Backend Worker Entrypoint (Modular Android-Only v2)
+﻿// src/index.js - Guysgram Backend Worker Entrypoint (With Test Diagnostic Endpoint)
 
 import { Router } from "./core/router.js";
-import { errorResponse } from "./core/response.js";
+import { jsonResponse, errorResponse } from "./core/response.js";
 import { handleVerifyDevice, handleGetMe, handleLogout } from "./auth/authController.js";
 import { handleGetMessages } from "./chat/messagesController.js";
 import { handleSyncEvents, handleGetLatestCursor } from "./sync/syncController.js";
@@ -9,74 +9,53 @@ import { handleMediaUpload, handleMediaDownload } from "./media/mediaController.
 import { handleRegisterFcmToken, handleUnregisterFcmToken } from "./notifications/notificationController.js";
 import { handleTelegramWebhook } from "./telegram/webhookHandler.js";
 import { handleWebSocketUpgrade } from "./realtime/wsHandler.js";
+import { dispatchNewMessagePush } from "./notifications/fcmService.js";
 
-// اکسپورت رسمی کلاس Durable Object جهت شناسایی در زیرساخت کلودفلر
 export { ChatRoom } from "./realtime/ChatRoom.js";
 
-// ==========================================
-// تعریف روتر ماژولار API
-// ==========================================
 const router = new Router();
 
-// ۱. اندپوینت‌های احراز هویت و مدیریت نشست‌ها (فاز ۴)
+// اندپوینت‌های احراز هویت
 router.post("/api/auth/verify-device", (req, env) => handleVerifyDevice(req, env));
 router.get("/api/auth/me", (req, env) => handleGetMe(req, env));
 router.post("/api/auth/logout", (req, env) => handleLogout(req, env));
 
-// ۲. اندپوینت پیام‌ها و تاریخچه چت (فاز ۵)
+// اندپوینت‌های چت و سینک
 router.get("/api/messages", (req, env) => handleGetMessages(req, env));
-
-// ۳. اندپوینت‌های موتور همگام‌سازی آفلاین (فاز ۸ - دلتا سینک بر پایه Cursor)
 router.get("/api/sync", (req, env) => handleSyncEvents(req, env));
 router.get("/api/sync/latest-cursor", (req, env) => handleGetLatestCursor(req, env));
 
-// ۴. اندپوینت ارتقا به وب‌سوکت بلادرنگ با احراز هویت الزامی (فاز ۷ - رفع آسیب‌پذیری C-02)
+// ارتقای وب‌سوکت
 router.get("/api/ws", (req, env) => handleWebSocketUpgrade(req, env));
 
-// ۵. وب‌هوک امن تلگرام (فاز ۶ - اعتبارسنجی Secret Token و Group Guard)
+// وب‌هوک تلگرام
 router.post("/api/telegram-webhook", (req, env, ctx) => handleTelegramWebhook(req, env, ctx));
 
-// ۶. اندپوینت‌های چندرسانه‌ای مبتنی بر استریم ابری R2 (فاز ۹)
+// مدیا
 router.post("/api/media/upload", (req, env) => handleMediaUpload(req, env));
-router.post("/api/upload", (req, env) => handleMediaUpload(req, env)); // حفظ جهت سازگاری کلاینت قبلی
+router.post("/api/upload", (req, env) => handleMediaUpload(req, env));
 router.get("/api/media/file", (req, env) => handleMediaDownload(req, env));
-router.get("/api/media", (req, env) => handleMediaDownload(req, env)); // حفظ جهت سازگاری کلاینت قبلی
+router.get("/api/media", (req, env) => handleMediaDownload(req, env));
 
-// ۷. دریافت آواتار تلگرام
-router.get("/api/avatar", async (req, env) => {
-  const url = new URL(req.url);
-  const userId = url.searchParams.get("userId");
-  if (!userId) return errorResponse("شناسه کاربر الزامی است.", 400);
-
-  try {
-    const photosRes = await fetch(
-      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUserProfilePhotos?user_id=${userId}&limit=1`
-    );
-    const photosData = await photosRes.json();
-
-    if (photosData.ok && photosData.result.total_count > 0) {
-      const fileId = (photosData.result.photos[0][1] || photosData.result.photos[0][0]).file_id;
-      const fileRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`);
-      const fileData = await fileRes.json();
-
-      if (fileData.ok && fileData.result.file_path) {
-        const imgRes = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileData.result.file_path}`);
-        return new Response(imgRes.body, {
-          headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" }
-        });
-      }
-    }
-  } catch (e) {}
-  return errorResponse("آواتار یافت نشد.", 404);
-});
-
-// ۸. اندپوینت‌های مدیریت نوتیفیکیشن بومی FCM اندروید (فاز ۱۱)
+// نوتیفیکیشن
 router.post("/api/notifications/register-token", (req, env) => handleRegisterFcmToken(req, env));
 router.post("/api/notifications/unregister-token", (req, env) => handleUnregisterFcmToken(req, env));
 
-// ==========================================
-// اکسپورت ورکر و مدیریت رویدادها
-// ==========================================
+// اندپوینت اختصاصی تست و دیباگ مستقیم پوشی از سرور
+router.get("/api/test-push", async (req, env) => {
+  const result = await dispatchNewMessagePush(env, {
+    id: crypto.randomUUID(),
+    senderName: "تست اختصاصی سرور Guysgram",
+    text: "این یک پیام تست مستقیم از کلودفلر به Pushy است!",
+    createdAt: Date.now()
+  });
+
+  return jsonResponse({
+    endpoint: "test-push",
+    result
+  });
+});
+
 export default {
   async fetch(request, env, ctx) {
     return await router.handle(request, env, ctx);

@@ -5,9 +5,10 @@ import 'package:uuid/uuid.dart';
 import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
 import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/notifications/data/notification_service.dart';
 import 'chat_websocket_client.dart';
 
-/// ریپازیتوری چت مجهز به لاگ‌های زنده عیب‌یابی
+/// ریپازیتوری چت مجهز به ارسال اعلان در حالت پس‌زمینه
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
@@ -17,6 +18,7 @@ class ChatRepository extends ChangeNotifier {
   String? _typingUserName;
   Timer? _typingTimer;
   bool _isLoading = false;
+  bool isAppInBackground = false; // وضعیت پس‌زمینه
 
   StreamSubscription? _socketSubscription;
   StreamSubscription? _socketStateSubscription;
@@ -34,7 +36,6 @@ class ChatRepository extends ChangeNotifier {
   SocketConnectionState get connectionState => _socketClient.state;
 
   Future<void> initialize(AuthUser currentUser) async {
-    debugPrint('[CHAT] Initializing ChatRepository for user: ${currentUser.fullName} (${currentUser.id})');
     _isLoading = true;
     notifyListeners();
 
@@ -43,7 +44,6 @@ class ChatRepository extends ChangeNotifier {
 
       _socketStateSubscription?.cancel();
       _socketStateSubscription = _socketClient.stateStream.listen((state) {
-        debugPrint('[CHAT] Socket state changed to: $state');
         if (state == SocketConnectionState.connected) {
           processPendingQueue();
         }
@@ -52,11 +52,9 @@ class ChatRepository extends ChangeNotifier {
 
       _socketSubscription?.cancel();
       _socketSubscription = _socketClient.messageStream.listen((event) {
-        debugPrint('[CHAT] Incoming socket event: ${event['type']}');
         _handleIncomingSocketEvent(event, currentUser);
       });
-    } catch (e) {
-      debugPrint('[CHAT ERROR] Error in initialize: $e');
+    } catch (_) {
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -67,15 +65,13 @@ class ChatRepository extends ChangeNotifier {
     try {
       final rawList = await _localDao.getMessagesList(limit: limit);
       _messages = rawList.map((m) => ChatMessageModel.fromDbMap(m)).toList();
-      debugPrint('[CHAT] Loaded ${_messages.length} messages from local SQLite');
 
       try {
         _pinnedMessage = _messages.firstWhere((m) => m.isPinned);
       } catch (_) {
         _pinnedMessage = null;
       }
-    } catch (e) {
-      debugPrint('[CHAT ERROR] Failed to load messages from SQLite: $e');
+    } catch (_) {
       _messages = [];
     } finally {
       notifyListeners();
@@ -87,7 +83,6 @@ class ChatRepository extends ChangeNotifier {
     required AuthUser currentUser,
     ChatMessageModel? replyTo,
   }) async {
-    debugPrint('[CHAT] -> sendMessage called with text: "$text"');
     final now = DateTime.now().millisecondsSinceEpoch;
     final messageId = const Uuid().v4();
     final clientMessageId = const Uuid().v4();
@@ -107,20 +102,13 @@ class ChatRepository extends ChangeNotifier {
       updatedAt: now,
     );
 
-    // ۱. نمایش آنی و تضمینی در بالای لیست (Optimistic UI)
     _messages.insert(0, newMessage);
     notifyListeners();
-    debugPrint('[CHAT] Message inserted into memory list. Total in UI: ${_messages.length}');
 
-    // ۲. درج در دیتابیس محلی با هندل کردن خطا
     try {
       await _localDao.saveMessage(newMessage.toDbMap());
-      debugPrint('[CHAT] Message saved to SQLite database successfully');
-    } catch (dbError) {
-      debugPrint('[CHAT ERROR] Failed to save message to SQLite: $dbError');
-    }
+    } catch (_) {}
 
-    // ۳. ذخیره در صف کارهای معلق آفلاین
     try {
       final payloadJson = jsonEncode({
         'messageId': messageId,
@@ -136,14 +124,9 @@ class ChatRepository extends ChangeNotifier {
             : null,
       });
       await _localDao.enqueuePendingAction(messageId, 'send_message', payloadJson);
-      debugPrint('[CHAT] Pending action enqueued');
-    } catch (qError) {
-      debugPrint('[CHAT ERROR] Failed to enqueue pending action: $qError');
-    }
+    } catch (_) {}
 
-    // ۴. ارسال از طریق وب‌سوکت در صورت آنلاین بودن
     if (_socketClient.isConnected) {
-      debugPrint('[CHAT] Socket is CONNECTED. Sending chat_message frame...');
       final sent = _socketClient.sendChatMessage(
         text: text,
         clientMessageId: clientMessageId,
@@ -157,20 +140,16 @@ class ChatRepository extends ChangeNotifier {
             : null,
       );
 
-      debugPrint('[CHAT] Frame dispatched to socket, success = $sent');
       if (sent) {
         await _localDao.updateMessageStatus(messageId, 'sending');
         _updateMessageStatusInMemory(messageId, MessageStatus.sending);
       }
-    } else {
-      debugPrint('[CHAT WARNING] Socket is NOT connected! Current state: ${_socketClient.state}');
     }
   }
 
   Future<void> processPendingQueue() async {
     final pendingActions = await _localDao.getPendingActions();
     if (pendingActions.isEmpty || !_socketClient.isConnected) return;
-    debugPrint('[CHAT] Processing ${pendingActions.length} pending actions...');
 
     for (final action in pendingActions) {
       final actionType = action['action_type'] as String;
@@ -189,7 +168,6 @@ class ChatRepository extends ChangeNotifier {
             await _localDao.removePendingAction(actionId);
             await _localDao.updateMessageStatus(actionId, 'sending');
             _updateMessageStatusInMemory(actionId, MessageStatus.sending);
-            debugPrint('[CHAT] Dispatched queued message: $actionId');
           }
         } catch (_) {}
       }
@@ -219,7 +197,6 @@ class ChatRepository extends ChangeNotifier {
 
           _messages[existingIndex] = syncedMessage;
           notifyListeners();
-          debugPrint('[CHAT] Own message confirmed by server (synced): ${syncedMessage.id}');
           return;
         }
       }
@@ -230,7 +207,16 @@ class ChatRepository extends ChangeNotifier {
       _messages.removeWhere((m) => m.id == incoming.id);
       _messages.insert(0, incoming);
       notifyListeners();
-      debugPrint('[CHAT] Incoming new message added to UI: ${incoming.text}');
+
+      // کلید حل معما: اگر برنامه مینیمایز است، اعلان را با صدا و بنر روی گوشی ظاهر کن!
+      if (isAppInBackground) {
+        NotificationService.instance.showChatNotification(
+          id: incoming.createdAt ~/ 1000,
+          senderName: incoming.senderName,
+          messageText: incoming.text,
+          payload: incoming.id,
+        );
+      }
       return;
     }
 

@@ -1,6 +1,6 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- مجوزهای ضروری و ایمن شبکه، اعلان‌ها و چندرسانه‌ای -->
+    <!-- مجوزهای ضروری شبکه، اعلان‌ها و زنده ماندن در پس‌زمینه -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING"/>
 
     <queries>
         <intent>
@@ -47,6 +49,44 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- ۱. گیرنده رسمی دریافت و نمایش نوتیفیکیشن Pushy -->
+        <receiver
+            android:name="me.pushy.sdk.receivers.PushyPushReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="pushy.me" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ۲. سرویس زنده نگه داشتن اتصال سوکت MQTT در پس‌زمینه (حالت بسته بودن برنامه) -->
+        <service
+            android:name="me.pushy.sdk.services.PushySocketService"
+            android:foregroundServiceType="remoteMessaging"
+            android:stopWithTask="false" />
+
+        <!-- ۳. سرویس جاب‌اسکجولر برای اندروید ۱۴ -->
+        <service
+            android:name="me.pushy.sdk.services.PushyJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
+
+        <!-- ۴. گیرنده‌های آپدیت و راه‌اندازی پس از ریستارت گوشی -->
+        <receiver
+            android:name="me.pushy.sdk.receivers.PushyUpdateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="me.pushy.sdk.receivers.PushyBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <meta-data
             android:name="flutterEmbedding"

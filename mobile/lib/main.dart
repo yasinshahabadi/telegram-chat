@@ -1,5 +1,7 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:pushy_flutter/pushy_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/database/app_database.dart';
@@ -16,11 +18,49 @@ import 'features/chat/data/chat_websocket_client.dart';
 import 'features/chat/data/sync_engine.dart';
 import 'features/chat/presentation/screens/chat_screen.dart';
 import 'features/notifications/data/notification_service.dart';
+import 'features/notifications/data/pushy_service.dart';
+
+@pragma('vm:entry-point')
+void backgroundPushyNotificationListener(Map<String, dynamic> data) async {
+  debugPrint('[PUSHY] -> Background payload: $data');
+
+  try {
+    WidgetsFlutterBinding.ensureInitialized();
+    final FlutterLocalNotificationsPlugin localNotif = FlutterLocalNotificationsPlugin();
+    const androidSettings = AndroidInitializationSettings('@mipmap/launcher_icon');
+    await localNotif.initialize(const InitializationSettings(android: androidSettings));
+
+    const androidDetails = AndroidNotificationDetails(
+      'telegram_chat_messages',
+      'پیام‌های چت',
+      channelDescription: 'اعلان پیام‌های دریافتی از سوپرگروه تلگرام',
+      importance: Importance.max,
+      priority: Priority.high,
+      showWhen: true,
+      enableVibration: true,
+      playSound: true,
+    );
+
+    final String title = data['title']?.toString() ?? data['senderName']?.toString() ?? 'Guysgram';
+    final String message = data['message']?.toString() ?? data['text']?.toString() ?? 'پیام جدید دریافت شد';
+
+    await localNotif.show(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title,
+      message,
+      const NotificationDetails(android: androidDetails),
+      payload: data['messageId']?.toString(),
+    );
+  } catch (_) {}
+
+  try {
+    Pushy.clearBadge();
+  } catch (_) {}
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ۱. مقداردهی اولیه پایگاه داده محلی SQLite و حافظه محلی
   final prefs = await SharedPreferences.getInstance();
   final localDao = LocalChatDao(appDatabase: AppDatabase.instance);
 
@@ -37,12 +77,29 @@ void main() async {
     socketClient: socketClient,
   );
 
-  // ۲. راه‌اندازی موتور همگام‌سازی دلتا و پایشگر شبکه
+  final notifService = NotificationService.instance;
+  await notifService.initialize();
+  await notifService.requestPermission();
+
+  try {
+    Pushy.listen();
+    Pushy.setNotificationListener(backgroundPushyNotificationListener);
+  } catch (_) {}
+
+  notifService.onDirectReplyReceived = (replyText, payload) async {
+    final currentUser = authRepository.currentUser;
+    if (currentUser != null && replyText.trim().isNotEmpty) {
+      await chatRepository.sendMessage(
+        text: replyText.trim(),
+        currentUser: currentUser,
+      );
+    }
+  };
+
   final syncEngine = SyncEngine(localDao: localDao);
   final networkMonitor = NetworkMonitor.instance;
   await networkMonitor.initialize();
 
-  // اتصال رویداد بازیابی شبکه: به محض وصل شدن اینترنت، سوکت متصل شده و دلتا سینک اجرا می‌شود
   networkMonitor.onNetworkRestored = () async {
     final token = authStorage.getSessionToken();
     if (token != null && token.isNotEmpty) {
@@ -56,23 +113,6 @@ void main() async {
     }
   };
 
-  // ۳. راه‌اندازی سرویس اعلان‌های نیتیو اندروید
-  final notifService = NotificationService.instance;
-  await notifService.initialize();
-  await notifService.requestPermission();
-
-  // اتصال پاسخ مستقیم از نوار نوتیفیکیشن
-  notifService.onDirectReplyReceived = (replyText, payload) async {
-    final currentUser = authRepository.currentUser;
-    if (currentUser != null && replyText.trim().isNotEmpty) {
-      await chatRepository.sendMessage(
-        text: replyText.trim(),
-        currentUser: currentUser,
-      );
-    }
-  };
-
-  // ۴. بررسی اولیه نشست کاربر (لود آفلاین در صورت نبود اینترنت)
   await authRepository.initialize();
 
   runApp(TelegramChatApp(
@@ -85,8 +125,8 @@ void main() async {
   ));
 }
 
-/// ویجت ریشه اپلیکیشن با تم تلگرامی و پشتیبانی بومی از زبان فارسی
-class TelegramChatApp extends StatelessWidget {
+/// اپلیکیشن مجهز به ناظر پایش چرخه حیات (WidgetsBindingObserver)
+class TelegramChatApp extends StatefulWidget {
   final AuthRepository authRepository;
   final AuthLocalStorage authStorage;
   final ChatRepository chatRepository;
@@ -104,16 +144,47 @@ class TelegramChatApp extends StatelessWidget {
     required this.syncEngine,
   });
 
+  @override
+  State<TelegramChatApp> createState() => _TelegramChatAppState();
+}
+
+class _TelegramChatAppState extends State<TelegramChatApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // اگر کاربر دکمه هوم را زد یا صفحه قفل شد، وضعیت پس‌زمینه را فعال کن
+    final isBackground = state != AppLifecycleState.resumed;
+    widget.chatRepository.isAppInBackground = isBackground;
+    debugPrint('[LIFECYCLE] App background state: $isBackground ($state)');
+  }
+
   void _ensureConnectedAndSynced() {
-    final token = authStorage.getSessionToken();
+    final token = widget.authStorage.getSessionToken();
     if (token != null && token.isNotEmpty) {
-      if (!socketClient.isConnected) {
-        socketClient.connect(token);
+      if (!widget.socketClient.isConnected) {
+        widget.socketClient.connect(token);
       }
-      // اجرای همگام‌سازی پس‌زمینه برای رویدادهای از دست رفته
-      syncEngine.syncMissedEvents(token, onSyncCompleted: () {
-        chatRepository.loadLocalMessages();
-        chatRepository.processPendingQueue();
+      widget.syncEngine.syncMissedEvents(token, onSyncCompleted: () {
+        widget.chatRepository.loadLocalMessages();
+        widget.chatRepository.processPendingQueue();
+      });
+
+      widget.authStorage.getOrCreateDeviceIdentifier().then((deviceId) {
+        PushyService.instance.registerDeviceToken(
+          sessionToken: token,
+          deviceId: deviceId,
+        );
       });
     }
   }
@@ -124,7 +195,6 @@ class TelegramChatApp extends StatelessWidget {
       title: 'Guysgram',
       debugShowCheckedModeBanner: false,
 
-      // پیکربندی بومی زبان فارسی و راست‌چین
       locale: const Locale('fa', 'IR'),
       supportedLocales: const [
         Locale('fa', 'IR'),
@@ -136,16 +206,11 @@ class TelegramChatApp extends StatelessWidget {
         GlobalCupertinoLocalizations.delegate,
       ],
 
-      // تم متریال ۳ تلگرامی
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF0088CC),
           brightness: Brightness.light,
-        ),
-        appBarTheme: const AppBarTheme(
-          centerTitle: false,
-          elevation: 1,
         ),
       ),
       darkTheme: ThemeData(
@@ -154,19 +219,13 @@ class TelegramChatApp extends StatelessWidget {
           seedColor: const Color(0xFF0088CC),
           brightness: Brightness.dark,
         ),
-        appBarTheme: const AppBarTheme(
-          centerTitle: false,
-          elevation: 1,
-        ),
       ),
       themeMode: ThemeMode.system,
 
-      // مسیریابی هوشمند بر اساس وضعیت احراز هویت
       home: ListenableBuilder(
-        listenable: authRepository,
+        listenable: widget.authRepository,
         builder: (context, _) {
-          // وضعیت بارگذاری اولیه
-          if (authRepository.isLoading && authRepository.status == AuthStatus.initial) {
+          if (widget.authRepository.isLoading && widget.authRepository.status == AuthStatus.initial) {
             return const Scaffold(
               body: Center(
                 child: CircularProgressIndicator(),
@@ -174,47 +233,37 @@ class TelegramChatApp extends StatelessWidget {
             );
           }
 
-          // اگر کاربر وارد نشده باشد
-          if (authRepository.status == AuthStatus.unauthenticated) {
+          if (widget.authRepository.status == AuthStatus.unauthenticated) {
             return LoginScreen(
-              authRepository: authRepository,
-              onAuthenticated: () {
-                _ensureConnectedAndSynced();
-              },
+              authRepository: widget.authRepository,
+              onAuthenticated: _ensureConnectedAndSynced,
             );
           }
 
-          // اگر در انتظار تایید مدیر باشد
-          if (authRepository.status == AuthStatus.pendingApproval) {
+          if (widget.authRepository.status == AuthStatus.pendingApproval) {
             return PendingApprovalScreen(
-              authRepository: authRepository,
-              onApproved: () {
-                _ensureConnectedAndSynced();
-              },
+              authRepository: widget.authRepository,
+              onApproved: _ensureConnectedAndSynced,
             );
           }
 
-          // اگر کاربر تایید و وارد شده باشد (آنلاین یا آفلاین)
-          if (authRepository.isAuthenticated) {
+          if (widget.authRepository.isAuthenticated) {
             _ensureConnectedAndSynced();
-            notifService.cancelAllNotifications();
 
             return ChatScreen(
-              authRepository: authRepository,
-              chatRepository: chatRepository,
+              authRepository: widget.authRepository,
+              chatRepository: widget.chatRepository,
               onLogout: () async {
-                socketClient.disconnect();
-                await notifService.cancelAllNotifications();
-                await authRepository.logout();
+                widget.socketClient.disconnect();
+                await widget.notifService.cancelAllNotifications();
+                await widget.authRepository.logout();
               },
             );
           }
 
           return LoginScreen(
-            authRepository: authRepository,
-            onAuthenticated: () {
-              _ensureConnectedAndSynced();
-            },
+            authRepository: widget.authRepository,
+            onAuthenticated: _ensureConnectedAndSynced,
           );
         },
       ),

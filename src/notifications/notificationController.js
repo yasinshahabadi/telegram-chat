@@ -2,12 +2,7 @@
 import { authenticateRequest } from "../auth/sessionService.js";
 
 /**
- * Notification Controller for Android FCM Device Tokens
- */
-
-/**
- * ثبت یا بروزرسانی توکن FCM دستگاه کاربر
- * POST /api/notifications/register-token
+ * Notification Controller for Android Device Tokens
  */
 export async function handleRegisterFcmToken(request, env) {
   const auth = await authenticateRequest(env.DB, request);
@@ -18,10 +13,18 @@ export async function handleRegisterFcmToken(request, env) {
   try {
     const { fcmToken, deviceId } = await request.json();
     if (!fcmToken || typeof fcmToken !== "string") {
-      return errorResponse("توکن FCM معتبر الزامی است.", 400);
+      return errorResponse("توکن اعلان معتبر الزامی است.", 400);
     }
 
-    const targetDeviceId = deviceId || auth.device.id;
+    // استخراج و تضمین شناسه معتبر دستگاه تاییدشده جهت رعایت کلید خارجی دیتابیس
+    let validDeviceId = auth.device.id;
+    if (deviceId && deviceId !== auth.device.id) {
+      const dev = await env.DB.prepare(
+        "SELECT id FROM devices WHERE user_id = ? AND (id = ? OR device_identifier = ?)"
+      ).bind(auth.user.id, deviceId, deviceId).first();
+      if (dev) validDeviceId = dev.id;
+    }
+
     const now = Date.now();
     const tokenId = crypto.randomUUID();
 
@@ -29,21 +32,17 @@ export async function handleRegisterFcmToken(request, env) {
     await env.DB.prepare(`
       INSERT OR REPLACE INTO device_fcm_tokens (id, device_id, user_id, fcm_token, updated_at)
       VALUES (?, ?, ?, ?, ?)
-    `).bind(tokenId, targetDeviceId, auth.user.id, fcmToken.trim(), now).run();
+    `).bind(tokenId, validDeviceId, auth.user.id, fcmToken.trim(), now).run();
 
     return jsonResponse({
       ok: true,
-      message: "توکن اعلان دستگاه با موفقیت ثبت شد."
+      message: "توکن اعلان دستگاه با موفقیت در دیتابیس ذخیره شد."
     });
   } catch (err) {
-    return errorResponse("خطا در ثبت توکن اعلان.", 500, "FCM_REGISTER_ERROR", err.message);
+    return errorResponse("خطا در ثبت توکن اعلان.", 500, "REGISTER_ERROR", err.message);
   }
 }
 
-/**
- * حذف توکن FCM دستگاه (هنگام خروج از حساب)
- * POST /api/notifications/unregister-token
- */
 export async function handleUnregisterFcmToken(request, env) {
   const auth = await authenticateRequest(env.DB, request);
   if (!auth.authenticated) {
@@ -60,9 +59,9 @@ export async function handleUnregisterFcmToken(request, env) {
 
     return jsonResponse({
       ok: true,
-      message: "توکن اعلان دستگاه با موفقیت حذف شد."
+      message: "توکن با موفقیت حذف شد."
     });
   } catch (err) {
-    return errorResponse("خطا در حذف توکن اعلان.", 500, "FCM_UNREGISTER_ERROR", err.message);
+    return errorResponse("خطا در حذف توکن.", 500, "UNREGISTER_ERROR", err.message);
   }
 }

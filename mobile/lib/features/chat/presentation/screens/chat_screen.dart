@@ -1,6 +1,7 @@
 ﻿import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:pushy_flutter/pushy_flutter.dart';
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_websocket_client.dart';
@@ -9,8 +10,10 @@ import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_inp
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_bubble.dart';
 import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
+import 'package:telegram_chat_mobile/features/notifications/data/notification_service.dart';
+import 'package:telegram_chat_mobile/main.dart';
 
-/// صفحه اصلی چت بهینه‌سازی‌شده برای عملکرد روان و بدون لگ در اندروید
+/// صفحه اصلی چت مجهز به منوی دیباگ و تست قدم‌به‌قدم اعلان‌ها
 class ChatScreen extends StatefulWidget {
   final AuthRepository authRepository;
   final ChatRepository chatRepository;
@@ -81,6 +84,93 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOut,
       );
     }
+  }
+
+  /// باز کردن پنل دیباگ و تست قدم‌به‌قدم نوتیفیکیشن
+  void _showNotificationDebugMenu() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  '🛠️ پنل دیباگ و تست اعلان‌ها',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.notifications_active, color: Colors.green),
+                  title: const Text('تست ۱: اعلان مستقیم محلی'),
+                  subtitle: const Text('آزمایش موتور نمایش نوتیفیکیشن گوشی'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await NotificationService.instance.showChatNotification(
+                      id: 101,
+                      senderName: 'تست ۱: محلی',
+                      messageText: 'موتور اعلان داخلی بدون وابستگی کار می‌کند! ✅',
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.cloud_download_rounded, color: Colors.blue),
+                  title: const Text('تست ۲: شبیه‌سازی دریافت از پوشی'),
+                  subtitle: const Text('آزمایش مستقیم تابع backgroundPushyNotificationListener'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    // تست مستقیم تابعی که پوشی در پس‌زمینه صدا می‌زند
+                    backgroundPushyNotificationListener({
+                      'title': 'تست ۲: شبیه‌ساز پوشی',
+                      'message': 'لیسنر پس‌زمینه با موفقیت اجرا شد و بنر را کشید! 🎉',
+                      'messageId': 'test_sim_id',
+                    });
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.vpn_key_rounded, color: Colors.amber),
+                  title: const Text('تست ۳: استعلام توکن فعال Pushy'),
+                  subtitle: const Text('بررسی ثبت توکن در گوشی'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    try {
+                      final token = await Pushy.register();
+                      if (mounted) {
+                        showDialog(
+                          context: context,
+                          builder: (_) => AlertDialog(
+                            title: const Text('توکن فعال دستگاه'),
+                            content: SelectableText(token),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context),
+                                child: const Text('بستن'),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('خطا در استعلام توکن: $e')),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _handleStartRecordVoice() async {
@@ -294,6 +384,12 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
           actions: [
+            // دکمه باز کردن پنل دیباگ و تست قدم‌به‌قدم اعلان‌ها
+            IconButton(
+              icon: const Icon(Icons.build_circle_rounded, color: Colors.amber),
+              tooltip: 'پنل تست اعلان‌ها',
+              onPressed: _showNotificationDebugMenu,
+            ),
             IconButton(
               icon: const Icon(Icons.logout_rounded),
               tooltip: 'خروج از حساب',
@@ -325,7 +421,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         body: Column(
           children: [
-            // بنر پیام پین‌شده
             AnimatedBuilder(
               animation: widget.chatRepository,
               builder: (_, __) {
@@ -374,8 +469,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 );
               },
             ),
-
-            // لیست پیام‌ها با بهینه‌سازی‌های پرفورمنس
             Expanded(
               child: AnimatedBuilder(
                 animation: widget.chatRepository,
@@ -400,9 +493,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
                   return ListView.builder(
                     controller: _scrollController,
-                    reverse: true, // نمایش پیام جدید در پایین
-                    cacheExtent: 500.0, // پیش‌رندر ۵۰۰ پیکسل فراتر از صفحه برای اسکرول فوق‌العاده نرم
-                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                    reverse: true,
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       final message = messages[index];
@@ -410,7 +501,6 @@ class _ChatScreenState extends State<ChatScreen> {
                           (message.senderId == currentUser.id ||
                               message.senderName == currentUser.fullName);
 
-                      // ایزوله‌سازی رندر هر بالون با RepaintBoundary جهت جلوگیری از رندر مجدد بقیه لیست
                       return RepaintBoundary(
                         key: ValueKey(message.id),
                         child: MessageBubble(
@@ -430,8 +520,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
-
-            // نوار تایپ، ارسال و ضبط ویس
             ChatInputBar(
               controller: _inputController,
               replyMessage: _replyingMessage,
