@@ -1,41 +1,170 @@
-﻿# Cloudflare & Node Environment
-node_modules/
-.env
-.dev.vars
-.wrangler/
-dist/
-backups/
+﻿# ============================================================
+#  SENSITIVE FILES - NEVER COMMIT THESE
+# ============================================================
 
-# Private Keys & Service Accounts
+# Cloudflare Worker Secrets
+.dev.vars
+.dev.vars.*
+.wrangler/
+
+# Firebase & Google Services (contains API keys)
+google-services.json
+**/google-services.json
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+firebase_options.dart
+**/firebase_options.dart
+
+# Service Account Private Keys (Firebase Admin SDK)
+*firebase-adminsdk*.json
+*service-account*.json
+*serviceAccountKey*.json
+firebase-service-account.json
+
+# Android Signing
+*.jks
+*.keystore
+*.p12
+*.pfx
+keystore.properties
+key.properties
+signing.properties
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Private Keys & Certificates
 *.pem
 *.key
 *.crt
-*service-account*.json
-firebase-adminsdk*.json
+*.cer
+*.der
+*.p8
 
-# Firebase Client Configuration (Critical Security)
-**/google-services.json
-google-services.json
+# Generic Secrets
+secrets.json
+credentials.json
 
-# Android Release Keystores
-*.keystore
-*.jks
+# Local Configuration
+**/local.properties
 
-# IDE & Editor Settings
-.vscode/
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# ============================================================
+#  Flutter / Dart
+# ============================================================
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+*.dill
+.flutter-plugins
+.flutter-plugins-dependencies
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
 
-# Flutter & Dart Build Artifacts
-mobile/.dart_tool/
-mobile/.flutter-plugins
-mobile/.flutter-plugins-dependencies
-mobile/.packages
+# Flutter build outputs
 mobile/build/
-mobile/android/.gradle/
-mobile/android/local.properties
-mobile/android/app/release/
+mobile/.dart_tool/
+
+# Flutter iOS/Android/Web auto-generated (if using flutter create)
+**/GeneratedPluginRegistrant.java
+**/GeneratedPluginRegistrant.h
+**/GeneratedPluginRegistrant.m
+**/generated_plugin_registrant.cc
+**/generated_plugin_registrant.h
+**/generated_plugins.cmake
+
+# ============================================================
+#  Android
+# ============================================================
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+.gradle/
+**/.gradle/
+**/captures/
+**/.cxx/
+**/release/
+**/debug/
+
+# ============================================================
+#  Node.js
+# ============================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ============================================================
+#  Database & Backups
+# ============================================================
+backups/
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# ============================================================
+#  IDE & Editor
+# ============================================================
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.settings/
+*.swp
+*.swo
+*~
+
+# ============================================================
+#  Operating System
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ============================================================
+#  Logs & Temporary Files
+# ============================================================
+*.log
+logs/
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+
+# ============================================================
+#  Project-specific temp files
+# ============================================================
+project_structure.txt
+project_dump.txt
+gradle_files_dump.txt
+worker_files_dump.txt
+*.dump.txt
+list_project.ps1
+
+# ============================================================
+#  Widget Preview (Flutter internal)
+# ============================================================
+mobile/.widget_preview/
+**/.widget_preview/
+
+# ============================================================
+#  Strange accidental files
+# ============================================================
+({}))
+r.fcm_token).filter(Boolean)

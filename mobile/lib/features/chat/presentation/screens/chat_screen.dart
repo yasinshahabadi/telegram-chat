@@ -1,7 +1,7 @@
 ﻿import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:pushy_flutter/pushy_flutter.dart';
+import 'package:telegram_chat_mobile/features/notifications/data/firebase_messaging_service.dart';
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_websocket_client.dart';
@@ -11,7 +11,6 @@ import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_
 import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 import 'package:telegram_chat_mobile/features/notifications/data/notification_service.dart';
-import 'package:telegram_chat_mobile/main.dart';
 
 /// صفحه اصلی چت مجهز به منوی دیباگ و تست قدم‌به‌قدم اعلان‌ها
 class ChatScreen extends StatefulWidget {
@@ -107,7 +106,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 const SizedBox(height: 12),
                 ListTile(
-                  leading: const Icon(Icons.notifications_active, color: Colors.green),
+                  leading: const Icon(Icons.notifications_active,
+                      color: Colors.green),
                   title: const Text('تست ۱: اعلان مستقیم محلی'),
                   subtitle: const Text('آزمایش موتور نمایش نوتیفیکیشن گوشی'),
                   onTap: () async {
@@ -115,53 +115,34 @@ class _ChatScreenState extends State<ChatScreen> {
                     await NotificationService.instance.showChatNotification(
                       id: 101,
                       senderName: 'تست ۱: محلی',
-                      messageText: 'موتور اعلان داخلی بدون وابستگی کار می‌کند! ✅',
+                      messageText:
+                          'موتور اعلان داخلی بدون وابستگی کار می‌کند! ✅',
                     );
                   },
                 ),
                 ListTile(
-                  leading: const Icon(Icons.cloud_download_rounded, color: Colors.blue),
-                  title: const Text('تست ۲: شبیه‌سازی دریافت از پوشی'),
-                  subtitle: const Text('آزمایش مستقیم تابع backgroundPushyNotificationListener'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    // تست مستقیم تابعی که پوشی در پس‌زمینه صدا می‌زند
-                    backgroundPushyNotificationListener({
-                      'title': 'تست ۲: شبیه‌ساز پوشی',
-                      'message': 'لیسنر پس‌زمینه با موفقیت اجرا شد و بنر را کشید! 🎉',
-                      'messageId': 'test_sim_id',
-                    });
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.vpn_key_rounded, color: Colors.amber),
-                  title: const Text('تست ۳: استعلام توکن فعال Pushy'),
+                  leading:
+                      const Icon(Icons.vpn_key_rounded, color: Colors.amber),
+                  title: const Text('تست ۳: دریافت توکن FCM'),
                   subtitle: const Text('بررسی ثبت توکن در گوشی'),
                   onTap: () async {
                     Navigator.pop(ctx);
-                    try {
-                      final token = await Pushy.register();
-                      if (mounted) {
-                        showDialog(
-                          context: context,
-                          builder: (_) => AlertDialog(
-                            title: const Text('توکن فعال دستگاه'),
-                            content: SelectableText(token),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context),
-                                child: const Text('بستن'),
-                              ),
-                            ],
-                          ),
-                        );
-                      }
-                    } catch (e) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('خطا در استعلام توکن: $e')),
-                        );
-                      }
+                    final token =
+                        await FirebaseMessagingService.instance.getToken();
+                    if (mounted && token != null) {
+                      showDialog(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('توکن FCM دستگاه'),
+                          content: SelectableText(token),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('بستن'),
+                            ),
+                          ],
+                        ),
+                      );
                     }
                   },
                 ),
@@ -226,7 +207,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.insert_drive_file_rounded, color: Colors.amber),
+                leading: const Icon(Icons.insert_drive_file_rounded,
+                    color: Colors.amber),
                 title: const Text('ارسال فایل و اسناد'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -428,7 +410,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (pinned == null) return const SizedBox.shrink();
 
                 return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   color: theme.colorScheme.primaryContainer.withAlpha(128),
                   child: Row(
                     children: [
@@ -485,7 +468,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         'هنوز پیامی وجود ندارد.\nنخستین پیام را ارسال کنید!',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
+                          color:
+                              theme.colorScheme.onSurfaceVariant.withAlpha(160),
                         ),
                       ),
                     );
@@ -512,7 +496,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             });
                           },
                           onEdit: isMe ? () => _showEditDialog(message) : null,
-                          onPin: () => widget.chatRepository.pinMessage(message.id),
+                          onPin: () =>
+                              widget.chatRepository.pinMessage(message.id),
                         ),
                       );
                     },

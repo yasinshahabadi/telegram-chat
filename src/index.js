@@ -46,7 +46,7 @@ router.get("/api/test-push", async (req, env) => {
   const result = await dispatchNewMessagePush(env, {
     id: crypto.randomUUID(),
     senderName: "تست اختصاصی سرور Guysgram",
-    text: "این یک پیام تست مستقیم از کلودفلر به Pushy است!",
+    text: "این یک پیام تست مستقیم از کلودفلر با FCM است!",
     createdAt: Date.now()
   });
 

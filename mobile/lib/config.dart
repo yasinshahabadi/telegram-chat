@@ -7,9 +7,11 @@ class AppConfig {
 
   static String get wsUrl {
     if (baseUrl.startsWith("https://")) {
-      return baseUrl.replaceFirst("https://", "wss://") + "/api/ws";
+      final newUrl = baseUrl.replaceFirst("https://", "wss://");
+      return "$newUrl/api/ws";
     } else {
-      return baseUrl.replaceFirst("http://", "ws://") + "/api/ws";
+      final newUrl = baseUrl.replaceFirst("http://", "ws://");
+      return "$newUrl/api/ws";
     }
   }
 }

@@ -1,6 +1,6 @@
 ﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- مجوزهای ضروری شبکه، اعلان‌ها و زنده ماندن در پس‌زمینه -->
+    <!-- مجوزهای ضروری -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <queries>
         <intent>
@@ -50,43 +52,20 @@
             </intent-filter>
         </activity>
 
-        <!-- ۱. گیرنده رسمی دریافت و نمایش نوتیفیکیشن Pushy -->
-        <receiver
-            android:name="me.pushy.sdk.receivers.PushyPushReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="pushy.me" />
-            </intent-filter>
-        </receiver>
+        <!-- ✅ کانال پیش‌فرض اعلان‌های FCM -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="guysgram_default_channel" />
 
-        <!-- ۲. سرویس زنده نگه داشتن اتصال سوکت MQTT در پس‌زمینه (حالت بسته بودن برنامه) -->
-        <service
-            android:name="me.pushy.sdk.services.PushySocketService"
-            android:foregroundServiceType="remoteMessaging"
-            android:stopWithTask="false" />
+        <!-- ✅ آیکون پیش‌فرض اعلان‌ها -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@mipmap/launcher_icon" />
 
-        <!-- ۳. سرویس جاب‌اسکجولر برای اندروید ۱۴ -->
-        <service
-            android:name="me.pushy.sdk.services.PushyJobService"
-            android:permission="android.permission.BIND_JOB_SERVICE"
-            android:exported="true" />
-
-        <!-- ۴. گیرنده‌های آپدیت و راه‌اندازی پس از ریستارت گوشی -->
-        <receiver
-            android:name="me.pushy.sdk.receivers.PushyUpdateReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name="me.pushy.sdk.receivers.PushyBootReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
+        <!-- ✅ رنگ پیش‌فرض اعلان‌ها -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/ic_launcher_background" />
 
         <meta-data
             android:name="flutterEmbedding"

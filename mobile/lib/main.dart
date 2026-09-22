@@ -1,7 +1,5 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:pushy_flutter/pushy_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/database/app_database.dart';
@@ -17,46 +15,8 @@ import 'features/chat/data/chat_repository.dart';
 import 'features/chat/data/chat_websocket_client.dart';
 import 'features/chat/data/sync_engine.dart';
 import 'features/chat/presentation/screens/chat_screen.dart';
+import 'features/notifications/data/firebase_messaging_service.dart';
 import 'features/notifications/data/notification_service.dart';
-import 'features/notifications/data/pushy_service.dart';
-
-@pragma('vm:entry-point')
-void backgroundPushyNotificationListener(Map<String, dynamic> data) async {
-  debugPrint('[PUSHY] -> Background payload: $data');
-
-  try {
-    WidgetsFlutterBinding.ensureInitialized();
-    final FlutterLocalNotificationsPlugin localNotif = FlutterLocalNotificationsPlugin();
-    const androidSettings = AndroidInitializationSettings('@mipmap/launcher_icon');
-    await localNotif.initialize(const InitializationSettings(android: androidSettings));
-
-    const androidDetails = AndroidNotificationDetails(
-      'telegram_chat_messages',
-      'پیام‌های چت',
-      channelDescription: 'اعلان پیام‌های دریافتی از سوپرگروه تلگرام',
-      importance: Importance.max,
-      priority: Priority.high,
-      showWhen: true,
-      enableVibration: true,
-      playSound: true,
-    );
-
-    final String title = data['title']?.toString() ?? data['senderName']?.toString() ?? 'Guysgram';
-    final String message = data['message']?.toString() ?? data['text']?.toString() ?? 'پیام جدید دریافت شد';
-
-    await localNotif.show(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title,
-      message,
-      const NotificationDetails(android: androidDetails),
-      payload: data['messageId']?.toString(),
-    );
-  } catch (_) {}
-
-  try {
-    Pushy.clearBadge();
-  } catch (_) {}
-}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -81,10 +41,8 @@ void main() async {
   await notifService.initialize();
   await notifService.requestPermission();
 
-  try {
-    Pushy.listen();
-    Pushy.setNotificationListener(backgroundPushyNotificationListener);
-  } catch (_) {}
+  // ✅ راه‌اندازی Firebase Cloud Messaging (جایگزین Pushy)
+  await FirebaseMessagingService.instance.initialize();
 
   notifService.onDirectReplyReceived = (replyText, payload) async {
     final currentUser = authRepository.currentUser;
@@ -148,7 +106,8 @@ class TelegramChatApp extends StatefulWidget {
   State<TelegramChatApp> createState() => _TelegramChatAppState();
 }
 
-class _TelegramChatAppState extends State<TelegramChatApp> with WidgetsBindingObserver {
+class _TelegramChatAppState extends State<TelegramChatApp>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
@@ -167,6 +126,11 @@ class _TelegramChatAppState extends State<TelegramChatApp> with WidgetsBindingOb
     final isBackground = state != AppLifecycleState.resumed;
     widget.chatRepository.isAppInBackground = isBackground;
     debugPrint('[LIFECYCLE] App background state: $isBackground ($state)');
+
+    // وقتی کاربر به فورگراند برگشت، اعلان‌ها را پاک کن
+    if (state == AppLifecycleState.resumed) {
+      widget.notifService.cancelAllNotifications();
+    }
   }
 
   void _ensureConnectedAndSynced() {
@@ -181,7 +145,8 @@ class _TelegramChatAppState extends State<TelegramChatApp> with WidgetsBindingOb
       });
 
       widget.authStorage.getOrCreateDeviceIdentifier().then((deviceId) {
-        PushyService.instance.registerDeviceToken(
+        // ✅ ثبت توکن FCM در سرور (جایگزین Pushy)
+        FirebaseMessagingService.instance.registerTokenOnServer(
           sessionToken: token,
           deviceId: deviceId,
         );
@@ -225,11 +190,10 @@ class _TelegramChatAppState extends State<TelegramChatApp> with WidgetsBindingOb
       home: ListenableBuilder(
         listenable: widget.authRepository,
         builder: (context, _) {
-          if (widget.authRepository.isLoading && widget.authRepository.status == AuthStatus.initial) {
+          if (widget.authRepository.isLoading &&
+              widget.authRepository.status == AuthStatus.initial) {
             return const Scaffold(
-              body: Center(
-                child: CircularProgressIndicator(),
-              ),
+              body: Center(child: CircularProgressIndicator()),
             );
           }
 
@@ -255,6 +219,8 @@ class _TelegramChatAppState extends State<TelegramChatApp> with WidgetsBindingOb
               chatRepository: widget.chatRepository,
               onLogout: () async {
                 widget.socketClient.disconnect();
+                // ✅ حذف توکن FCM هنگام خروج از حساب
+                await FirebaseMessagingService.instance.deleteToken();
                 await widget.notifService.cancelAllNotifications();
                 await widget.authRepository.logout();
               },
