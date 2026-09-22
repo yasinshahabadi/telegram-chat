@@ -156,6 +156,8 @@ gradle_files_dump.txt
 worker_files_dump.txt
 *.dump.txt
 list_project.ps1
+project_source_dump.txt
+dump_all_files.ps1
 
 # ============================================================
 #  Widget Preview (Flutter internal)
