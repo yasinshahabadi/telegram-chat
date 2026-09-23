@@ -36,6 +36,7 @@ class LocalChatDao {
         'is_pinned': (messageData['is_pinned'] == 1 || messageData['isPinned'] == true) ? 1 : 0,
         'is_edited': (messageData['is_edited'] == 1 || messageData['isEdited'] == true) ? 1 : 0,
         'status': messageData['status'] ?? 'synced',
+        'read_at': messageData['read_at'] ?? messageData['readAt'],
         'created_at': messageData['created_at'] ?? messageData['createdAt'] ?? DateTime.now().millisecondsSinceEpoch,
         'updated_at': messageData['updated_at'] ?? messageData['updatedAt'] ?? DateTime.now().millisecondsSinceEpoch,
       },
@@ -103,6 +104,17 @@ class LocalChatDao {
     );
   }
 
+  /// علامت‌گذاری پیام‌های مشخص به‌عنوان خوانده‌شده
+Future<void> markMessagesAsRead(List<String> messageIds, int readAt) async {
+  if (messageIds.isEmpty) return;
+  final db = await _db;
+  final placeholders = List.filled(messageIds.length, '?').join(',');
+  await db.rawUpdate(
+    'UPDATE messages SET read_at = ? WHERE id IN ($placeholders) AND read_at IS NULL',
+    [readAt, ...messageIds],
+  );
+}
+
   // ==========================================
   // ۲. عملیات پیوست‌ها و فایل‌ها (Attachments)
   // ==========================================
@@ -139,6 +151,20 @@ class LocalChatDao {
       whereArgs: [messageId],
     );
   }
+
+  /// به‌روزرسانی مسیر محلی و وضعیت دانلود پیوست
+Future<void> updateAttachmentLocalPath(String attachmentId, String localPath) async {
+  final db = await _db;
+  await db.update(
+    'attachments',
+    {
+      'local_path': localPath,
+      'is_downloaded': 1,
+    },
+    where: 'id = ?',
+    whereArgs: [attachmentId],
+  );
+}
 
   // ==========================================
   // ۳. صف اکشن‌های معلق آفلاین (Pending Actions Queue)

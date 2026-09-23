@@ -97,8 +97,12 @@ class SyncEngine {
         final message = ChatMessageModel.fromJson(payload);
         await _localDao.saveMessage(message.toDbMap());
 
-        // اگر دارای فایل پیوست بود در جدول پیوست‌ها ذخیره شود
-        if (payload['attachment'] != null && payload['attachment'] is Map<String, dynamic>) {
+        // ✅ ذخیره attachment
+        if (message.attachment != null) {
+          try {
+            await _localDao.saveAttachment(message.attachment!.toDbMap());
+          } catch (_) {}
+        } else if (payload['attachment'] != null && payload['attachment'] is Map<String, dynamic>) {
           final att = MediaAttachmentModel.fromJson(payload['attachment'] as Map<String, dynamic>);
           await _localDao.saveAttachment(att.toDbMap());
         }
@@ -120,11 +124,9 @@ class SyncEngine {
         break;
 
       case 'message_unpinned':
-        // حذف پین محلی
         break;
 
       case 'reaction_updated':
-        // به‌روزرسانی ری‌اکشن‌ها در دیتابیس
         break;
     }
   }

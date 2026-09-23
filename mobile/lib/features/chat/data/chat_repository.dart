@@ -5,10 +5,9 @@ import 'package:uuid/uuid.dart';
 import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
 import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
-import 'package:telegram_chat_mobile/features/notifications/data/notification_service.dart';
+import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 import 'chat_websocket_client.dart';
 
-/// ریپازیتوری چت مجهز به ارسال اعلان در حالت پس‌زمینه
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
@@ -18,7 +17,8 @@ class ChatRepository extends ChangeNotifier {
   String? _typingUserName;
   Timer? _typingTimer;
   bool _isLoading = false;
-  bool isAppInBackground = false; // وضعیت پس‌زمینه
+  bool isAppInBackground = false;
+  AuthUser? _currentUser;
 
   StreamSubscription? _socketSubscription;
   StreamSubscription? _socketStateSubscription;
@@ -36,6 +36,7 @@ class ChatRepository extends ChangeNotifier {
   SocketConnectionState get connectionState => _socketClient.state;
 
   Future<void> initialize(AuthUser currentUser) async {
+    _currentUser = currentUser;
     _isLoading = true;
     notifyListeners();
 
@@ -64,7 +65,25 @@ class ChatRepository extends ChangeNotifier {
   Future<void> loadLocalMessages({int limit = 50}) async {
     try {
       final rawList = await _localDao.getMessagesList(limit: limit);
-      _messages = rawList.map((m) => ChatMessageModel.fromDbMap(m)).toList();
+      
+      // ✅ بارگذاری attachment برای هر پیام
+      final loaded = <ChatMessageModel>[];
+      for (final raw in rawList) {
+        final messageId = raw['id'] as String?;
+        if (messageId == null) continue;
+        
+        MediaAttachmentModel? attachment;
+        try {
+          final attachments = await _localDao.getAttachmentsForMessage(messageId);
+          if (attachments.isNotEmpty) {
+            attachment = MediaAttachmentModel.fromDbMap(attachments.first);
+          }
+        } catch (_) {}
+        
+        loaded.add(ChatMessageModel.fromDbMap(raw, attachment: attachment));
+      }
+      
+      _messages = loaded;
 
       try {
         _pinnedMessage = _messages.firstWhere((m) => m.isPinned);
@@ -76,6 +95,121 @@ class ChatRepository extends ChangeNotifier {
     } finally {
       notifyListeners();
     }
+  }
+
+  /// ✅ ایجاد یک پیام موقت "در حال آپلود" (Optimistic Upload)
+  String addOptimisticUpload({
+    required String fileName,
+    required int fileSize,
+    required String mediaType,
+    required AuthUser currentUser,
+    ChatMessageModel? replyTo,
+  }) {
+    final tempId = 'temp_upload_${const Uuid().v4()}';
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    final optimistic = ChatMessageModel(
+      id: tempId,
+      senderId: currentUser.id,
+      senderName: currentUser.fullName,
+      text: '',
+      isFromTelegram: false,
+      replyToMessageId: replyTo?.id,
+      replyToName: replyTo?.senderName,
+      replyToText: replyTo?.text,
+      status: MessageStatus.sending,
+      createdAt: now,
+      updatedAt: now,
+      isUploading: true,
+      uploadProgress: 0.0,
+      attachment: MediaAttachmentModel(
+        id: 'att_$tempId',
+        messageId: tempId,
+        mediaType: mediaType,
+        fileName: fileName,
+        fileSize: fileSize,
+        isDownloaded: false,
+        createdAt: now,
+      ),
+    );
+
+    _messages.insert(0, optimistic);
+    notifyListeners();
+    return tempId;
+  }
+
+  /// ✅ به‌روزرسانی درصد پیشرفت آپلود
+  void updateUploadProgress(String tempId, double progress) {
+    final idx = _messages.indexWhere((m) => m.id == tempId);
+    if (idx != -1) {
+      _messages[idx] = _messages[idx].copyWith(uploadProgress: progress);
+      notifyListeners();
+    }
+  }
+
+  /// ✅ نهایی‌سازی آپلود: جایگزینی پیام موقت با پیام واقعی
+  void finalizeUpload({
+    required String tempId,
+    required String realMessageId,
+    required String fileId,
+    required String fileName,
+    required int fileSize,
+    required String mimeType,
+    required String mediaType,
+  }) {
+    final idx = _messages.indexWhere((m) => m.id == tempId);
+    if (idx == -1) return;
+
+    final old = _messages[idx];
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    final finalMessage = old.copyWith(
+      id: realMessageId,
+      status: MessageStatus.synced,
+      isUploading: false,
+      uploadProgress: 1.0,
+      updatedAt: now,
+      attachment: MediaAttachmentModel(
+        id: 'att_$realMessageId',
+        messageId: realMessageId,
+        mediaType: mediaType,
+        telegramFileId: fileId,     // ✅ این فیلد کلید نمایش مدیا است
+        fileName: fileName,
+        fileSize: fileSize,
+        mimeType: mimeType,
+        isDownloaded: false,
+        createdAt: now,
+      ),
+    );
+
+    _messages[idx] = finalMessage;
+    notifyListeners();
+  }
+
+  /// ✅ خطای آپلود
+  void failUpload(String tempId, String error) {
+    final idx = _messages.indexWhere((m) => m.id == tempId);
+    if (idx != -1) {
+      _messages[idx] = _messages[idx].copyWith(
+        status: MessageStatus.failed,
+        isUploading: false,
+      );
+      notifyListeners();
+    }
+  }
+
+  /// به‌روزرسانی localPath پیام پس از کش شدن فایل
+  void setLocalPathForMessage(String messageId, String localPath) {
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx == -1) return;
+
+    final currentAttachment = _messages[idx].attachment;
+    if (currentAttachment == null) return;
+
+    _messages[idx] = _messages[idx].copyWith(
+      attachment: currentAttachment.copyWith(localPath: localPath),
+    );
+    notifyListeners();
   }
 
   Future<void> sendMessage({
@@ -105,9 +239,7 @@ class ChatRepository extends ChangeNotifier {
     _messages.insert(0, newMessage);
     notifyListeners();
 
-    try {
-      await _localDao.saveMessage(newMessage.toDbMap());
-    } catch (_) {}
+    try { await _localDao.saveMessage(newMessage.toDbMap()); } catch (_) {}
 
     try {
       final payloadJson = jsonEncode({
@@ -174,21 +306,73 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  Future<void> _handleIncomingSocketEvent(Map<String, dynamic> event, AuthUser currentUser) async {
+  Future<void> markMessagesAsRead(List<String> messageIds) async {
+    if (messageIds.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    await _localDao.markMessagesAsRead(messageIds, now);
+
+    for (final id in messageIds) {
+      final idx = _messages.indexWhere((m) => m.id == id);
+      if (idx != -1 && _messages[idx].readAt == null) {
+        _messages[idx] = _messages[idx].copyWith(readAt: now);
+      }
+    }
+    notifyListeners();
+
+    _socketClient.sendMarkRead(messageIds);
+  }
+
+  Future<void> _handleIncomingSocketEvent(
+      Map<String, dynamic> event, AuthUser currentUser) async {
     final type = event['type'] as String?;
     if (type == null) return;
 
+    // ═══════════════ رویداد خوانده‌شدن پیام‌ها ═══════════════
+    if (type == 'messages_read' && event['messageIds'] != null) {
+      final ids = (event['messageIds'] as List).cast<String>();
+      final readerId = event['userId'] as String?;
+      final readAt = event['readAt'] as int? ??
+          DateTime.now().millisecondsSinceEpoch;
+
+      final toMark = <String>[];
+      for (final id in ids) {
+        final idx = _messages.indexWhere((m) => m.id == id);
+        if (idx != -1) {
+          final msg = _messages[idx];
+          if (msg.senderId == currentUser.id &&
+              msg.senderId != readerId &&
+              msg.readAt == null) {
+            toMark.add(id);
+            _messages[idx] = msg.copyWith(readAt: readAt);
+          }
+        }
+      }
+
+      if (toMark.isNotEmpty) {
+        await _localDao.markMessagesAsRead(toMark, readAt);
+        notifyListeners();
+      }
+      return;
+    }
+
+    // ═══════════════ پیام جدید ═══════════════
     if (type == 'new_message' && event['message'] != null) {
       final msgJson = event['message'] as Map<String, dynamic>;
-      final clientMsgId = msgJson['clientMessageId'] ?? msgJson['client_message_id'];
+      final clientMsgId =
+          msgJson['clientMessageId'] ?? msgJson['client_message_id'];
+      final incomingId = msgJson['id'] as String?;
 
+      // ۱) بررسی پیام خودمان (client message id)
       if (clientMsgId != null) {
-        final existingIndex = _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
+        final existingIndex =
+            _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
         if (existingIndex != -1) {
           final existing = _messages[existingIndex];
           final syncedMessage = existing.copyWith(
-            id: msgJson['id'] as String? ?? existing.id,
-            telegramMessageId: msgJson['telegramMessageId'] as int? ?? msgJson['tg_msg_id'] as int?,
+            id: incomingId ?? existing.id,
+            telegramMessageId: msgJson['telegramMessageId'] as int? ??
+                msgJson['tg_msg_id'] as int?,
             status: MessageStatus.synced,
           );
 
@@ -201,25 +385,59 @@ class ChatRepository extends ChangeNotifier {
         }
       }
 
-      final incoming = ChatMessageModel.fromJson(msgJson);
+      // ۲) ساخت پیام از سرور
+      ChatMessageModel incoming = ChatMessageModel.fromJson(msgJson);
+
+      // ✅✅✅ رفع باگ: حفظ localPath و attachment از پیام قبلی (اگر وجود دارد)
+      if (incomingId != null) {
+        final existingIndex = _messages.indexWhere((m) => m.id == incomingId);
+        if (existingIndex != -1) {
+          final existing = _messages[existingIndex];
+          final existingAttachment = existing.attachment;
+
+          // اگر پیام قبلی localPath داشت، آن را حفظ کن
+          if (existingAttachment != null &&
+              existingAttachment.localPath != null &&
+              incoming.attachment != null) {
+            final mergedAttachment = incoming.attachment!.copyWith(
+              localPath: existingAttachment.localPath,
+              isDownloaded: true,
+            );
+            incoming = incoming.copyWith(attachment: mergedAttachment);
+          }
+          // اگر incoming از سرور attachment نداشت ولی پیام قبلی داشت
+          else if (existingAttachment != null && incoming.attachment == null) {
+            incoming = incoming.copyWith(attachment: existingAttachment);
+          }
+
+          // حفظ وضعیت خوانده‌شدن
+          if (existing.readAt != null && incoming.readAt == null) {
+            incoming = incoming.copyWith(readAt: existing.readAt);
+          }
+        }
+      }
+
+      // ۳) ذخیره در DB
       await _localDao.saveMessage(incoming.toDbMap());
 
+      // ۴) ذخیره attachment در جدول attachments
+      if (incoming.attachment != null) {
+        try {
+          await _localDao.saveAttachment(incoming.attachment!.toDbMap());
+        } catch (e) {
+          debugPrint('Failed to save attachment: $e');
+        }
+      }
+
+      // ۵) جایگزینی در لیست (بدون از دست دادن localPath)
       _messages.removeWhere((m) => m.id == incoming.id);
       _messages.insert(0, incoming);
       notifyListeners();
 
-      // کلید حل معما: اگر برنامه مینیمایز است، اعلان را با صدا و بنر روی گوشی ظاهر کن!
-      if (isAppInBackground) {
-        NotificationService.instance.showChatNotification(
-          id: incoming.createdAt ~/ 1000,
-          senderName: incoming.senderName,
-          messageText: incoming.text,
-          payload: incoming.id,
-        );
-      }
       return;
     }
 
+    // ═══════════════ ویرایش پیام ═══════════════
     if (type == 'message_edited' && event['messageId'] != null) {
       final mId = event['messageId'] as String;
       final newText = event['text'] as String? ?? '';
@@ -227,12 +445,14 @@ class ChatRepository extends ChangeNotifier {
 
       final index = _messages.indexWhere((m) => m.id == mId);
       if (index != -1) {
-        _messages[index] = _messages[index].copyWith(text: newText, isEdited: true);
+        _messages[index] =
+            _messages[index].copyWith(text: newText, isEdited: true);
         notifyListeners();
       }
       return;
     }
 
+    // ═══════════════ پین پیام ═══════════════
     if (type == 'message_pinned' && event['message'] != null) {
       final msgJson = event['message'] as Map<String, dynamic>;
       final pinned = ChatMessageModel.fromJson(msgJson);
@@ -247,12 +467,14 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
+    // ═══════════════ حذف پین ═══════════════
     if (type == 'message_unpinned') {
       _pinnedMessage = null;
       notifyListeners();
       return;
     }
 
+    // ═══════════════ در حال تایپ ═══════════════
     if (type == 'typing' && event['fullName'] != null) {
       _typingUserName = event['fullName'] as String;
       notifyListeners();
@@ -285,17 +507,9 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  void pinMessage(String messageId) {
-    _socketClient.sendPinMessage(messageId);
-  }
-
-  void unpinMessage() {
-    _socketClient.sendUnpinMessage();
-  }
-
-  void sendTyping() {
-    _socketClient.sendTyping();
-  }
+  void pinMessage(String messageId) => _socketClient.sendPinMessage(messageId);
+  void unpinMessage() => _socketClient.sendUnpinMessage();
+  void sendTyping() => _socketClient.sendTyping();
 
   @override
   void dispose() {

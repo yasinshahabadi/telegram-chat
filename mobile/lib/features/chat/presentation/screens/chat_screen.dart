@@ -8,11 +8,12 @@ import 'package:telegram_chat_mobile/features/chat/data/chat_websocket_client.da
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_input_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_bubble.dart';
+import 'package:telegram_chat_mobile/features/media/data/media_download_manager.dart';
 import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
+import 'package:telegram_chat_mobile/features/media/presentation/screens/storage_settings_screen.dart';
 import 'package:telegram_chat_mobile/features/notifications/data/notification_service.dart';
 
-/// صفحه اصلی چت مجهز به منوی دیباگ و تست قدم‌به‌قدم اعلان‌ها
 class ChatScreen extends StatefulWidget {
   final AuthRepository authRepository;
   final ChatRepository chatRepository;
@@ -36,26 +37,52 @@ class _ChatScreenState extends State<ChatScreen> {
   final MediaRemoteService _mediaRemoteService = MediaRemoteService();
 
   ChatMessageModel? _replyingMessage;
+  bool _isMarkingRead = false;
 
   @override
   void initState() {
     super.initState();
     _initializeChat();
+    widget.chatRepository.addListener(_onChatUpdate);
   }
 
   Future<void> _initializeChat() async {
     final currentUser = widget.authRepository.currentUser;
     if (currentUser != null) {
       await widget.chatRepository.initialize(currentUser);
+      await _markUnreadMessagesAsRead();
     }
   }
 
   @override
   void dispose() {
+    widget.chatRepository.removeListener(_onChatUpdate);
     _inputController.dispose();
     _scrollController.dispose();
     _voiceRecordService.dispose();
     super.dispose();
+  }
+
+  void _onChatUpdate() => _markUnreadMessagesAsRead();
+
+  Future<void> _markUnreadMessagesAsRead() async {
+    if (_isMarkingRead) return;
+    final user = widget.authRepository.currentUser;
+    if (user == null) return;
+
+    final unreadIds = widget.chatRepository.messages
+        .where((m) => m.senderId != user.id && m.readAt == null)
+        .map((m) => m.id)
+        .toList();
+
+    if (unreadIds.isEmpty) return;
+
+    _isMarkingRead = true;
+    try {
+      await widget.chatRepository.markMessagesAsRead(unreadIds);
+    } finally {
+      _isMarkingRead = false;
+    }
   }
 
   void _handleSendMessage(String text) {
@@ -68,10 +95,7 @@ class _ChatScreenState extends State<ChatScreen> {
       replyTo: _replyingMessage,
     );
 
-    setState(() {
-      _replyingMessage = null;
-    });
-
+    setState(() => _replyingMessage = null);
     _scrollToBottom();
   }
 
@@ -85,7 +109,16 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// باز کردن پنل دیباگ و تست قدم‌به‌قدم نوتیفیکیشن
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, textDirection: TextDirection.rtl),
+        backgroundColor: Colors.red.shade700,
+      ),
+    );
+  }
+
   void _showNotificationDebugMenu() {
     showModalBottomSheet(
       context: context,
@@ -109,14 +142,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   leading: const Icon(Icons.notifications_active,
                       color: Colors.green),
                   title: const Text('تست ۱: اعلان مستقیم محلی'),
-                  subtitle: const Text('آزمایش موتور نمایش نوتیفیکیشن گوشی'),
                   onTap: () async {
                     Navigator.pop(ctx);
                     await NotificationService.instance.showChatNotification(
                       id: 101,
                       senderName: 'تست ۱: محلی',
-                      messageText:
-                          'موتور اعلان داخلی بدون وابستگی کار می‌کند! ✅',
+                      messageText: 'موتور اعلان داخلی کار می‌کند! ✅',
                     );
                   },
                 ),
@@ -124,7 +155,6 @@ class _ChatScreenState extends State<ChatScreen> {
                   leading:
                       const Icon(Icons.vpn_key_rounded, color: Colors.amber),
                   title: const Text('تست ۳: دریافت توکن FCM'),
-                  subtitle: const Text('بررسی ثبت توکن در گوشی'),
                   onTap: () async {
                     Navigator.pop(ctx);
                     final token =
@@ -157,9 +187,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _handleStartRecordVoice() async {
     final started = await _voiceRecordService.startRecording();
     if (!started && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('دسترسی به میکروفون داده نشد.')),
-      );
+      _showError('دسترسی به میکروفون داده نشد.');
     }
   }
 
@@ -168,22 +196,23 @@ class _ChatScreenState extends State<ChatScreen> {
     if (path == null) return;
 
     final user = widget.authRepository.currentUser;
-    final token = widget.authRepository.pendingSessionToken;
-    if (user == null) return;
+    final token = widget.authRepository.sessionToken;
+    if (user == null || token == null) {
+      _showError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
+      return;
+    }
 
     final file = File(path);
     if (!await file.exists()) return;
 
-    if (token != null) {
-      _mediaRemoteService.uploadFile(
-        file: file,
-        sessionToken: token,
-        mediaType: 'voice',
-        caption: '',
-      );
-    }
-
-    _scrollToBottom();
+    await _uploadWithOptimisticUI(
+      file: file,
+      mediaType: 'voice',
+      fileName: file.uri.pathSegments.last,
+      mimeType: 'audio/m4a',
+      token: token,
+      user: user,
+    );
   }
 
   Future<void> _handleAttachmentPick() async {
@@ -229,32 +258,116 @@ class _ChatScreenState extends State<ChatScreen> {
 
       final file = File(result.files.single.path!);
       final user = widget.authRepository.currentUser;
-      final token = widget.authRepository.pendingSessionToken;
-      if (user == null) return;
+      final token = widget.authRepository.sessionToken;
+      if (user == null || token == null) {
+        _showError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
+        return;
+      }
 
       final fileName = result.files.single.name;
       final ext = fileName.split('.').last.toLowerCase();
       String mediaType = 'document';
-
-      if (['jpg', 'jpeg', 'png', 'webp'].contains(ext)) {
+      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif'].contains(ext)) {
         mediaType = 'photo';
-      } else if (['mp4', 'mov', 'mkv'].contains(ext)) {
+      } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'].contains(ext)) {
         mediaType = 'video';
-      } else if (['mp3', 'm4a', 'wav', 'ogg'].contains(ext)) {
+      } else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'].contains(ext)) {
         mediaType = 'audio';
       }
 
-      if (token != null) {
-        _mediaRemoteService.uploadFile(
-          file: file,
-          sessionToken: token,
-          mediaType: mediaType,
-          caption: '',
+      await _uploadWithOptimisticUI(
+        file: file,
+        mediaType: mediaType,
+        fileName: fileName,
+        mimeType: result.files.single.extension ?? 'application/octet-stream',
+        token: token,
+        user: user,
+      );
+    } catch (e) {
+      _showError('خطا در انتخاب فایل: $e');
+    }
+  }
+
+  /// ✅ آپلود با UI خوش‌بینانه + کش خودکار پس از آپلود موفق
+  Future<void> _uploadWithOptimisticUI({
+    required File file,
+    required String mediaType,
+    required String fileName,
+    required String mimeType,
+    required String token,
+    required dynamic user,
+  }) async {
+    final fileSize = await file.length();
+
+    // ۱. نمایش فوری پیام موقت با نوار پیشرفت
+    final tempId = widget.chatRepository.addOptimisticUpload(
+      fileName: fileName,
+      fileSize: fileSize,
+      mediaType: mediaType,
+      currentUser: user,
+      replyTo: _replyingMessage,
+    );
+
+    setState(() => _replyingMessage = null);
+    _scrollToBottom();
+
+    // ۲. آپلود واقعی به سرور
+    try {
+      final uploadResult = await _mediaRemoteService.uploadFile(
+        file: file,
+        sessionToken: token,
+        mediaType: mediaType,
+        caption: '',
+        onProgress: (progress) {
+          widget.chatRepository.updateUploadProgress(tempId, progress);
+        },
+      );
+
+      if (!mounted) return;
+
+      if (!uploadResult.isSuccess) {
+        widget.chatRepository.failUpload(tempId, uploadResult.error ?? 'خطا');
+        _showError(uploadResult.error ?? 'خطا در آپلود فایل');
+        return;
+      }
+
+      // ۳. جایگزینی پیام موقت با پیام واقعی
+      widget.chatRepository.finalizeUpload(
+        tempId: tempId,
+        realMessageId: uploadResult.messageId!,
+        fileId: uploadResult.fileId ?? '',
+        fileName: fileName,
+        fileSize: fileSize,
+        mimeType: mimeType,
+        mediaType: mediaType,
+      );
+
+      // ۴. ✅ کش فایل ارسالی در حافظه دائمی (تا نیازی به دانلود مجدد نباشد)
+      try {
+        final cachedFile =
+            await MediaDownloadManager.instance.cacheUploadedFile(
+          attachmentId: 'att_${uploadResult.messageId}',
+          sourcePath: file.path,
+          fileName: fileName,
         );
+
+        // ✅ به‌روزرسانی localPath در پیام فعلی (برای نمایش مستقیم بدون دانلود)
+        if (cachedFile != null) {
+          widget.chatRepository.setLocalPathForMessage(
+            uploadResult.messageId!,
+            cachedFile.path,
+          );
+        }
+      } catch (e) {
+        debugPrint('Cache uploaded file failed: $e');
       }
 
       _scrollToBottom();
-    } catch (_) {}
+    } catch (e) {
+      if (!mounted) return;
+      widget.chatRepository.failUpload(tempId, e.toString());
+      _showError('خطا در ارسال فایل: $e');
+    }
   }
 
   void _showEditDialog(ChatMessageModel message) {
@@ -366,12 +479,25 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
           actions: [
-            // دکمه باز کردن پنل دیباگ و تست قدم‌به‌قدم اعلان‌ها
+            // دکمه مدیریت حافظه
+            IconButton(
+              icon: const Icon(Icons.storage_rounded),
+              tooltip: 'مدیریت حافظه',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const StorageSettingsScreen(),
+                  ),
+                );
+              },
+            ),
+            // دکمه پنل تست
             IconButton(
               icon: const Icon(Icons.build_circle_rounded, color: Colors.amber),
               tooltip: 'پنل تست اعلان‌ها',
               onPressed: _showNotificationDebugMenu,
             ),
+            // دکمه خروج
             IconButton(
               icon: const Icon(Icons.logout_rounded),
               tooltip: 'خروج از حساب',
@@ -393,22 +519,19 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
                 );
-
-                if (confirm == true) {
-                  widget.onLogout();
-                }
+                if (confirm == true) widget.onLogout();
               },
             ),
           ],
         ),
         body: Column(
           children: [
+            // نوار پیام پین‌شده
             AnimatedBuilder(
               animation: widget.chatRepository,
               builder: (_, __) {
                 final pinned = widget.chatRepository.pinnedMessage;
                 if (pinned == null) return const SizedBox.shrink();
-
                 return Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
@@ -452,6 +575,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 );
               },
             ),
+
+            // لیست پیام‌ها
             Expanded(
               child: AnimatedBuilder(
                 animation: widget.chatRepository,
@@ -490,12 +615,10 @@ class _ChatScreenState extends State<ChatScreen> {
                         child: MessageBubble(
                           message: message,
                           isMe: isMe,
-                          onReply: () {
-                            setState(() {
-                              _replyingMessage = message;
-                            });
-                          },
-                          onEdit: isMe ? () => _showEditDialog(message) : null,
+                          onReply: () =>
+                              setState(() => _replyingMessage = message),
+                          onEdit:
+                              isMe ? () => _showEditDialog(message) : null,
                           onPin: () =>
                               widget.chatRepository.pinMessage(message.id),
                         ),
@@ -505,14 +628,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
+
+            // نوار ورودی
             ChatInputBar(
               controller: _inputController,
               replyMessage: _replyingMessage,
-              onCancelReply: () {
-                setState(() {
-                  _replyingMessage = null;
-                });
-              },
+              onCancelReply: () => setState(() => _replyingMessage = null),
               onSend: _handleSendMessage,
               onTyping: () => widget.chatRepository.sendTyping(),
               onAttachment: _handleAttachmentPick,

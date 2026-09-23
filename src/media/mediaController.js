@@ -3,12 +3,43 @@ import { authenticateRequest } from "../auth/sessionService.js";
 import { emitSyncEvent } from "../telegram/normalizer.js";
 import { escapeXml } from "../telegram/telegramClient.js";
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // حداکثر ۲۰ مگابایت استاندارد تلگرام
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
-/**
- * آپلود فایل چندرسانه‌ای به فضای ابری تلگرام و ثبت متادیتا در D1
- * POST /api/media/upload
- */
+// ✅ تشخیص نوع مدیا از پسوند فایل (مستقل از MIME)
+const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif'];
+const VIDEO_EXTS = ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'];
+const AUDIO_EXTS = ['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'];
+const VOICE_EXTS = ['m4a', 'ogg', 'opus'];
+
+function detectMediaType(fileName, mimeType, customType) {
+  const name = (fileName || '').toLowerCase();
+  const ext = name.includes('.') ? name.split('.').pop() : '';
+  const mime = (mimeType || '').toLowerCase();
+
+  // اولویت اول: customType از کلاینت
+  if (customType === 'voice') {
+    return { mediaType: 'voice', tgEndpoint: 'sendVoice', fileField: 'voice' };
+  }
+
+  // اولویت دوم: نام فایل شامل voice
+  if (name.includes('voice_') || name.endsWith('_voice.m4a') || name.endsWith('_voice.ogg')) {
+    return { mediaType: 'voice', tgEndpoint: 'sendVoice', fileField: 'voice' };
+  }
+
+  // اولویت سوم: پسوند فایل (مطمئن‌ترین روش)
+  if (IMAGE_EXTS.includes(ext) || mime.startsWith('image/')) {
+    return { mediaType: 'photo', tgEndpoint: 'sendPhoto', fileField: 'photo' };
+  }
+  if (VIDEO_EXTS.includes(ext) || mime.startsWith('video/')) {
+    return { mediaType: 'video', tgEndpoint: 'sendVideo', fileField: 'video' };
+  }
+  if (AUDIO_EXTS.includes(ext) || mime.startsWith('audio/')) {
+    return { mediaType: 'audio', tgEndpoint: 'sendAudio', fileField: 'audio' };
+  }
+
+  return { mediaType: 'document', tgEndpoint: 'sendDocument', fileField: 'document' };
+}
+
 export async function handleMediaUpload(request, env) {
   const auth = await authenticateRequest(env.DB, request);
   if (!auth.authenticated) {
@@ -31,26 +62,18 @@ export async function handleMediaUpload(request, env) {
       try { replyTo = JSON.parse(replyToRaw); } catch (e) {}
     }
 
-    let mediaType = "document";
-    let tgEndpoint = "sendDocument";
-    let fileField = "document";
+    // ✅ تشخیص نوع از پسوند + MIME + customType
+    const { mediaType, tgEndpoint, fileField } = detectMediaType(
+      file.name, file.type, customType
+    );
 
-    if (customType === "voice" || file.name.includes("voice") || file.name.endsWith("_voice.m4a") || file.name.endsWith("_voice.ogg")) {
-      mediaType = "voice"; tgEndpoint = "sendVoice"; fileField = "voice";
-    } else if (file.type.startsWith("image/")) {
-      mediaType = "photo"; tgEndpoint = "sendPhoto"; fileField = "photo";
-    } else if (file.type.startsWith("video/")) {
-      mediaType = "video"; tgEndpoint = "sendVideo"; fileField = "video";
-    } else if (file.type.startsWith("audio/")) {
-      mediaType = "audio"; tgEndpoint = "sendAudio"; fileField = "audio";
-    }
-
-    // ۱. ارسال مستقیم فایل به سوپرگروه تلگرام جهت ذخیره‌سازی ابری رایگان و دائمی
     const tgFormData = new FormData();
     tgFormData.append("chat_id", env.TELEGRAM_GROUP_ID);
 
     let tgCaption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(auth.user.fullName)}`;
-    if (replyTo && !replyTo.tgMsgId) tgCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml((replyTo.text || "").substring(0, 30))}»`;
+    if (replyTo && !replyTo.tgMsgId) {
+      tgCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml((replyTo.text || "").substring(0, 30))}»`;
+    }
     if (caption) tgCaption += `\n💬 ${escapeXml(caption)}`;
 
     tgFormData.append("caption", tgCaption);
@@ -73,7 +96,7 @@ export async function handleMediaUpload(request, env) {
     let tgFileId = "";
     let duration = 0;
     const resMsg = tgData.result;
-    
+
     if (resMsg.photo && resMsg.photo.length > 0) tgFileId = resMsg.photo[resMsg.photo.length - 1].file_id;
     else if (resMsg.video) { tgFileId = resMsg.video.file_id; duration = resMsg.video.duration || 0; }
     else if (resMsg.voice) { tgFileId = resMsg.voice.file_id; duration = resMsg.voice.duration || 0; }
@@ -84,15 +107,11 @@ export async function handleMediaUpload(request, env) {
     const msgId = crypto.randomUUID();
     const replyId = replyTo ? replyTo.id : null;
 
-    // ۲. ثبت رکورد پیام در جدول messages
     await env.DB.prepare(`
-      INSERT INTO messages (
-        id, sender_id, text, is_from_telegram, created_at, updated_at, telegram_message_id, reply_to_message_id
-      )
+      INSERT INTO messages (id, sender_id, text, is_from_telegram, created_at, updated_at, telegram_message_id, reply_to_message_id)
       VALUES (?, ?, ?, 0, ?, ?, ?, ?)
     `).bind(msgId, auth.user.id, caption, now, now, resMsg.message_id, replyId).run();
 
-    // ۳. ثبت مشخصات فایل در جدول attachments با کلید تلگرام
     const attachmentId = crypto.randomUUID();
     const attachmentData = {
       id: attachmentId,
@@ -107,13 +126,9 @@ export async function handleMediaUpload(request, env) {
     };
 
     await env.DB.prepare(`
-      INSERT INTO attachments (
-        id, message_id, media_type, telegram_file_id, file_name, file_size, mime_type, duration, created_at
-      )
+      INSERT INTO attachments (id, message_id, media_type, telegram_file_id, file_name, file_size, mime_type, duration, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      attachmentId, msgId, mediaType, tgFileId, file.name, file.size, file.type, duration, now
-    ).run();
+    `).bind(attachmentId, msgId, mediaType, tgFileId, file.name, file.size, file.type, duration, now).run();
 
     const normalizedMessage = {
       id: msgId,
@@ -127,20 +142,22 @@ export async function handleMediaUpload(request, env) {
       attachment: attachmentData
     };
 
-    // ۴. ثبت رویداد در جدول sync_events
     await emitSyncEvent(env.DB, "message_created", msgId, normalizedMessage);
 
-    // ۵. برودکست به سوکت
+    // برودکست
     try {
       const roomId = env.CHAT_ROOM.idFromName("global_room");
       await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
         method: "POST",
-        body: JSON.stringify({
-          type: "new_message",
-          message: normalizedMessage
-        })
+        body: JSON.stringify({ type: "new_message", message: normalizedMessage })
       });
-    } catch (_) {}
+    } catch (e) {}
+
+    // FCM به سایر دستگاه‌ها
+    try {
+      const { dispatchNewMessagePush } = await import("../notifications/fcmService.js");
+      await dispatchNewMessagePush(env, normalizedMessage, auth.user.id);
+    } catch (e) {}
 
     return jsonResponse({
       ok: true,
@@ -153,18 +170,12 @@ export async function handleMediaUpload(request, env) {
   }
 }
 
-/**
- * دریافت و استریم فایل از تلگرام با پشتیبانی از کش و Range Requests
- * GET /api/media/file?fileId=...
- */
 export async function handleMediaDownload(request, env) {
   const url = new URL(request.url);
   const fileId = url.searchParams.get("fileId") || url.searchParams.get("key");
   const isDownload = url.searchParams.get("download") === "1";
 
-  if (!fileId) {
-    return errorResponse("شناسه فایل الزامی است.", 400);
-  }
+  if (!fileId) return errorResponse("شناسه فایل الزامی است.", 400);
 
   try {
     const fileRes = await fetch(

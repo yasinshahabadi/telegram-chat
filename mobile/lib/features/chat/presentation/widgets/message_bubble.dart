@@ -104,12 +104,67 @@ class MessageBubble extends StatelessWidget {
                     ),
                   ],
 
+                  // در متد build، جایگزین بخش attachment:
                   if (message.attachment != null) ...[
-                    MediaBubbleContent(
-                      attachment: message.attachment!,
-                      isMe: isMe,
-                      baseUrl: AppConfig.baseUrl,
-                    ),
+                    if (message.isUploading) ...[
+                      // ✅ نمایش نوار پیشرفت آپلود (مثل تلگرام)
+                      Container(
+                        width: 220,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surface.withAlpha(80),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  message.attachment!.isPhoto
+                                      ? Icons.image_rounded
+                                      : message.attachment!.isVideo
+                                          ? Icons.videocam_rounded
+                                          : Icons.insert_drive_file_rounded,
+                                  size: 20,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    message.attachment!.fileName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                                  ),
+                                ),
+                                Text(
+                                  '${(message.uploadProgress * 100).toInt()}%',
+                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: LinearProgressIndicator(
+                                value: message.uploadProgress,
+                                minHeight: 4,
+                                backgroundColor: theme.colorScheme.onSurface.withAlpha(30),
+                                color: theme.colorScheme.primary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ] else ...[
+                      // نمایش مدیای واقعی پس از آپلود
+                      MediaBubbleContent(
+                        attachment: message.attachment!,
+                        isMe: isMe,
+                        baseUrl: AppConfig.baseUrl,
+                      ),
+                    ],
                     if (message.text.isNotEmpty) const SizedBox(height: 6),
                   ],
 
@@ -164,29 +219,41 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildStatusIcon(ThemeData theme) {
-    if (message.isPending || message.isSending) {
-      return Icon(
-        Icons.access_time_rounded,
-        size: 13,
-        color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
-      );
-    }
-
-    if (message.isSynced) {
-      return Icon(
-        Icons.done_rounded,
-        size: 14,
-        color: theme.colorScheme.primary,
-      );
-    }
-
-    return const Icon(
-      Icons.error_outline_rounded,
-      size: 14,
-      color: Colors.redAccent,
+Widget _buildStatusIcon(ThemeData theme) {
+  // در حال ارسال یا معلق
+  if (message.isPending || message.isSending) {
+    return Icon(
+      Icons.access_time_rounded,
+      size: 13,
+      color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
     );
   }
+
+  // ارسال شده و خوانده‌شده (تیک دوم)
+  if (message.isSynced && message.isRead) {
+    return Icon(
+      Icons.done_all_rounded,
+      size: 15,
+      color: theme.colorScheme.primary,
+    );
+  }
+
+  // ارسال شده اما خوانده‌نشده (تیک اول)
+  if (message.isSynced) {
+    return Icon(
+      Icons.done_rounded,
+      size: 14,
+      color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+    );
+  }
+
+  // خطا
+  return const Icon(
+    Icons.error_outline_rounded,
+    size: 14,
+    color: Colors.redAccent,
+  );
+}
 
   void _showContextMenu(BuildContext context) {
     showModalBottomSheet(

@@ -31,7 +31,9 @@ export async function handleGetMessages(request, env) {
         m.id, m.client_message_id, m.sender_id, m.telegram_message_id,
         m.reply_to_message_id, m.text, m.is_from_telegram, m.is_pinned,
         m.is_edited, m.created_at, m.updated_at, m.deleted_at,
-        u.full_name AS sender_name, u.username AS sender_username
+        u.full_name AS sender_name, u.username AS sender_username,
+        (SELECT MAX(mr.read_at) FROM message_reads mr 
+        WHERE mr.message_id = m.id AND mr.user_id != m.sender_id) AS read_at
       FROM messages m
       LEFT JOIN users u ON m.sender_id = u.id
       WHERE m.deleted_at IS NULL

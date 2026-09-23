@@ -26,6 +26,7 @@ class AuthRepository extends ChangeNotifier {
   AuthStatus get status => _status;
   AuthUser? get currentUser => _currentUser;
   String? get pendingSessionToken => _pendingSessionToken;
+  String? get sessionToken => _localStorage.getSessionToken();
   String? get errorMessage => _errorMessage;
   bool get isLoading => _isLoading;
   bool get isAuthenticated =>

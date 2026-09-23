@@ -1,37 +1,24 @@
 ﻿import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 
-/// وضعیت ارسال پیام در شرایط آنلاین و آفلاین
 enum MessageStatus {
-  /// در صف ارسال (آفلاین یا منتظر سوکت)
   pending,
-
-  /// در حال ارسال به سرور
   sending,
-
-  /// با موفقیت در سرور و دیتابیس ثبت شده
   synced,
-
-  /// خطا در ارسال
   failed;
 
   static MessageStatus fromString(String? val) {
     switch (val) {
-      case 'pending':
-        return MessageStatus.pending;
-      case 'sending':
-        return MessageStatus.sending;
-      case 'failed':
-        return MessageStatus.failed;
+      case 'pending': return MessageStatus.pending;
+      case 'sending': return MessageStatus.sending;
+      case 'failed':  return MessageStatus.failed;
       case 'synced':
-      default:
-        return MessageStatus.synced;
+      default:        return MessageStatus.synced;
     }
   }
 
   String get name => toString().split('.').last;
 }
 
-/// مدل داده‌ای پیام چت همراه با پیوست چندرسانه‌ای
 class ChatMessageModel {
   final String id;
   final String? clientMessageId;
@@ -46,10 +33,13 @@ class ChatMessageModel {
   final bool isPinned;
   final bool isEdited;
   final MessageStatus status;
+  final int? readAt;
   final int createdAt;
   final int updatedAt;
   final Map<String, int> reactions;
   final MediaAttachmentModel? attachment;
+  final double uploadProgress;   // ✅ 0.0 تا 1.0 برای نمایش نوار پیشرفت
+  final bool isUploading;        // ✅ وضعیت آپلود
 
   const ChatMessageModel({
     required this.id,
@@ -65,13 +55,15 @@ class ChatMessageModel {
     this.isPinned = false,
     this.isEdited = false,
     this.status = MessageStatus.synced,
+    this.readAt,
     required this.createdAt,
     required this.updatedAt,
     this.reactions = const {},
     this.attachment,
+    this.uploadProgress = 1.0,
+    this.isUploading = false,
   });
 
-  /// ایجاد شیء از رکورد دیتابیس محلی SQLite
   factory ChatMessageModel.fromDbMap(
     Map<String, dynamic> map, {
     Map<String, int> reactions = const {},
@@ -91,6 +83,7 @@ class ChatMessageModel {
       isPinned: (map['is_pinned'] as int? ?? 0) == 1,
       isEdited: (map['is_edited'] as int? ?? 0) == 1,
       status: MessageStatus.fromString(map['status'] as String?),
+      readAt: map['read_at'] as int?,
       createdAt: map['created_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: map['updated_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       reactions: reactions,
@@ -98,7 +91,6 @@ class ChatMessageModel {
     );
   }
 
-  /// تبدیل به نقشه جهت درج در دیتابیس محلی SQLite
   Map<String, dynamic> toDbMap() {
     return {
       'id': id,
@@ -114,12 +106,12 @@ class ChatMessageModel {
       'is_pinned': isPinned ? 1 : 0,
       'is_edited': isEdited ? 1 : 0,
       'status': status.name,
+      'read_at': readAt,
       'created_at': createdAt,
       'updated_at': updatedAt,
     };
   }
 
-  /// ایجاد شیء از خروجی وب‌سوکت یا REST API سرور
   factory ChatMessageModel.fromJson(Map<String, dynamic> json) {
     MediaAttachmentModel? att;
     if (json['attachment'] != null && json['attachment'] is Map<String, dynamic>) {
@@ -140,6 +132,7 @@ class ChatMessageModel {
       isPinned: json['isPinned'] == true || json['is_pinned'] == 1,
       isEdited: json['isEdited'] == true || json['is_edited'] == 1,
       status: MessageStatus.synced,
+      readAt: json['readAt'] as int? ?? json['read_at'] as int?,
       createdAt: json['createdAt'] as int? ?? json['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: json['updatedAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       attachment: att,
@@ -160,10 +153,13 @@ class ChatMessageModel {
     bool? isPinned,
     bool? isEdited,
     MessageStatus? status,
+    int? readAt,
     int? createdAt,
     int? updatedAt,
     Map<String, int>? reactions,
     MediaAttachmentModel? attachment,
+    double? uploadProgress,
+    bool? isUploading,
   }) {
     return ChatMessageModel(
       id: id ?? this.id,
@@ -179,14 +175,16 @@ class ChatMessageModel {
       isPinned: isPinned ?? this.isPinned,
       isEdited: isEdited ?? this.isEdited,
       status: status ?? this.status,
+      readAt: readAt ?? this.readAt,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       reactions: reactions ?? this.reactions,
       attachment: attachment ?? this.attachment,
+      uploadProgress: uploadProgress ?? this.uploadProgress,
+      isUploading: isUploading ?? this.isUploading,
     );
   }
 
-  /// قالب‌بندی ساعت به وقت محلی (مانند 14:30)
   String get formattedTime {
     final dateTime = DateTime.fromMillisecondsSinceEpoch(createdAt);
     final hour = dateTime.hour.toString().padLeft(2, '0');
@@ -196,6 +194,7 @@ class ChatMessageModel {
 
   bool get isPending => status == MessageStatus.pending;
   bool get isSending => status == MessageStatus.sending;
-  bool get isSynced => status == MessageStatus.synced;
-  bool get isFailed => status == MessageStatus.failed;
+  bool get isSynced  => status == MessageStatus.synced;
+  bool get isFailed  => status == MessageStatus.failed;
+  bool get isRead    => readAt != null;
 }

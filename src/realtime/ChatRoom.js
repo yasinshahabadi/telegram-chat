@@ -92,19 +92,28 @@ export class ChatRoom extends DurableObject {
       }
 
       if (data.type === "mark_read" && Array.isArray(data.messageIds) && data.messageIds.length > 0) {
+        const validIds = [];
         for (const mId of data.messageIds) {
-          await this.env.DB.prepare(`
-            INSERT OR IGNORE INTO message_reads (id, message_id, user_id, read_at)
-            VALUES (?, ?, ?, ?)
-          `).bind(crypto.randomUUID(), mId, user.userId, now).run().catch(() => {});
+          const row = await this.env.DB.prepare(
+            "SELECT sender_id FROM messages WHERE id = ?"
+          ).bind(mId).first();
+          if (row && row.sender_id !== user.userId) {
+            validIds.push(mId);
+            await this.env.DB.prepare(`
+              INSERT OR IGNORE INTO message_reads (id, message_id, user_id, read_at)
+              VALUES (?, ?, ?, ?)
+            `).bind(crypto.randomUUID(), mId, user.userId, now).run().catch(() => {});
+          }
         }
 
-        this.broadcast({
-          type: "messages_read",
-          messageIds: data.messageIds,
-          userId: user.userId,
-          readAt: now
-        });
+        if (validIds.length > 0) {
+          this.broadcast({
+            type: "messages_read",
+            messageIds: validIds,
+            userId: user.userId,
+            readAt: now
+          });
+        }
         return;
       }
 
