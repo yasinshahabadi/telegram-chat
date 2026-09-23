@@ -10,6 +10,7 @@ import { handleRegisterFcmToken, handleUnregisterFcmToken } from "./notification
 import { handleTelegramWebhook } from "./telegram/webhookHandler.js";
 import { handleWebSocketUpgrade } from "./realtime/wsHandler.js";
 import { dispatchNewMessagePush } from "./notifications/fcmService.js";
+import { handleGetUserAvatar } from "./users/avatarController.js";
 
 export { ChatRoom } from "./realtime/ChatRoom.js";
 
@@ -36,6 +37,7 @@ router.post("/api/media/upload", (req, env) => handleMediaUpload(req, env));
 router.post("/api/upload", (req, env) => handleMediaUpload(req, env));
 router.get("/api/media/file", (req, env) => handleMediaDownload(req, env));
 router.get("/api/media", (req, env) => handleMediaDownload(req, env));
+router.get("/api/users/avatar", (req, env) => handleGetUserAvatar(req, env));
 
 // نوتیفیکیشن
 router.post("/api/notifications/register-token", (req, env) => handleRegisterFcmToken(req, env));

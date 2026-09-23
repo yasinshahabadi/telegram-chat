@@ -8,6 +8,12 @@ import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_mo
 import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 import 'chat_websocket_client.dart';
 
+/// ریپازیتوری چت با پشتیبانی از:
+/// - نمایش پیام‌ها و مدیا
+/// - کاربران آنلاین
+/// - تیک خوانده‌شدن
+/// - آپلود خوش‌بینانه با نوار پیشرفت
+/// - حفظ localPath پس از برودکست WebSocket
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
@@ -20,6 +26,9 @@ class ChatRepository extends ChangeNotifier {
   bool isAppInBackground = false;
   AuthUser? _currentUser;
 
+  // ✅ کاربران آنلاین
+  final Map<String, Map<String, dynamic>> _onlineUsers = {};
+
   StreamSubscription? _socketSubscription;
   StreamSubscription? _socketStateSubscription;
 
@@ -29,12 +38,19 @@ class ChatRepository extends ChangeNotifier {
   })  : _localDao = localDao,
         _socketClient = socketClient;
 
+  // ─── Getters ───
   List<ChatMessageModel> get messages => _messages;
   ChatMessageModel? get pinnedMessage => _pinnedMessage;
   String? get typingUserName => _typingUserName;
   bool get isLoading => _isLoading;
   SocketConnectionState get connectionState => _socketClient.state;
 
+  Map<String, Map<String, dynamic>> get onlineUsers =>
+      Map.unmodifiable(_onlineUsers);
+  int get onlineCount => _onlineUsers.length;
+  bool isUserOnline(String userId) => _onlineUsers.containsKey(userId);
+
+  // ─── Initialize ───
   Future<void> initialize(AuthUser currentUser) async {
     _currentUser = currentUser;
     _isLoading = true;
@@ -62,27 +78,28 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
+  // ─── Load local messages with attachments ───
   Future<void> loadLocalMessages({int limit = 50}) async {
     try {
       final rawList = await _localDao.getMessagesList(limit: limit);
-      
-      // ✅ بارگذاری attachment برای هر پیام
+
       final loaded = <ChatMessageModel>[];
       for (final raw in rawList) {
         final messageId = raw['id'] as String?;
         if (messageId == null) continue;
-        
+
         MediaAttachmentModel? attachment;
         try {
-          final attachments = await _localDao.getAttachmentsForMessage(messageId);
+          final attachments =
+              await _localDao.getAttachmentsForMessage(messageId);
           if (attachments.isNotEmpty) {
             attachment = MediaAttachmentModel.fromDbMap(attachments.first);
           }
         } catch (_) {}
-        
+
         loaded.add(ChatMessageModel.fromDbMap(raw, attachment: attachment));
       }
-      
+
       _messages = loaded;
 
       try {
@@ -97,7 +114,125 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ✅ ایجاد یک پیام موقت "در حال آپلود" (Optimistic Upload)
+  // ─── Send text message ───
+  Future<void> sendMessage({
+    required String text,
+    required AuthUser currentUser,
+    ChatMessageModel? replyTo,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final messageId = const Uuid().v4();
+    final clientMessageId = const Uuid().v4();
+
+    final newMessage = ChatMessageModel(
+      id: messageId,
+      clientMessageId: clientMessageId,
+      senderId: currentUser.id,
+      senderName: currentUser.fullName,
+      text: text,
+      isFromTelegram: false,
+      replyToMessageId: replyTo?.id,
+      replyToName: replyTo?.senderName,
+      replyToText: replyTo?.text,
+      status: MessageStatus.pending,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    _messages.insert(0, newMessage);
+    notifyListeners();
+
+    try {
+      await _localDao.saveMessage(newMessage.toDbMap());
+    } catch (_) {}
+
+    try {
+      final payloadJson = jsonEncode({
+        'messageId': messageId,
+        'clientMessageId': clientMessageId,
+        'text': text,
+        'replyTo': replyTo != null
+            ? {
+                'id': replyTo.id,
+                'name': replyTo.senderName,
+                'text': replyTo.text,
+                'tgMsgId': replyTo.telegramMessageId,
+              }
+            : null,
+      });
+      await _localDao.enqueuePendingAction(
+          messageId, 'send_message', payloadJson);
+    } catch (_) {}
+
+    if (_socketClient.isConnected) {
+      final sent = _socketClient.sendChatMessage(
+        text: text,
+        clientMessageId: clientMessageId,
+        replyTo: replyTo != null
+            ? {
+                'id': replyTo.id,
+                'name': replyTo.senderName,
+                'text': replyTo.text,
+                'tgMsgId': replyTo.telegramMessageId,
+              }
+            : null,
+      );
+
+      if (sent) {
+        await _localDao.updateMessageStatus(messageId, 'sending');
+        _updateMessageStatusInMemory(messageId, MessageStatus.sending);
+      }
+    }
+  }
+
+  // ─── Pending queue ───
+  Future<void> processPendingQueue() async {
+    final pendingActions = await _localDao.getPendingActions();
+    if (pendingActions.isEmpty || !_socketClient.isConnected) return;
+
+    for (final action in pendingActions) {
+      final actionType = action['action_type'] as String;
+      final actionId = action['id'] as String;
+
+      if (actionType == 'send_message') {
+        try {
+          final Map<String, dynamic> payload =
+              jsonDecode(action['payload_json'] as String);
+          final sent = _socketClient.sendChatMessage(
+            text: payload['text'] as String,
+            clientMessageId: payload['clientMessageId'] as String?,
+            replyTo: payload['replyTo'] as Map<String, dynamic>?,
+          );
+
+          if (sent) {
+            await _localDao.removePendingAction(actionId);
+            await _localDao.updateMessageStatus(actionId, 'sending');
+            _updateMessageStatusInMemory(actionId, MessageStatus.sending);
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  // ─── Mark as read ───
+  Future<void> markMessagesAsRead(List<String> messageIds) async {
+    if (messageIds.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    await _localDao.markMessagesAsRead(messageIds, now);
+
+    for (final id in messageIds) {
+      final idx = _messages.indexWhere((m) => m.id == id);
+      if (idx != -1 && _messages[idx].readAt == null) {
+        _messages[idx] = _messages[idx].copyWith(readAt: now);
+      }
+    }
+    notifyListeners();
+
+    _socketClient.sendMarkRead(messageIds);
+  }
+
+  // ─── Optimistic Upload ───
   String addOptimisticUpload({
     required String fileName,
     required int fileSize,
@@ -138,7 +273,6 @@ class ChatRepository extends ChangeNotifier {
     return tempId;
   }
 
-  /// ✅ به‌روزرسانی درصد پیشرفت آپلود
   void updateUploadProgress(String tempId, double progress) {
     final idx = _messages.indexWhere((m) => m.id == tempId);
     if (idx != -1) {
@@ -147,7 +281,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ✅ نهایی‌سازی آپلود: جایگزینی پیام موقت با پیام واقعی
   void finalizeUpload({
     required String tempId,
     required String realMessageId,
@@ -173,7 +306,7 @@ class ChatRepository extends ChangeNotifier {
         id: 'att_$realMessageId',
         messageId: realMessageId,
         mediaType: mediaType,
-        telegramFileId: fileId,     // ✅ این فیلد کلید نمایش مدیا است
+        telegramFileId: fileId,
         fileName: fileName,
         fileSize: fileSize,
         mimeType: mimeType,
@@ -186,7 +319,6 @@ class ChatRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// ✅ خطای آپلود
   void failUpload(String tempId, String error) {
     final idx = _messages.indexWhere((m) => m.id == tempId);
     if (idx != -1) {
@@ -198,7 +330,7 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// به‌روزرسانی localPath پیام پس از کش شدن فایل
+  /// ✅ به‌روزرسانی localPath پیام پس از کش شدن فایل
   void setLocalPathForMessage(String messageId, String localPath) {
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
@@ -206,127 +338,41 @@ class ChatRepository extends ChangeNotifier {
     final currentAttachment = _messages[idx].attachment;
     if (currentAttachment == null) return;
 
+    if (currentAttachment.localPath != null &&
+        currentAttachment.localPath == localPath) {
+      return;
+    }
+
     _messages[idx] = _messages[idx].copyWith(
-      attachment: currentAttachment.copyWith(localPath: localPath),
+      attachment: currentAttachment.copyWith(
+        localPath: localPath,
+        isDownloaded: true,
+      ),
     );
     notifyListeners();
+
+    _localDao
+        .updateAttachmentLocalPath(currentAttachment.id, localPath)
+        .catchError((_) {});
   }
 
-  Future<void> sendMessage({
-    required String text,
-    required AuthUser currentUser,
-    ChatMessageModel? replyTo,
-  }) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final messageId = const Uuid().v4();
-    final clientMessageId = const Uuid().v4();
-
-    final newMessage = ChatMessageModel(
-      id: messageId,
-      clientMessageId: clientMessageId,
-      senderId: currentUser.id,
-      senderName: currentUser.fullName,
-      text: text,
-      isFromTelegram: false,
-      replyToMessageId: replyTo?.id,
-      replyToName: replyTo?.senderName,
-      replyToText: replyTo?.text,
-      status: MessageStatus.pending,
-      createdAt: now,
-      updatedAt: now,
-    );
-
-    _messages.insert(0, newMessage);
-    notifyListeners();
-
-    try { await _localDao.saveMessage(newMessage.toDbMap()); } catch (_) {}
-
-    try {
-      final payloadJson = jsonEncode({
-        'messageId': messageId,
-        'clientMessageId': clientMessageId,
-        'text': text,
-        'replyTo': replyTo != null
-            ? {
-                'id': replyTo.id,
-                'name': replyTo.senderName,
-                'text': replyTo.text,
-                'tgMsgId': replyTo.telegramMessageId,
-              }
-            : null,
-      });
-      await _localDao.enqueuePendingAction(messageId, 'send_message', payloadJson);
-    } catch (_) {}
-
-    if (_socketClient.isConnected) {
-      final sent = _socketClient.sendChatMessage(
-        text: text,
-        clientMessageId: clientMessageId,
-        replyTo: replyTo != null
-            ? {
-                'id': replyTo.id,
-                'name': replyTo.senderName,
-                'text': replyTo.text,
-                'tgMsgId': replyTo.telegramMessageId,
-              }
-            : null,
-      );
-
-      if (sent) {
-        await _localDao.updateMessageStatus(messageId, 'sending');
-        _updateMessageStatusInMemory(messageId, MessageStatus.sending);
-      }
-    }
-  }
-
-  Future<void> processPendingQueue() async {
-    final pendingActions = await _localDao.getPendingActions();
-    if (pendingActions.isEmpty || !_socketClient.isConnected) return;
-
-    for (final action in pendingActions) {
-      final actionType = action['action_type'] as String;
-      final actionId = action['id'] as String;
-
-      if (actionType == 'send_message') {
-        try {
-          final Map<String, dynamic> payload = jsonDecode(action['payload_json'] as String);
-          final sent = _socketClient.sendChatMessage(
-            text: payload['text'] as String,
-            clientMessageId: payload['clientMessageId'] as String?,
-            replyTo: payload['replyTo'] as Map<String, dynamic>?,
-          );
-
-          if (sent) {
-            await _localDao.removePendingAction(actionId);
-            await _localDao.updateMessageStatus(actionId, 'sending');
-            _updateMessageStatusInMemory(actionId, MessageStatus.sending);
-          }
-        } catch (_) {}
-      }
-    }
-  }
-
-  Future<void> markMessagesAsRead(List<String> messageIds) async {
-    if (messageIds.isEmpty) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
-
-    await _localDao.markMessagesAsRead(messageIds, now);
-
-    for (final id in messageIds) {
-      final idx = _messages.indexWhere((m) => m.id == id);
-      if (idx != -1 && _messages[idx].readAt == null) {
-        _messages[idx] = _messages[idx].copyWith(readAt: now);
-      }
-    }
-    notifyListeners();
-
-    _socketClient.sendMarkRead(messageIds);
-  }
-
+  // ─── Handle socket events ───
   Future<void> _handleIncomingSocketEvent(
       Map<String, dynamic> event, AuthUser currentUser) async {
     final type = event['type'] as String?;
     if (type == null) return;
+
+    // ═══════════════ رویداد آنلاین‌ها ═══════════════
+    if (type == 'online_users' && event['users'] != null) {
+      final usersList = (event['users'] as List).cast<Map<String, dynamic>>();
+      _onlineUsers.clear();
+      for (final u in usersList) {
+        final id = u['userId'] as String?;
+        if (id != null) _onlineUsers[id] = u;
+      }
+      notifyListeners();
+      return;
+    }
 
     // ═══════════════ رویداد خوانده‌شدن پیام‌ها ═══════════════
     if (type == 'messages_read' && event['messageIds'] != null) {
@@ -363,7 +409,7 @@ class ChatRepository extends ChangeNotifier {
           msgJson['clientMessageId'] ?? msgJson['client_message_id'];
       final incomingId = msgJson['id'] as String?;
 
-      // ۱) بررسی پیام خودمان (client message id)
+      // ۱) پیام خودمان (client message id)
       if (clientMsgId != null) {
         final existingIndex =
             _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
@@ -388,14 +434,14 @@ class ChatRepository extends ChangeNotifier {
       // ۲) ساخت پیام از سرور
       ChatMessageModel incoming = ChatMessageModel.fromJson(msgJson);
 
-      // ✅✅✅ رفع باگ: حفظ localPath و attachment از پیام قبلی (اگر وجود دارد)
+      // ✅ حفظ localPath و readAt از پیام قبلی (اگر وجود دارد)
       if (incomingId != null) {
-        final existingIndex = _messages.indexWhere((m) => m.id == incomingId);
+        final existingIndex =
+            _messages.indexWhere((m) => m.id == incomingId);
         if (existingIndex != -1) {
           final existing = _messages[existingIndex];
           final existingAttachment = existing.attachment;
 
-          // اگر پیام قبلی localPath داشت، آن را حفظ کن
           if (existingAttachment != null &&
               existingAttachment.localPath != null &&
               incoming.attachment != null) {
@@ -404,36 +450,28 @@ class ChatRepository extends ChangeNotifier {
               isDownloaded: true,
             );
             incoming = incoming.copyWith(attachment: mergedAttachment);
-          }
-          // اگر incoming از سرور attachment نداشت ولی پیام قبلی داشت
-          else if (existingAttachment != null && incoming.attachment == null) {
+          } else if (existingAttachment != null &&
+              incoming.attachment == null) {
             incoming = incoming.copyWith(attachment: existingAttachment);
           }
 
-          // حفظ وضعیت خوانده‌شدن
           if (existing.readAt != null && incoming.readAt == null) {
             incoming = incoming.copyWith(readAt: existing.readAt);
           }
         }
       }
 
-      // ۳) ذخیره در DB
       await _localDao.saveMessage(incoming.toDbMap());
 
-      // ۴) ذخیره attachment در جدول attachments
       if (incoming.attachment != null) {
         try {
           await _localDao.saveAttachment(incoming.attachment!.toDbMap());
-        } catch (e) {
-          debugPrint('Failed to save attachment: $e');
-        }
+        } catch (_) {}
       }
 
-      // ۵) جایگزینی در لیست (بدون از دست دادن localPath)
       _messages.removeWhere((m) => m.id == incoming.id);
       _messages.insert(0, incoming);
       notifyListeners();
-
       return;
     }
 
@@ -502,7 +540,8 @@ class ChatRepository extends ChangeNotifier {
 
     final index = _messages.indexWhere((m) => m.id == messageId);
     if (index != -1) {
-      _messages[index] = _messages[index].copyWith(text: newText, isEdited: true);
+      _messages[index] =
+          _messages[index].copyWith(text: newText, isEdited: true);
       notifyListeners();
     }
   }

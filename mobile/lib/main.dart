@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'core/database/app_database.dart';
 import 'core/database/local_chat_dao.dart';
 import 'core/network/network_monitor.dart';
+import 'core/update/update_dialog.dart';
+import 'core/update/update_service.dart';
 import 'features/auth/data/auth_local_storage.dart';
 import 'features/auth/data/auth_remote_service.dart';
 import 'features/auth/data/auth_repository.dart';
@@ -17,6 +19,8 @@ import 'features/chat/data/sync_engine.dart';
 import 'features/chat/presentation/screens/chat_screen.dart';
 import 'features/notifications/data/firebase_messaging_service.dart';
 import 'features/notifications/data/notification_service.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,7 +45,6 @@ void main() async {
   await notifService.initialize();
   await notifService.requestPermission();
 
-  // ✅ راه‌اندازی Firebase Cloud Messaging (جایگزین Pushy)
   await FirebaseMessagingService.instance.initialize();
 
   notifService.onDirectReplyReceived = (replyText, payload) async {
@@ -81,9 +84,32 @@ void main() async {
     notifService: notifService,
     syncEngine: syncEngine,
   ));
+
+  // بررسی به‌روزرسانی در پس‌زمینه
+  _checkForUpdate();
 }
 
-/// اپلیکیشن مجهز به ناظر پایش چرخه حیات (WidgetsBindingObserver)
+Future<void> _checkForUpdate() async {
+  try {
+    await Future.delayed(const Duration(seconds: 3));
+
+    final updateInfo = await UpdateService.instance.checkForUpdate();
+    if (updateInfo == null || !updateInfo.isUpdateAvailable) return;
+
+    final context = navigatorKey.currentContext;
+    if (context == null || !context.mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => UpdateDialog(updateInfo: updateInfo),
+    );
+  } catch (e) {
+    debugPrint('[Update] Check error: $e');
+  }
+}
+
+/// اپلیکیشن مجهز به ناظر پایش چرخه حیات
 class TelegramChatApp extends StatefulWidget {
   final AuthRepository authRepository;
   final AuthLocalStorage authStorage;
@@ -122,12 +148,10 @@ class _TelegramChatAppState extends State<TelegramChatApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // اگر کاربر دکمه هوم را زد یا صفحه قفل شد، وضعیت پس‌زمینه را فعال کن
     final isBackground = state != AppLifecycleState.resumed;
     widget.chatRepository.isAppInBackground = isBackground;
     debugPrint('[LIFECYCLE] App background state: $isBackground ($state)');
 
-    // وقتی کاربر به فورگراند برگشت، اعلان‌ها را پاک کن
     if (state == AppLifecycleState.resumed) {
       widget.notifService.cancelAllNotifications();
     }
@@ -145,7 +169,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
       });
 
       widget.authStorage.getOrCreateDeviceIdentifier().then((deviceId) {
-        // ✅ ثبت توکن FCM در سرور (جایگزین Pushy)
         FirebaseMessagingService.instance.registerTokenOnServer(
           sessionToken: token,
           deviceId: deviceId,
@@ -159,6 +182,7 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     return MaterialApp(
       title: 'Guysgram',
       debugShowCheckedModeBanner: false,
+      navigatorKey: navigatorKey,
 
       locale: const Locale('fa', 'IR'),
       supportedLocales: const [
@@ -219,7 +243,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
               chatRepository: widget.chatRepository,
               onLogout: () async {
                 widget.socketClient.disconnect();
-                // ✅ حذف توکن FCM هنگام خروج از حساب
                 await FirebaseMessagingService.instance.deleteToken();
                 await widget.notifService.cancelAllNotifications();
                 await widget.authRepository.logout();

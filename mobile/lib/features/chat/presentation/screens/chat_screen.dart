@@ -267,9 +267,11 @@ class _ChatScreenState extends State<ChatScreen> {
       final fileName = result.files.single.name;
       final ext = fileName.split('.').last.toLowerCase();
       String mediaType = 'document';
-      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif'].contains(ext)) {
+      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif']
+          .contains(ext)) {
         mediaType = 'photo';
-      } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'].contains(ext)) {
+      } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']
+          .contains(ext)) {
         mediaType = 'video';
       } else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'].contains(ext)) {
         mediaType = 'audio';
@@ -288,7 +290,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// ✅ آپلود با UI خوش‌بینانه + کش خودکار پس از آپلود موفق
   Future<void> _uploadWithOptimisticUI({
     required File file,
     required String mediaType,
@@ -299,7 +300,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }) async {
     final fileSize = await file.length();
 
-    // ۱. نمایش فوری پیام موقت با نوار پیشرفت
     final tempId = widget.chatRepository.addOptimisticUpload(
       fileName: fileName,
       fileSize: fileSize,
@@ -311,7 +311,6 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _replyingMessage = null);
     _scrollToBottom();
 
-    // ۲. آپلود واقعی به سرور
     try {
       final uploadResult = await _mediaRemoteService.uploadFile(
         file: file,
@@ -331,7 +330,6 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
 
-      // ۳. جایگزینی پیام موقت با پیام واقعی
       widget.chatRepository.finalizeUpload(
         tempId: tempId,
         realMessageId: uploadResult.messageId!,
@@ -342,7 +340,7 @@ class _ChatScreenState extends State<ChatScreen> {
         mediaType: mediaType,
       );
 
-      // ۴. ✅ کش فایل ارسالی در حافظه دائمی (تا نیازی به دانلود مجدد نباشد)
+      // کش فایل ارسالی
       try {
         final cachedFile =
             await MediaDownloadManager.instance.cacheUploadedFile(
@@ -351,7 +349,6 @@ class _ChatScreenState extends State<ChatScreen> {
           fileName: fileName,
         );
 
-        // ✅ به‌روزرسانی localPath در پیام فعلی (برای نمایش مستقیم بدون دانلود)
         if (cachedFile != null) {
           widget.chatRepository.setLocalPathForMessage(
             uploadResult.messageId!,
@@ -409,7 +406,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// ✅ وضعیت زیر عنوان: آنلاین‌ها، در حال تایپ، یا وضعیت اتصال
   Widget _buildStatusSubtitle(ThemeData theme) {
+    final onlineCount = widget.chatRepository.onlineCount;
+
     if (widget.chatRepository.typingUserName != null) {
       return Text(
         '${widget.chatRepository.typingUserName} در حال نوشتن...',
@@ -418,6 +418,30 @@ class _ChatScreenState extends State<ChatScreen> {
           color: theme.colorScheme.primary,
           fontStyle: FontStyle.italic,
         ),
+      );
+    }
+
+    if (onlineCount > 0) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: Color(0xFF4CAF50),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '$onlineCount نفر آنلاین',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.green.shade600,
+            ),
+          ),
+        ],
       );
     }
 
@@ -479,7 +503,6 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
           actions: [
-            // دکمه مدیریت حافظه
             IconButton(
               icon: const Icon(Icons.storage_rounded),
               tooltip: 'مدیریت حافظه',
@@ -491,13 +514,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 );
               },
             ),
-            // دکمه پنل تست
             IconButton(
               icon: const Icon(Icons.build_circle_rounded, color: Colors.amber),
               tooltip: 'پنل تست اعلان‌ها',
               onPressed: _showNotificationDebugMenu,
             ),
-            // دکمه خروج
             IconButton(
               icon: const Icon(Icons.logout_rounded),
               tooltip: 'خروج از حساب',
@@ -615,6 +636,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         child: MessageBubble(
                           message: message,
                           isMe: isMe,
+                          isSenderOnline: widget.chatRepository
+                              .isUserOnline(message.senderId),
                           onReply: () =>
                               setState(() => _replyingMessage = message),
                           onEdit:

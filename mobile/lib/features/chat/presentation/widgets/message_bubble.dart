@@ -1,12 +1,14 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/user_avatar.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/widgets/media_bubble_content.dart';
 
-/// ویجت بالون نمایش پیام با بهینه‌سازی رندر و رنگ‌های متریال
+/// ویجت بالون نمایش پیام با آواتار، تیک خوانده‌شدن، و نوار پیشرفت آپلود
 class MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool isMe;
+  final bool isSenderOnline;
   final VoidCallback? onReply;
   final VoidCallback? onEdit;
   final VoidCallback? onPin;
@@ -15,22 +17,69 @@ class MessageBubble extends StatelessWidget {
     super.key,
     required this.message,
     required this.isMe,
+    this.isSenderOnline = false,
     this.onReply,
     this.onEdit,
     this.onPin,
   });
 
+  Color _colorFromName(String name) {
+    if (name.isEmpty) return const Color(0xFF0088CC);
+    final hash = name.codeUnits.fold<int>(0, (prev, c) => prev + c);
+    const colors = [
+      Color(0xFFE17076),
+      Color(0xFF7BC862),
+      Color(0xFFE5CA77),
+      Color(0xFF65AADD),
+      Color(0xFFA695E7),
+      Color(0xFFEE7AAE),
+      Color(0xFF6EC9CB),
+      Color(0xFFFAA774),
+    ];
+    return colors[hash % colors.length];
+  }
+
   @override
   Widget build(BuildContext context) {
+    // پیام‌های دیگران: آواتار + بالون
+    if (!isMe) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            UserAvatar(
+              userId: message.senderId,
+              fullName: message.senderName,
+              size: 36,
+              showOnlineBadge: true,
+              isOnline: isSenderOnline,
+            ),
+            const SizedBox(width: 8),
+            Flexible(child: _buildBubble(context, isMe: false)),
+          ],
+        ),
+      );
+    }
+
+    // پیام‌های خودم
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: _buildBubble(context, isMe: true),
+      ),
+    );
+  }
+
+  Widget _buildBubble(BuildContext context, {required bool isMe}) {
     final theme = Theme.of(context);
 
-    return Align(
-      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * 0.72,
+      ),
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.78,
-        ),
         decoration: BoxDecoration(
           color: isMe
               ? theme.colorScheme.primaryContainer
@@ -53,22 +102,25 @@ class MessageBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // نام فرستنده
                   if (!isMe) ...[
                     Text(
                       message.senderName,
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
-                        color: theme.colorScheme.primary,
+                        color: _colorFromName(message.senderName),
                       ),
                     ),
                     const SizedBox(height: 4),
                   ],
 
+                  // ریپلای
                   if (message.replyToName != null) ...[
                     Container(
                       margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: theme.colorScheme.onSurface.withAlpha(16),
                         borderRadius: BorderRadius.circular(6),
@@ -104,61 +156,11 @@ class MessageBubble extends StatelessWidget {
                     ),
                   ],
 
-                  // در متد build، جایگزین بخش attachment:
+                  // مدیا
                   if (message.attachment != null) ...[
                     if (message.isUploading) ...[
-                      // ✅ نمایش نوار پیشرفت آپلود (مثل تلگرام)
-                      Container(
-                        width: 220,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surface.withAlpha(80),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Icon(
-                                  message.attachment!.isPhoto
-                                      ? Icons.image_rounded
-                                      : message.attachment!.isVideo
-                                          ? Icons.videocam_rounded
-                                          : Icons.insert_drive_file_rounded,
-                                  size: 20,
-                                  color: theme.colorScheme.primary,
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    message.attachment!.fileName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-                                  ),
-                                ),
-                                Text(
-                                  '${(message.uploadProgress * 100).toInt()}%',
-                                  style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: LinearProgressIndicator(
-                                value: message.uploadProgress,
-                                minHeight: 4,
-                                backgroundColor: theme.colorScheme.onSurface.withAlpha(30),
-                                color: theme.colorScheme.primary,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                      _buildUploadProgress(theme),
                     ] else ...[
-                      // نمایش مدیای واقعی پس از آپلود
                       MediaBubbleContent(
                         attachment: message.attachment!,
                         isMe: isMe,
@@ -168,6 +170,7 @@ class MessageBubble extends StatelessWidget {
                     if (message.text.isNotEmpty) const SizedBox(height: 6),
                   ],
 
+                  // متن
                   if (message.text.isNotEmpty) ...[
                     Text(
                       message.text,
@@ -183,6 +186,7 @@ class MessageBubble extends StatelessWidget {
 
                   const SizedBox(height: 4),
 
+                  // پایین: ویرایش + زمان + تیک
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.end,
@@ -193,7 +197,8 @@ class MessageBubble extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 10,
                             fontStyle: FontStyle.italic,
-                            color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
+                            color:
+                                theme.colorScheme.onSurfaceVariant.withAlpha(160),
                           ),
                         ),
                       ],
@@ -201,7 +206,8 @@ class MessageBubble extends StatelessWidget {
                         message.formattedTime,
                         style: TextStyle(
                           fontSize: 11,
-                          color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+                          color:
+                              theme.colorScheme.onSurfaceVariant.withAlpha(180),
                         ),
                       ),
                       if (isMe) ...[
@@ -219,41 +225,100 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-Widget _buildStatusIcon(ThemeData theme) {
-  // در حال ارسال یا معلق
-  if (message.isPending || message.isSending) {
-    return Icon(
-      Icons.access_time_rounded,
-      size: 13,
-      color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+  /// نوار پیشرفت آپلود مدیا
+  Widget _buildUploadProgress(ThemeData theme) {
+    return Container(
+      width: 220,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withAlpha(80),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                message.attachment!.isPhoto
+                    ? Icons.image_rounded
+                    : message.attachment!.isVideo
+                        ? Icons.videocam_rounded
+                        : message.attachment!.isVoice
+                            ? Icons.mic_rounded
+                            : Icons.insert_drive_file_rounded,
+                size: 20,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  message.attachment!.fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              Text(
+                '${(message.uploadProgress * 100).toInt()}%',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: message.uploadProgress,
+              minHeight: 4,
+              backgroundColor: theme.colorScheme.onSurface.withAlpha(30),
+              color: theme.colorScheme.primary,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  // ارسال شده و خوانده‌شده (تیک دوم)
-  if (message.isSynced && message.isRead) {
-    return Icon(
-      Icons.done_all_rounded,
-      size: 15,
-      color: theme.colorScheme.primary,
-    );
-  }
+  Widget _buildStatusIcon(ThemeData theme) {
+    if (message.isPending || message.isSending) {
+      return Icon(
+        Icons.access_time_rounded,
+        size: 13,
+        color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+      );
+    }
 
-  // ارسال شده اما خوانده‌نشده (تیک اول)
-  if (message.isSynced) {
-    return Icon(
-      Icons.done_rounded,
+    // تیک دوم: خوانده‌شده
+    if (message.isSynced && message.isRead) {
+      return Icon(
+        Icons.done_all_rounded,
+        size: 15,
+        color: theme.colorScheme.primary,
+      );
+    }
+
+    // تیک اول: ارسال شده اما خوانده‌نشده
+    if (message.isSynced) {
+      return Icon(
+        Icons.done_rounded,
+        size: 14,
+        color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+      );
+    }
+
+    return const Icon(
+      Icons.error_outline_rounded,
       size: 14,
-      color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+      color: Colors.redAccent,
     );
   }
-
-  // خطا
-  return const Icon(
-    Icons.error_outline_rounded,
-    size: 14,
-    color: Colors.redAccent,
-  );
-}
 
   void _showContextMenu(BuildContext context) {
     showModalBottomSheet(
