@@ -1,10 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path_provider/path_provider.dart';
 
 class UpdateInfo {
   final String latestVersion;
@@ -22,8 +19,22 @@ class UpdateInfo {
     required this.fileSize,
     required this.isUpdateAvailable,
   });
+
+  /// حجم فایل به صورت خوانا
+  String get formattedSize {
+    if (fileSize <= 0) return '';
+    if (fileSize < 1024) return '$fileSize B';
+    if (fileSize < 1024 * 1024) {
+      return '${(fileSize / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
 }
 
+/// سرویس بررسی به‌روزرسانی از GitHub Releases
+///
+/// پس از تشخیص نسخه جدید، کاربر به مرورگر پیش‌فرض هدایت می‌شود
+/// تا فایل APK را از GitHub دانلود کند.
 class UpdateService {
   static final UpdateService instance = UpdateService._();
   UpdateService._();
@@ -82,6 +93,7 @@ class UpdateService {
     }
   }
 
+  /// مقایسه نسخه‌ها (Semantic Versioning)
   bool _isNewerVersion(String latest, String current) {
     try {
       final l = latest.split('.').map(int.parse).toList();
@@ -94,57 +106,6 @@ class UpdateService {
       }
       return false;
     } catch (_) {
-      return false;
-    }
-  }
-
-  /// دانلود APK با گزارش پیشرفت
-  Future<File?> downloadApk({
-    required String url,
-    required Function(double) onProgress,
-  }) async {
-    try {
-      final dir = await getTemporaryDirectory();
-      final apkPath = '${dir.path}/update.apk';
-      final apkFile = File(apkPath);
-
-      if (await apkFile.exists()) await apkFile.delete();
-
-      final request = http.Request('GET', Uri.parse(url));
-      final response = await http.Client().send(request);
-
-      if (response.statusCode != 200) return null;
-
-      final totalBytes = response.contentLength ?? 0;
-      final sink = apkFile.openWrite();
-      int received = 0;
-
-      await for (final chunk in response.stream) {
-        sink.add(chunk);
-        received += chunk.length;
-        if (totalBytes > 0) {
-          onProgress(received / totalBytes);
-        }
-      }
-
-      await sink.flush();
-      await sink.close();
-
-      onProgress(1.0);
-      return apkFile;
-    } catch (e) {
-      debugPrint('[Update] Download failed: $e');
-      return null;
-    }
-  }
-
-  /// نصب APK
-  Future<bool> installApk(File apkFile) async {
-    try {
-      final result = await OpenFilex.open(apkFile.path);
-      return result.type == ResultType.done;
-    } catch (e) {
-      debugPrint('[Update] Install failed: $e');
       return false;
     }
   }

@@ -30,7 +30,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final VoiceRecordService _voiceRecordService = VoiceRecordService();
@@ -39,9 +39,13 @@ class _ChatScreenState extends State<ChatScreen> {
   ChatMessageModel? _replyingMessage;
   bool _isMarkingRead = false;
 
+  // ✅ ردیابی وضعیت visibility اپ
+  bool _isAppVisible = true;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initializeChat();
     widget.chatRepository.addListener(_onChatUpdate);
   }
@@ -50,12 +54,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final currentUser = widget.authRepository.currentUser;
     if (currentUser != null) {
       await widget.chatRepository.initialize(currentUser);
+      // در ابتدای ورود به چت، اگر اپ visible است، پیام‌های خوانده‌نشده را علامت بزن
       await _markUnreadMessagesAsRead();
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.chatRepository.removeListener(_onChatUpdate);
     _inputController.dispose();
     _scrollController.dispose();
@@ -63,10 +69,32 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  void _onChatUpdate() => _markUnreadMessagesAsRead();
+  // ✅ مدیریت چرخه حیات اپ
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final isVisible = state == AppLifecycleState.resumed;
+    if (_isAppVisible != isVisible) {
+      _isAppVisible = isVisible;
+      debugPrint('[ChatScreen] App visibility: $_isAppVisible ($state)');
+
+      // ✅ هنگامی که کاربر به فورگراند برمی‌گردد، پیام‌های خوانده‌نشده را علامت بزن
+      if (_isAppVisible) {
+        _markUnreadMessagesAsRead();
+      }
+    }
+  }
+
+  /// ✅ فقط زمانی که اپ در فورگراند است علامت بزن
+  void _onChatUpdate() {
+    if (!_isAppVisible) return;
+    _markUnreadMessagesAsRead();
+  }
 
   Future<void> _markUnreadMessagesAsRead() async {
+    // ✅ محافظ اضافی: اگر اپ در پس‌زمینه است، هیچ‌کاری نکن
+    if (!_isAppVisible) return;
     if (_isMarkingRead) return;
+
     final user = widget.authRepository.currentUser;
     if (user == null) return;
 
@@ -406,7 +434,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// ✅ وضعیت زیر عنوان: آنلاین‌ها، در حال تایپ، یا وضعیت اتصال
   Widget _buildStatusSubtitle(ThemeData theme) {
     final onlineCount = widget.chatRepository.onlineCount;
 
@@ -547,7 +574,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         body: Column(
           children: [
-            // نوار پیام پین‌شده
             AnimatedBuilder(
               animation: widget.chatRepository,
               builder: (_, __) {
@@ -596,8 +622,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 );
               },
             ),
-
-            // لیست پیام‌ها
             Expanded(
               child: AnimatedBuilder(
                 animation: widget.chatRepository,
@@ -651,8 +675,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
-
-            // نوار ورودی
             ChatInputBar(
               controller: _inputController,
               replyMessage: _replyingMessage,
