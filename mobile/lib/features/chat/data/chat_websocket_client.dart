@@ -27,6 +27,9 @@ class ChatWebSocketClient {
   int _reconnectAttempts = 0;
   bool _isDisposed = false;
 
+  // ✅ آخرین وضعیت حضور که باید پس از اتصال مجدد بازگردانی شود
+  bool _lastPresenceOnline = true;
+
   Stream<SocketConnectionState> get stateStream => _stateController.stream;
   SocketConnectionState get state => _state;
   Stream<Map<String, dynamic>> get messageStream => _messageController.stream;
@@ -53,7 +56,9 @@ class ChatWebSocketClient {
     if (_isDisposed || _sessionToken == null) return;
 
     _updateState(
-      _reconnectAttempts > 0 ? SocketConnectionState.reconnecting : SocketConnectionState.connecting,
+      _reconnectAttempts > 0
+          ? SocketConnectionState.reconnecting
+          : SocketConnectionState.connecting,
     );
 
     try {
@@ -64,7 +69,10 @@ class ChatWebSocketClient {
       await _channel!.ready;
 
       _updateState(SocketConnectionState.connected);
-      _reconnectAttempts = 0; // ریست تعداد تلاش‌ها پس از اتصال موفق
+      _reconnectAttempts = 0;
+
+      // ✅ بازگردانی وضعیت حضور پس از اتصال مجدد
+      sendPresence(online: _lastPresenceOnline);
 
       _subscription?.cancel();
       _subscription = _channel!.stream.listen(
@@ -99,7 +107,6 @@ class ChatWebSocketClient {
     }
   }
 
-  /// زمان‌بندی تلاش مجدد برای اتصال با فاصله نمایی (Exponential Backoff)
   void _scheduleReconnect() {
     if (_isDisposed || _sessionToken == null) {
       _updateState(SocketConnectionState.disconnected);
@@ -109,9 +116,8 @@ class ChatWebSocketClient {
     _updateState(SocketConnectionState.reconnecting);
     _reconnectTimer?.cancel();
 
-    // محاسبه تاخیر با فاصله نمایی: 1s, 2s, 4s, 8s تا سقف 15 ثانیه
     final delaySeconds = min(pow(2, _reconnectAttempts).toInt(), 15);
-    final jitter = (Random().nextDouble() * 500).toInt(); // تصادفی‌سازی میلی‌ثانیه‌ای
+    final jitter = (Random().nextDouble() * 500).toInt();
     final totalDelay = Duration(seconds: delaySeconds, milliseconds: jitter);
 
     _reconnectAttempts++;
@@ -144,6 +150,19 @@ class ChatWebSocketClient {
       }
     }
     return false;
+  }
+
+  /// ✅ ارسال وضعیت حضور (online/away) به سرور
+  /// 
+  /// این متد در چرخه حیات اپ فراخوانی می‌شود:
+  /// - online: وقتی اپ در فورگراند است و کاربر داخل چت است
+  /// - away: وقتی کاربر دکمه Home را می‌زند یا وارد صفحه دیگری می‌شود
+  bool sendPresence({required bool online}) {
+    _lastPresenceOnline = online;
+    return _send({
+      'type': 'presence',
+      'status': online ? 'online' : 'away',
+    });
   }
 
   /// ارسال پیام جدید متنی
@@ -216,6 +235,11 @@ class ChatWebSocketClient {
 
   /// قطع اتصال و آزادسازی منابع
   void disconnect() {
+    // ✅ قبل از بستن، به سرور اطلاع بده که offline هستیم
+    try {
+      sendPresence(online: false);
+    } catch (_) {}
+
     _isDisposed = true;
     _sessionToken = null;
     _reconnectTimer?.cancel();

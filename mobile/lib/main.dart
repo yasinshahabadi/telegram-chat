@@ -152,6 +152,14 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     widget.chatRepository.isAppInBackground = isBackground;
     debugPrint('[LIFECYCLE] App background state: $isBackground ($state)');
 
+    // ✅ اطلاع‌رسانی وضعیت حضور به سرور
+    // هنگامی که اپ در فورگراند است → online
+    // هنگامی که اپ به background می‌رود → away
+    if (widget.socketClient.isConnected) {
+      widget.socketClient.sendPresence(online: !isBackground);
+    }
+
+    // وقتی کاربر به فورگراند برگشت، اعلان‌ها را پاک کن
     if (state == AppLifecycleState.resumed) {
       widget.notifService.cancelAllNotifications();
     }
@@ -242,6 +250,9 @@ class _TelegramChatAppState extends State<TelegramChatApp>
               authRepository: widget.authRepository,
               chatRepository: widget.chatRepository,
               onLogout: () async {
+                // ✅ اطلاع‌رسانی offline قبل از بستن
+                widget.socketClient.sendPresence(online: false);
+                await Future.delayed(const Duration(milliseconds: 200));
                 widget.socketClient.disconnect();
                 await FirebaseMessagingService.instance.deleteToken();
                 await widget.notifService.cancelAllNotifications();

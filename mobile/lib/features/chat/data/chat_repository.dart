@@ -63,6 +63,8 @@ class ChatRepository extends ChangeNotifier {
       _socketStateSubscription = _socketClient.stateStream.listen((state) {
         if (state == SocketConnectionState.connected) {
           processPendingQueue();
+          // ✅ اطلاع‌رسانی وضعیت فعلی حضور به سرور
+          _socketClient.sendPresence(online: !isAppInBackground);
         }
         notifyListeners();
       });

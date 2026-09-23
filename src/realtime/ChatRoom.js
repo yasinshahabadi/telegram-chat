@@ -47,6 +47,7 @@ export class ChatRoom extends DurableObject {
       telegramId: auth.user.telegramId,
       deviceId: auth.device.id,
       isAdmin: auth.user.isAdmin,
+      // ✅ پیش‌فرض آنلاین، اما بلافاصله توسط presence از کلاینت تأیید/لغو می‌شود
       isOnline: true
     };
 
@@ -75,10 +76,14 @@ export class ChatRoom extends DurableObject {
       const data = JSON.parse(message);
       const now = Date.now();
 
+      // ✅ مدیریت وضعیت حضور (online/away)
       if (data.type === "presence") {
-        user.isOnline = (data.status === "online");
-        ws.serializeAttachment(user);
-        this.broadcastOnline();
+        const isOnline = data.status === "online";
+        if (user.isOnline !== isOnline) {
+          user.isOnline = isOnline;
+          ws.serializeAttachment(user);
+          this.broadcastOnline();
+        }
         return;
       }
 
@@ -166,6 +171,14 @@ export class ChatRoom extends DurableObject {
           type: "new_message",
           message: messagePayload
         });
+
+        // ✅ ارسال FCM به سایر کاربران (چه متصل، چه متصل نباشند)
+        try {
+          const { dispatchNewMessagePush } = await import("../notifications/fcmService.js");
+          await dispatchNewMessagePush(this.env, messagePayload, user.userId);
+        } catch (e) {
+          console.error("[ChatRoom] FCM dispatch failed:", e);
+        }
 
         // ارسال به سوپرگروه تلگرام
         try {
