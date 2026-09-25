@@ -24,7 +24,6 @@ class ChatRepository extends ChangeNotifier {
   Timer? _typingTimer;
   bool _isLoading = false;
   bool isAppInBackground = false;
-  AuthUser? _currentUser;
 
   // ✅ کاربران آنلاین
   final Map<String, Map<String, dynamic>> _onlineUsers = {};
@@ -52,7 +51,6 @@ class ChatRepository extends ChangeNotifier {
 
   // ─── Initialize ───
   Future<void> initialize(AuthUser currentUser) async {
-    _currentUser = currentUser;
     _isLoading = true;
     notifyListeners();
 

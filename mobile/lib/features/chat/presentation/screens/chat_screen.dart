@@ -1,4 +1,5 @@
-﻿import 'dart:io';
+﻿import 'dart:async';
+import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/features/notifications/data/firebase_messaging_service.dart';
@@ -38,9 +39,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   ChatMessageModel? _replyingMessage;
   bool _isMarkingRead = false;
-
-  // ✅ ردیابی وضعیت visibility اپ
   bool _isAppVisible = true;
+
+  // ✅ Debounce برای mark_read (کاهش ترافیک WebSocket و DB)
+  Timer? _markReadDebounce;
+  final Set<String> _pendingMarkReadIds = {};
 
   @override
   void initState() {
@@ -63,6 +66,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.chatRepository.removeListener(_onChatUpdate);
+    _markReadDebounce?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     _voiceRecordService.dispose();
@@ -77,21 +81,58 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _isAppVisible = isVisible;
       debugPrint('[ChatScreen] App visibility: $_isAppVisible ($state)');
 
-      // ✅ هنگامی که کاربر به فورگراند برمی‌گردد، پیام‌های خوانده‌نشده را علامت بزن
       if (_isAppVisible) {
-        _markUnreadMessagesAsRead();
+        // ✅ هنگامی که به فورگراند برمی‌گردد، فوراً همه را یکجا بخوان
+        _markReadDebounce?.cancel();
+        _flushMarkRead();
+      } else {
+        // ✅ هنگام رفتن به پس‌زمینه، debounce را لغو کن
+        _markReadDebounce?.cancel();
       }
     }
   }
 
-  /// ✅ فقط زمانی که اپ در فورگراند است علامت بزن
+  /// ✅ با debounce: به‌جای فراخوانی فوری mark_read برای هر پیام،
+  /// پیام‌ها را جمع کرده و بعد از ۸۰۰ میلی‌ثانیه یکجا ارسال کن
   void _onChatUpdate() {
     if (!_isAppVisible) return;
-    _markUnreadMessagesAsRead();
+
+    final user = widget.authRepository.currentUser;
+    if (user == null) return;
+
+    final unreadIds = widget.chatRepository.messages
+        .where((m) => m.senderId != user.id && m.readAt == null)
+        .map((m) => m.id)
+        .toSet();
+
+    if (unreadIds.isEmpty) return;
+
+    _pendingMarkReadIds.addAll(unreadIds);
+
+    _markReadDebounce?.cancel();
+    _markReadDebounce = Timer(const Duration(milliseconds: 800), () {
+      _flushMarkRead();
+    });
+  }
+
+  /// ✅ ارسال یکجای mark_read
+  Future<void> _flushMarkRead() async {
+    if (!_isAppVisible) return;
+    if (_isMarkingRead) return;
+    if (_pendingMarkReadIds.isEmpty) return;
+
+    final idsToMark = _pendingMarkReadIds.toList();
+    _pendingMarkReadIds.clear();
+
+    _isMarkingRead = true;
+    try {
+      await widget.chatRepository.markMessagesAsRead(idsToMark);
+    } finally {
+      _isMarkingRead = false;
+    }
   }
 
   Future<void> _markUnreadMessagesAsRead() async {
-    // ✅ محافظ اضافی: اگر اپ در پس‌زمینه است، هیچ‌کاری نکن
     if (!_isAppVisible) return;
     if (_isMarkingRead) return;
 
@@ -574,6 +615,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ),
         body: Column(
           children: [
+            // نوار پیام پین‌شده
             AnimatedBuilder(
               animation: widget.chatRepository,
               builder: (_, __) {
@@ -622,6 +664,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 );
               },
             ),
+
+            // لیست پیام‌ها
             Expanded(
               child: AnimatedBuilder(
                 animation: widget.chatRepository,
@@ -675,6 +719,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 },
               ),
             ),
+
+            // نوار ورودی
             ChatInputBar(
               controller: _inputController,
               replyMessage: _replyingMessage,

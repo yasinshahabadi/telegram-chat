@@ -63,14 +63,30 @@ void main() async {
 
   networkMonitor.onNetworkRestored = () async {
     final token = authStorage.getSessionToken();
-    if (token != null && token.isNotEmpty) {
-      if (!socketClient.isConnected) {
-        socketClient.connect(token);
-      }
-      await syncEngine.syncMissedEvents(token, onSyncCompleted: () {
+    if (token == null || token.isEmpty) return;
+
+    if (!socketClient.isConnected) {
+      socketClient.connect(token);
+    }
+
+    final currentUser = authRepository.currentUser;
+    final result = await syncEngine.syncMissedEvents(
+      token,
+      currentUserId: currentUser?.id,
+      onSyncCompleted: () {
         chatRepository.loadLocalMessages();
         chatRepository.processPendingQueue();
-      });
+      },
+    );
+
+    // ✅ اگر در حین آفلاین بودن پیام‌هایی از دست رفت و اپ در پس‌زمینه بود
+    // → نمایش اعلان خلاصه
+    if (result.newMessagesCount > 0 && chatRepository.isAppInBackground) {
+      await NotificationService.instance.showMissedMessagesNotification(
+        count: result.newMessagesCount,
+        sender: result.lastMessageSender,
+        text: result.lastMessageText,
+      );
     }
   };
 
@@ -85,7 +101,6 @@ void main() async {
     syncEngine: syncEngine,
   ));
 
-  // بررسی به‌روزرسانی در پس‌زمینه
   _checkForUpdate();
 }
 
@@ -109,7 +124,6 @@ Future<void> _checkForUpdate() async {
   }
 }
 
-/// اپلیکیشن مجهز به ناظر پایش چرخه حیات
 class TelegramChatApp extends StatefulWidget {
   final AuthRepository authRepository;
   final AuthLocalStorage authStorage;
@@ -152,14 +166,10 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     widget.chatRepository.isAppInBackground = isBackground;
     debugPrint('[LIFECYCLE] App background state: $isBackground ($state)');
 
-    // ✅ اطلاع‌رسانی وضعیت حضور به سرور
-    // هنگامی که اپ در فورگراند است → online
-    // هنگامی که اپ به background می‌رود → away
     if (widget.socketClient.isConnected) {
       widget.socketClient.sendPresence(online: !isBackground);
     }
 
-    // وقتی کاربر به فورگراند برگشت، اعلان‌ها را پاک کن
     if (state == AppLifecycleState.resumed) {
       widget.notifService.cancelAllNotifications();
     }
@@ -167,22 +177,41 @@ class _TelegramChatAppState extends State<TelegramChatApp>
 
   void _ensureConnectedAndSynced() {
     final token = widget.authStorage.getSessionToken();
-    if (token != null && token.isNotEmpty) {
-      if (!widget.socketClient.isConnected) {
-        widget.socketClient.connect(token);
-      }
-      widget.syncEngine.syncMissedEvents(token, onSyncCompleted: () {
-        widget.chatRepository.loadLocalMessages();
-        widget.chatRepository.processPendingQueue();
-      });
+    if (token == null || token.isEmpty) return;
 
-      widget.authStorage.getOrCreateDeviceIdentifier().then((deviceId) {
-        FirebaseMessagingService.instance.registerTokenOnServer(
-          sessionToken: token,
-          deviceId: deviceId,
-        );
-      });
+    if (!widget.socketClient.isConnected) {
+      widget.socketClient.connect(token);
     }
+
+    final currentUser = widget.authRepository.currentUser;
+
+    widget.syncEngine
+        .syncMissedEvents(
+          token,
+          currentUserId: currentUser?.id,
+          onSyncCompleted: () {
+            widget.chatRepository.loadLocalMessages();
+            widget.chatRepository.processPendingQueue();
+          },
+        )
+        .then((result) {
+      // ✅ اگر پیام‌های از دست رفته وجود دارد و اپ در پس‌زمینه است
+      if (result.newMessagesCount > 0 &&
+          widget.chatRepository.isAppInBackground) {
+        NotificationService.instance.showMissedMessagesNotification(
+          count: result.newMessagesCount,
+          sender: result.lastMessageSender,
+          text: result.lastMessageText,
+        );
+      }
+    });
+
+    widget.authStorage.getOrCreateDeviceIdentifier().then((deviceId) {
+      FirebaseMessagingService.instance.registerTokenOnServer(
+        sessionToken: token,
+        deviceId: deviceId,
+      );
+    });
   }
 
   @override
@@ -250,7 +279,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
               authRepository: widget.authRepository,
               chatRepository: widget.chatRepository,
               onLogout: () async {
-                // ✅ اطلاع‌رسانی offline قبل از بستن
                 widget.socketClient.sendPresence(online: false);
                 await Future.delayed(const Duration(milliseconds: 200));
                 widget.socketClient.disconnect();

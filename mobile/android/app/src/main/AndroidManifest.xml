@@ -55,7 +55,7 @@
         <!-- ✅ کانال پیش‌فرض اعلان‌های FCM -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="guysgram_default_channel" />
+            android:value="guysgram_default_channel_v2" />
 
         <!-- ✅ آیکون پیش‌فرض اعلان‌ها -->
         <meta-data

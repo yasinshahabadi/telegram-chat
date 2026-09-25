@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:telegram_chat_mobile/features/media/data/media_download_manager.dart';
 import 'package:telegram_chat_mobile/features/media/data/media_local_storage.dart';
 
 class StorageSettingsScreen extends StatefulWidget {

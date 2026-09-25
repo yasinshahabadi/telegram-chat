@@ -1,4 +1,5 @@
 ﻿import 'dart:async';
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 /// هندلر پس‌زمینه برای پاسخ مستقیم و کلیک روی اعلان‌ها
@@ -10,21 +11,28 @@ void notificationTapBackground(NotificationResponse notificationResponse) {
 /// سرویس مدیریت اعلان‌های بومی اندروید و پاسخ مستقیم
 class NotificationService {
   static final NotificationService instance = NotificationService._internal();
-  final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _notificationsPlugin =
+      FlutterLocalNotificationsPlugin();
 
-  static const String _channelId = 'telegram_chat_messages';
-  static const String _channelName = 'پیام‌های چت';
+  static const String _channelId = 'guysgram_default_channel_v2';
+  static const String _channelName = 'اعلان‌های Guysgram';
   static const String _channelDesc = 'اعلان پیام‌های دریافتی از سوپرگروه تلگرام';
   static const String _groupKey = 'com.telegram_chat.MESSAGES';
+
+  static const List<String> _legacyChannelIds = [
+    'telegram_chat_messages',
+    'guysgram_default_channel',
+    'telegram_chat',
+  ];
 
   Function(String text, String? payload)? onDirectReplyReceived;
   Function(String? payload)? onNotificationTapped;
 
   NotificationService._internal();
 
-  /// مقداردهی اولیه سرویس اعلان و ثبت کانال‌های اندروید
   Future<void> initialize() async {
-    const androidSettings = AndroidInitializationSettings('@mipmap/launcher_icon');
+    const androidSettings =
+        AndroidInitializationSettings('@mipmap/launcher_icon');
 
     const initSettings = InitializationSettings(
       android: androidSettings,
@@ -42,11 +50,17 @@ class NotificationService {
       onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
     );
 
-    // ایجاد کانال با اولویت بالا در اندروید ۸ به بالا
     final androidImplementation = _notificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
 
     if (androidImplementation != null) {
+      for (final legacyId in _legacyChannelIds) {
+        try {
+          await androidImplementation.deleteNotificationChannel(legacyId);
+        } catch (_) {}
+      }
+
       await androidImplementation.createNotificationChannel(
         const AndroidNotificationChannel(
           _channelId,
@@ -55,31 +69,33 @@ class NotificationService {
           importance: Importance.max,
           enableVibration: true,
           playSound: true,
+          enableLights: true,
+          ledColor: Color(0xFF0088CC),
+          showBadge: true,
         ),
       );
     }
   }
 
-  /// درخواست مجوز اعلان در اندروید ۱۳ به بالا (API 33+)
   Future<bool> requestPermission() async {
     final androidImplementation = _notificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
 
     if (androidImplementation != null) {
-      final granted = await androidImplementation.requestNotificationsPermission();
+      final granted =
+          await androidImplementation.requestNotificationsPermission();
       return granted ?? false;
     }
     return true;
   }
 
-  /// نمایش اعلان پیام جدید با دکمه پاسخ مستقیم (RemoteInput)
   Future<void> showChatNotification({
     required int id,
     required String senderName,
     required String messageText,
     String? payload,
   }) async {
-    // تعریف اکشن پاسخ مستقیم (RemoteInput)
     const replyAction = AndroidNotificationAction(
       'action_reply',
       'پاسخ',
@@ -103,6 +119,8 @@ class NotificationService {
       showWhen: true,
       enableVibration: true,
       playSound: true,
+      fullScreenIntent: false,
+      visibility: NotificationVisibility.public,
       styleInformation: BigTextStyleInformation(
         messageText,
         contentTitle: senderName,
@@ -120,11 +138,50 @@ class NotificationService {
       payload: payload,
     );
 
-    // ساخت یا به‌روزرسانی اعلان خلاصه گروه (Summary)
     await _showGroupSummaryNotification();
   }
 
-  /// اعلان خلاصه برای تجمیع و گروه‌بندی هوشمند پیام‌ها
+  /// ✅ اعلان خلاصه برای پیام‌های از دست رفته در حین آفلاین بودن
+  /// این متد هنگام sync شدن مجدد فراخوانی می‌شود تا اگر FCM نتوانسته
+  /// پیام را برساند، کاربر حداقل یک اعلان خلاصه دریافت کند.
+  Future<void> showMissedMessagesNotification({
+    required int count,
+    String? sender,
+    String? text,
+  }) async {
+    final title = count == 1 ? (sender ?? 'پیام جدید') : '$count پیام جدید';
+    final body = text ?? 'برای مشاهده وارد برنامه شوید';
+
+    // شناسه ثابت برای تجمیع اعلان‌های missed
+    const notificationId = 99001;
+
+    final androidDetails = AndroidNotificationDetails(
+      _channelId,
+      _channelName,
+      channelDescription: _channelDesc,
+      importance: Importance.max,
+      priority: Priority.high,
+      category: AndroidNotificationCategory.message,
+      showWhen: true,
+      enableVibration: true,
+      playSound: true,
+      fullScreenIntent: false,
+      visibility: NotificationVisibility.public,
+      styleInformation: BigTextStyleInformation(
+        body,
+        contentTitle: title,
+        summaryText: 'پیام‌های از دست رفته',
+      ),
+    );
+
+    await _notificationsPlugin.show(
+      notificationId,
+      title,
+      body,
+      NotificationDetails(android: androidDetails),
+    );
+  }
+
   Future<void> _showGroupSummaryNotification() async {
     const summaryDetails = AndroidNotificationDetails(
       _channelId,
@@ -137,19 +194,17 @@ class NotificationService {
     );
 
     await _notificationsPlugin.show(
-      0, // شناسه ثابت برای اعلان خلاصه
+      0,
       'گفتگوی تلگرام',
       'پیام‌های جدید دریافتی',
       const NotificationDetails(android: summaryDetails),
     );
   }
 
-  /// لغو یک اعلان خاص با شناسه
   Future<void> cancelNotification(int id) async {
     await _notificationsPlugin.cancel(id);
   }
 
-  /// پاکسازی تمام اعلان‌ها (هنگام باز شدن صفحه چت)
   Future<void> cancelAllNotifications() async {
     await _notificationsPlugin.cancelAll();
   }

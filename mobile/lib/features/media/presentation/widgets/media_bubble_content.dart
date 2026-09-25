@@ -167,7 +167,7 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
     required IconData icon,
     required int height,
   }) {
-    final theme = Theme.of(context);
+    
     return Container(
       height: height.toDouble(),
       decoration: BoxDecoration(

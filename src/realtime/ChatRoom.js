@@ -18,6 +18,26 @@ export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.env = env;
+    this._prewarmFcmToken();
+  }
+
+  /**
+   * ✅ Pre-warm OAuth2 token هنگام ساخت DO
+   * تا اولین پیام نیازی به انتظار برای token نداشته باشد
+   */
+  _prewarmFcmToken() {
+    try {
+      this.ctx.waitUntil(
+        (async () => {
+          try {
+            const { _internalWarmToken } = await import("../notifications/fcmService.js");
+            if (typeof _internalWarmToken === "function") {
+              await _internalWarmToken(this.env);
+            }
+          } catch (_) {}
+        })()
+      );
+    } catch (_) {}
   }
 
   async fetch(request) {
@@ -30,13 +50,13 @@ export class ChatRoom extends DurableObject {
       return new Response("OK");
     }
 
-    // ۲. احراز هویت مستقیم درخواست ارتقا به سوکت با پایگاه داده D1
+    // ۲. احراز هویت
     const auth = await authenticateRequest(this.env.DB, request);
     if (!auth.authenticated) {
       return errorResponse(auth.message, auth.status, auth.error);
     }
 
-    // ۳. ایجاد جفت سوکت و پذیرش با WebSocket Hibernation API
+    // ۳. ایجاد جفت سوکت
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
@@ -47,7 +67,6 @@ export class ChatRoom extends DurableObject {
       telegramId: auth.user.telegramId,
       deviceId: auth.device.id,
       isAdmin: auth.user.isAdmin,
-      // ✅ پیش‌فرض آنلاین، اما بلافاصله توسط presence از کلاینت تأیید/لغو می‌شود
       isOnline: true
     };
 
@@ -76,7 +95,7 @@ export class ChatRoom extends DurableObject {
       const data = JSON.parse(message);
       const now = Date.now();
 
-      // ✅ مدیریت وضعیت حضور (online/away)
+      // ═══════════════ حضور (online/away) ═══════════════
       if (data.type === "presence") {
         const isOnline = data.status === "online";
         if (user.isOnline !== isOnline) {
@@ -87,6 +106,7 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
+      // ═══════════════ در حال تایپ ═══════════════
       if (data.type === "typing") {
         this.broadcast({
           type: "typing",
@@ -96,33 +116,14 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
+      // ═══════════════ خوانده‌شدن پیام‌ها ═══════════════
       if (data.type === "mark_read" && Array.isArray(data.messageIds) && data.messageIds.length > 0) {
-        const validIds = [];
-        for (const mId of data.messageIds) {
-          const row = await this.env.DB.prepare(
-            "SELECT sender_id FROM messages WHERE id = ?"
-          ).bind(mId).first();
-          if (row && row.sender_id !== user.userId) {
-            validIds.push(mId);
-            await this.env.DB.prepare(`
-              INSERT OR IGNORE INTO message_reads (id, message_id, user_id, read_at)
-              VALUES (?, ?, ?, ?)
-            `).bind(crypto.randomUUID(), mId, user.userId, now).run().catch(() => {});
-          }
-        }
-
-        if (validIds.length > 0) {
-          this.broadcast({
-            type: "messages_read",
-            messageIds: validIds,
-            userId: user.userId,
-            readAt: now
-          });
-        }
+        // ✅ پردازش در پس‌زمینه (non-blocking) - خواندن نباید پیام‌های بعدی را مسدود کند
+        this.ctx.waitUntil(this._handleMarkRead(user, data.messageIds, now));
         return;
       }
 
-      // ارسال پیام متنی جدید
+      // ═══════════════ ارسال پیام جدید ═══════════════
       if (data.type === "chat_message" && data.text) {
         const clientMessageId = data.clientMessageId || null;
         const msgId = crypto.randomUUID();
@@ -164,45 +165,22 @@ export class ChatRoom extends DurableObject {
           reactions: []
         };
 
-        await emitSyncEvent(this.env.DB, "message_created", msgId, messagePayload);
-
-        // برودکست به تمام کاربران متصل
+        // ✅ ۱. برودکست فوری به کاربران متصل (سریع‌ترین)
         this.broadcast({
           type: "new_message",
           message: messagePayload
         });
 
-        // ✅ ارسال FCM به سایر کاربران (چه متصل، چه متصل نباشند)
-        try {
-          const { dispatchNewMessagePush } = await import("../notifications/fcmService.js");
-          await dispatchNewMessagePush(this.env, messagePayload, user.userId);
-        } catch (e) {
-          console.error("[ChatRoom] FCM dispatch failed:", e);
-        }
+        // ✅ ۲. FCM + Telegram + Sync event به صورت پس‌زمینه (non-blocking)
+        //    این باعث می‌شود که handler فوراً آزاد شود
+        this.ctx.waitUntil(
+          this._dispatchSideEffects(messagePayload, user, tgReplyMsgId, data.replyTo)
+        );
 
-        // ارسال به سوپرگروه تلگرام
-        try {
-          let caption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n`;
-          if (data.replyTo && !tgReplyMsgId) {
-            caption += `↩️ <i>پاسخ به ${escapeXml(data.replyTo.name)}:</i> «${escapeXml((data.replyTo.text || "").substring(0, 35))}»\n`;
-          }
-          caption += `💬 ${escapeXml(data.text)}`;
-
-          const tgRes = await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, {
-            chatId: this.env.TELEGRAM_GROUP_ID,
-            text: caption,
-            replyParameters: tgReplyMsgId ? { message_id: tgReplyMsgId } : null
-          });
-
-          if (tgRes.ok && tgRes.result?.message_id) {
-            await this.env.DB.prepare(
-              "UPDATE messages SET telegram_message_id = ? WHERE id = ?"
-            ).bind(tgRes.result.message_id, msgId).run();
-          }
-        } catch (_) {}
         return;
       }
 
+      // ═══════════════ ویرایش پیام ═══════════════
       if (data.type === "edit_message" && data.messageId && data.newText) {
         const msgRow = await this.env.DB.prepare(
           "SELECT sender_id, telegram_message_id FROM messages WHERE id = ?"
@@ -219,27 +197,33 @@ export class ChatRoom extends DurableObject {
             updatedAt: now
           };
 
-          await emitSyncEvent(this.env.DB, "message_edited", data.messageId, editPayload);
-
           this.broadcast({
             type: "message_edited",
             ...editPayload
           });
 
-          if (msgRow.telegram_message_id) {
+          // ✅ در پس‌زمینه
+          this.ctx.waitUntil((async () => {
             try {
-              const newContent = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n💬 ${escapeXml(data.newText)}`;
-              await editTelegramMessageText(this.env.TELEGRAM_BOT_TOKEN, {
-                chatId: this.env.TELEGRAM_GROUP_ID,
-                messageId: msgRow.telegram_message_id,
-                text: newContent
-              });
+              await emitSyncEvent(this.env.DB, "message_edited", data.messageId, editPayload);
             } catch (_) {}
-          }
+
+            if (msgRow.telegram_message_id) {
+              try {
+                const newContent = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n💬 ${escapeXml(data.newText)}`;
+                await editTelegramMessageText(this.env.TELEGRAM_BOT_TOKEN, {
+                  chatId: this.env.TELEGRAM_GROUP_ID,
+                  messageId: msgRow.telegram_message_id,
+                  text: newContent
+                });
+              } catch (_) {}
+            }
+          })());
         }
         return;
       }
 
+      // ═══════════════ تغییر ری‌اکشن ═══════════════
       if (data.type === "toggle_reaction" && data.messageId && data.emoji) {
         const existing = await this.env.DB.prepare(
           "SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?"
@@ -266,29 +250,34 @@ export class ChatRoom extends DurableObject {
           reactions: allReactions || []
         };
 
-        await emitSyncEvent(this.env.DB, "reaction_updated", data.messageId, rxPayload);
-
         this.broadcast({
           type: "reaction_updated",
           ...rxPayload
         });
 
-        const msgRow = await this.env.DB.prepare(
-          "SELECT telegram_message_id FROM messages WHERE id = ?"
-        ).bind(data.messageId).first();
-
-        if (msgRow?.telegram_message_id) {
+        this.ctx.waitUntil((async () => {
           try {
-            await setTelegramMessageReaction(this.env.TELEGRAM_BOT_TOKEN, {
-              chatId: this.env.TELEGRAM_GROUP_ID,
-              messageId: msgRow.telegram_message_id,
-              reaction: existing ? [] : [{ type: "emoji", emoji: data.emoji }]
-            });
+            await emitSyncEvent(this.env.DB, "reaction_updated", data.messageId, rxPayload);
           } catch (_) {}
-        }
+
+          const msgRow = await this.env.DB.prepare(
+            "SELECT telegram_message_id FROM messages WHERE id = ?"
+          ).bind(data.messageId).first();
+
+          if (msgRow?.telegram_message_id) {
+            try {
+              await setTelegramMessageReaction(this.env.TELEGRAM_BOT_TOKEN, {
+                chatId: this.env.TELEGRAM_GROUP_ID,
+                messageId: msgRow.telegram_message_id,
+                reaction: existing ? [] : [{ type: "emoji", emoji: data.emoji }]
+              });
+            } catch (_) {}
+          }
+        })());
         return;
       }
 
+      // ═══════════════ پین پیام ═══════════════
       if (data.type === "pin_message" && data.messageId) {
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1").run();
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 1, updated_at = ? WHERE id = ?")
@@ -300,41 +289,145 @@ export class ChatRoom extends DurableObject {
           pinnedAt: now
         };
 
-        await emitSyncEvent(this.env.DB, "message_pinned", data.messageId, pinPayload);
-
         this.broadcast({
           type: "message_pinned",
           ...pinPayload
         });
 
-        const msgRow = await this.env.DB.prepare(
-          "SELECT telegram_message_id FROM messages WHERE id = ?"
-        ).bind(data.messageId).first();
-
-        if (msgRow?.telegram_message_id) {
+        this.ctx.waitUntil((async () => {
           try {
-            await pinTelegramChatMessage(this.env.TELEGRAM_BOT_TOKEN, {
-              chatId: this.env.TELEGRAM_GROUP_ID,
-              messageId: msgRow.telegram_message_id
-            });
+            await emitSyncEvent(this.env.DB, "message_pinned", data.messageId, pinPayload);
           } catch (_) {}
-        }
+
+          const msgRow = await this.env.DB.prepare(
+            "SELECT telegram_message_id FROM messages WHERE id = ?"
+          ).bind(data.messageId).first();
+
+          if (msgRow?.telegram_message_id) {
+            try {
+              await pinTelegramChatMessage(this.env.TELEGRAM_BOT_TOKEN, {
+                chatId: this.env.TELEGRAM_GROUP_ID,
+                messageId: msgRow.telegram_message_id
+              });
+            } catch (_) {}
+          }
+        })());
         return;
       }
 
+      // ═══════════════ حذف پین ═══════════════
       if (data.type === "unpin_message") {
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1").run();
-        await emitSyncEvent(this.env.DB, "message_unpinned", "global", { unpinnedAt: now });
         this.broadcast({ type: "message_unpinned" });
 
-        try {
-          await unpinTelegramChatMessage(this.env.TELEGRAM_BOT_TOKEN, {
-            chatId: this.env.TELEGRAM_GROUP_ID
-          });
-        } catch (_) {}
+        this.ctx.waitUntil((async () => {
+          try {
+            await emitSyncEvent(this.env.DB, "message_unpinned", "global", { unpinnedAt: now });
+          } catch (_) {}
+
+          try {
+            await unpinTelegramChatMessage(this.env.TELEGRAM_BOT_TOKEN, {
+              chatId: this.env.TELEGRAM_GROUP_ID
+            });
+          } catch (_) {}
+        })());
         return;
       }
-    } catch (_) {}
+    } catch (e) {
+      console.error("[ChatRoom] webSocketMessage error:", e);
+    }
+  }
+
+  /**
+   * ✅ پردازش mark_read در پس‌زمینه
+   */
+  async _handleMarkRead(user, messageIds, now) {
+    try {
+      const validIds = [];
+      // Batch query: بررسی همه پیام‌ها یکجا
+      const placeholders = messageIds.map(() => '?').join(',');
+      const { results: rows } = await this.env.DB.prepare(
+        `SELECT id, sender_id FROM messages WHERE id IN (${placeholders})`
+      ).bind(...messageIds).all();
+
+      const senderMap = new Map((rows || []).map(r => [r.id, r.sender_id]));
+
+      for (const mId of messageIds) {
+        const senderId = senderMap.get(mId);
+        if (senderId && senderId !== user.userId) {
+          validIds.push(mId);
+        }
+      }
+
+      if (validIds.length === 0) return;
+
+      // Batch insert message_reads
+      const stmt = this.env.DB.prepare(
+        "INSERT OR IGNORE INTO message_reads (id, message_id, user_id, read_at) VALUES (?, ?, ?, ?)"
+      );
+      const batch = validIds.map(mId =>
+        stmt.bind(crypto.randomUUID(), mId, user.userId, now)
+      );
+      await this.env.DB.batch(batch);
+
+      this.broadcast({
+        type: "messages_read",
+        messageIds: validIds,
+        userId: user.userId,
+        readAt: now
+      });
+    } catch (e) {
+      console.error("[ChatRoom] mark_read failed:", e);
+    }
+  }
+
+  /**
+   * ✅ اثرات جانبی پیام جدید: FCM + Telegram + SyncEvent
+   *    به صورت موازی و در پس‌زمینه اجرا می‌شوند
+   */
+  async _dispatchSideEffects(messagePayload, user, tgReplyMsgId, replyToData) {
+    // ۱. FCM + SyncEvent (موازی)
+    const fcmPromise = (async () => {
+      try {
+        const { dispatchNewMessagePush } = await import("../notifications/fcmService.js");
+        await dispatchNewMessagePush(this.env, messagePayload, user.userId);
+      } catch (e) {
+        console.error("[ChatRoom] FCM dispatch failed:", e);
+      }
+    })();
+
+    const syncPromise = (async () => {
+      try {
+        await emitSyncEvent(this.env.DB, "message_created", messagePayload.id, messagePayload);
+      } catch (_) {}
+    })();
+
+    // ۲. Telegram (موازی با FCM)
+    const tgPromise = (async () => {
+      try {
+        let caption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n`;
+        if (replyToData && !tgReplyMsgId) {
+          caption += `↩️ <i>پاسخ به ${escapeXml(replyToData.name)}:</i> «${escapeXml((replyToData.text || "").substring(0, 35))}»\n`;
+        }
+        caption += `💬 ${escapeXml(messagePayload.text)}`;
+
+        const tgRes = await sendTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, {
+          chatId: this.env.TELEGRAM_GROUP_ID,
+          text: caption,
+          replyParameters: tgReplyMsgId ? { message_id: tgReplyMsgId } : null
+        });
+
+        if (tgRes.ok && tgRes.result?.message_id) {
+          await this.env.DB.prepare(
+            "UPDATE messages SET telegram_message_id = ? WHERE id = ?"
+          ).bind(tgRes.result.message_id, messagePayload.id).run();
+        }
+      } catch (e) {
+        console.error("[ChatRoom] Telegram send failed:", e);
+      }
+    })();
+
+    await Promise.allSettled([fcmPromise, syncPromise, tgPromise]);
   }
 
   async webSocketClose(ws, code, reason, wasClean) {

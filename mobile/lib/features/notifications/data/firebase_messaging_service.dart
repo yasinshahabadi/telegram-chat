@@ -3,37 +3,31 @@ import 'dart:convert';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../../config.dart';
 
-/// ثابت‌های کانال اعلان
-const String _channelId = 'guysgram_default_channel';
+/// ثابت‌های کانال اعلان (v2 برای بازسازی صدا و ویبره)
+const String _channelId = 'guysgram_default_channel_v2';
 const String _channelName = 'اعلان‌های Guysgram';
 const String _channelDesc = 'اعلان پیام‌های دریافتی از سوپرگروه تلگرام';
 
+/// نام کانال‌های قدیمی که باید حذف شوند
+const List<String> _legacyChannelIds = [
+  'guysgram_default_channel',
+  'telegram_chat_messages',
+  'telegram_chat',
+];
+
 /// هندلر پیام‌های پس‌زمینه FCM
-///
-/// ⚠️ نکته مهم: در این تابع **نباید** اعلان نمایش دهیم!
-/// چون FCM دارای `notification` payload است و سیستم‌عامل اندروید
-/// به‌طور خودکار اعلان را در background/terminated نمایش می‌دهد.
-/// اگر اینجا اعلان نمایش دهیم، اعلان تکراری می‌شود.
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Firebase باید در isolate جدید مقداردهی اولیه شود
   await Firebase.initializeApp();
 
   debugPrint('[FCM-BG] Message received: ${message.messageId}');
   debugPrint('[FCM-BG] Data: ${message.data}');
-
-  // اینجا فقط می‌توانید منطق‌های background اجرا کنید:
-  // - به‌روزرسانی دیتابیس محلی
-  // - ذخیره payload برای پردازش بعدی
-  // - شمارش badge
-  //
-  // اما نمایش اعلان نکنید چون سیستم خودش نمایش می‌دهد.
 }
 
 /// سرویس مدیریت اعلان‌های Firebase Cloud Messaging
@@ -54,27 +48,19 @@ class FirebaseMessagingService {
     if (_isInitialized) return;
 
     try {
-      // ۱. راه‌اندازی Firebase
       await Firebase.initializeApp();
       debugPrint('[FCM] Firebase.initializeApp() succeeded');
 
-      // ۲. درخواست مجوز اعلان
       await _requestPermission();
 
-      // ۳. ثبت هندلر پیام‌های پس‌زمینه
       FirebaseMessaging.onBackgroundMessage(
           _firebaseMessagingBackgroundHandler);
 
-      // ۴. تنظیمات Local Notifications (فقط برای کانال، نه برای نمایش)
       await _initLocalNotifications();
 
-      // ۵. گوش دادن به پیام‌ها در حالت foreground
       FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
-
-      // ۶. گوش دادن به کلیک روی اعلان
       FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpenedApp);
 
-      // ۷. بررسی اعلان اولیه (اگر اپ از حالت terminated باز شده باشد)
       final initialMessage = await _messaging.getInitialMessage();
       if (initialMessage != null) {
         _handleMessageOpenedApp(initialMessage);
@@ -88,7 +74,6 @@ class FirebaseMessagingService {
     }
   }
 
-  /// درخواست مجوز اعلان
   Future<void> _requestPermission() async {
     try {
       final settings = await _messaging.requestPermission(
@@ -103,8 +88,7 @@ class FirebaseMessagingService {
     }
   }
 
-  /// تنظیمات Local Notifications و ایجاد کانال
-  /// (فقط برای اطمینان از وجود کانال؛ اعلان در foreground نمایش نمی‌دهیم)
+  /// تنظیمات Local Notifications + حذف کانال‌های قدیمی + ساخت کانال جدید
   Future<void> _initLocalNotifications() async {
     const androidInit = AndroidInitializationSettings('@mipmap/launcher_icon');
     const iosInit = DarwinInitializationSettings(
@@ -124,11 +108,22 @@ class FirebaseMessagingService {
       },
     );
 
-    // ایجاد کانال اعلان در Android
     final androidImpl = _localNotifications
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
+
     if (androidImpl != null) {
+      // حذف کانال‌های قدیمی
+      for (final legacyId in _legacyChannelIds) {
+        try {
+          await androidImpl.deleteNotificationChannel(legacyId);
+          debugPrint('[FCM] Deleted legacy channel: $legacyId');
+        } catch (e) {
+          debugPrint('[FCM] Failed to delete legacy channel $legacyId: $e');
+        }
+      }
+
+      // ساخت کانال جدید با تنظیمات صحیح
       await androidImpl.createNotificationChannel(
         const AndroidNotificationChannel(
           _channelId,
@@ -137,41 +132,25 @@ class FirebaseMessagingService {
           importance: Importance.max,
           enableVibration: true,
           playSound: true,
+          enableLights: true,
+          ledColor: Color(0xFF0088CC),
+          showBadge: true,
         ),
       );
+
+      debugPrint('[FCM] Channel created: $_channelId');
     }
   }
 
-  /// پردازش پیام در حالت foreground
-  ///
-  /// ⚠️ نکته: در این حالت **نباید اعلان نمایش دهیم**.
-  /// کاربر داخل اپ است و پیام را از طریق WebSocket در UI می‌بیند.
-  /// اگر اپ روی صفحه‌ای غیر از چت باشد، می‌توانید اینجا یک SnackBar
-  /// یا بنر درون‌برنامه‌ای (In-App Banner) نمایش دهید.
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
     debugPrint('[FCM] Foreground message: ${message.messageId}');
     debugPrint('[FCM] Data: ${message.data}');
-
-    // ❌ هیچ اعلان سیستمی نمایش ندهید.
-    // فقط می‌توانید منطق درون‌برنامه‌ای اضافه کنید:
-    // - به‌روزرسانی شمارنده unread
-    // - نمایش SnackBar
-    // - بروزرسانی badge درون‌برنامه‌ای
-    //
-    // مثال (اختیاری):
-    // final data = message.data;
-    // InAppNotificationBus.instance.emit(data);
   }
 
-  /// پردازش کلیک روی اعلان (چه در background، چه terminated)
   void _handleMessageOpenedApp(RemoteMessage message) {
     debugPrint('[FCM] Notification opened app: ${message.data}');
-    // اینجا می‌توانید ناوبری به صفحه چت را انجام دهید:
-    // - push به ChatScreen
-    // - scroll به پیام مربوطه با استفاده از messageId
   }
 
-  /// دریافت توکن FCM دستگاه
   Future<String?> getToken() async {
     try {
       final token = await _messaging.getToken();
@@ -183,7 +162,6 @@ class FirebaseMessagingService {
     }
   }
 
-  /// ثبت توکن در سرور Cloudflare
   Future<bool> registerTokenOnServer({
     required String sessionToken,
     required String deviceId,
@@ -219,7 +197,6 @@ class FirebaseMessagingService {
     }
   }
 
-  /// لغو ثبت توکن (هنگام logout)
   Future<void> deleteToken() async {
     try {
       await _messaging.deleteToken();

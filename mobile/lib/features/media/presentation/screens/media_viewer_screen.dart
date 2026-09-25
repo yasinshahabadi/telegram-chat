@@ -70,14 +70,14 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
       ));
     } else {
       final position = _doubleTapDetails!.localPosition;
-      final zoom = 2.5;
+      const zoom = 2.5;
       final x = -position.dx * (zoom - 1);
       final y = -position.dy * (zoom - 1);
       _animation = Matrix4Tween(
         begin: _transformController.value,
         end: Matrix4.identity()
-          ..translate(x, y)
-          ..scale(zoom),
+        ..translateByDouble(x, y, 0, 1)
+        ..scaleByDouble(zoom, zoom, 1, 1),
       ).animate(CurvedAnimation(
         parent: _animationController,
         curve: Curves.easeOut,
