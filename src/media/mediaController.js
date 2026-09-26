@@ -132,7 +132,7 @@ export async function handleMediaUpload(request, env) {
       try { replyTo = JSON.parse(replyToRaw); } catch (_) {}
     }
 
-    // Idempotency: return existing message if we already handled this clientMessageId.
+    // Idempotency
     if (clientMessageId) {
       const existing = await env.DB.prepare(
         "SELECT id FROM messages WHERE client_message_id = ?"
@@ -151,16 +151,26 @@ export async function handleMediaUpload(request, env) {
       }
     }
 
-    // Resolve reply-to telegram message id
+    // ✅ اطلاعات کامل ریپلای
     let tgReplyMsgId = null;
+    let replyToName = null;
+    let replyToText = null;
+
     if (replyTo && replyTo.id) {
-      const replyRow = await env.DB.prepare(
-        "SELECT telegram_message_id FROM messages WHERE id = ?"
-      ).bind(replyTo.id).first();
-      if (replyRow) tgReplyMsgId = replyRow.telegram_message_id;
+      const replyRow = await env.DB.prepare(`
+        SELECT m.telegram_message_id, m.text, u.full_name AS sender_name
+        FROM messages m
+        LEFT JOIN users u ON m.sender_id = u.id
+        WHERE m.id = ?
+      `).bind(replyTo.id).first();
+      if (replyRow) {
+        tgReplyMsgId = replyRow.telegram_message_id;
+        replyToName = replyRow.sender_name || null;
+        replyToText = replyRow.text || null;
+      }
     }
 
-    // Upload all files to Telegram FIRST, then persist. Avoids orphan DB rows on failure.
+    // Upload all files to Telegram FIRST
     const uploadedResults = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -238,6 +248,8 @@ export async function handleMediaUpload(request, env) {
       createdAt: now,
       telegramMessageId: firstTgMsgId,
       replyToId: replyId,
+      replyToName,
+      replyToText,
       attachments: attachmentRecords,
     };
 

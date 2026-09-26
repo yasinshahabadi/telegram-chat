@@ -42,8 +42,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _isMarkingRead = false;
   bool _isAppVisible = true;
 
+  final Map<String, GlobalKey> _messageKeys = {};
+  String? _highlightedMessageId;
+  Timer? _highlightClearTimer;
+
   Timer? _markReadDebounce;
   final Set<String> _pendingMarkReadIds = {};
+
+  GlobalKey _keyForMessage(String id) =>
+      _messageKeys.putIfAbsent(id, () => GlobalKey());
 
   @override
   void initState() {
@@ -66,6 +73,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     widget.chatRepository.removeListener(_onChatUpdate);
     _markReadDebounce?.cancel();
+    _highlightClearTimer?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     _voiceRecordService.dispose();
@@ -97,7 +105,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final messages = widget.chatRepository.messages;
     if (messages.isNotEmpty && _scrollController.hasClients) {
       if (!_scrollController.position.isScrollingNotifier.value) {
-        _scrollToBottom();
+        if (_highlightedMessageId == null) {
+          _scrollToBottom();
+        }
       }
     }
 
@@ -151,6 +161,46 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       await widget.chatRepository.markMessagesAsRead(unreadIds);
     } finally {
       _isMarkingRead = false;
+    }
+  }
+
+  Future<void> _handleTapReplyMessage(String parentMessageId) async {
+    final messages = widget.chatRepository.messages;
+    final index = messages.indexWhere((m) => m.id == parentMessageId);
+    if (index == -1) {
+      _showError('پیام اصلی در دسترس نیست.');
+      return;
+    }
+
+    setState(() => _highlightedMessageId = parentMessageId);
+
+    _highlightClearTimer?.cancel();
+    _highlightClearTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted && _highlightedMessageId == parentMessageId) {
+        setState(() => _highlightedMessageId = null);
+      }
+    });
+
+    final key = _messageKeys[parentMessageId];
+    final ctx = key?.currentContext;
+
+    if (ctx != null) {
+      await Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+        alignment: 0.5,
+      );
+    } else if (_scrollController.hasClients) {
+      final approx = (index * 90.0).clamp(
+        0.0,
+        _scrollController.position.maxScrollExtent,
+      );
+      await _scrollController.animateTo(
+        approx,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+      );
     }
   }
 
@@ -208,7 +258,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 12),
                 ListTile(
-                  leading: const Icon(Icons.notifications_active, color: Colors.green),
+                  leading: const Icon(Icons.notifications_active,
+                      color: Colors.green),
                   title: const Text('تست ۱: اعلان مستقیم محلی'),
                   onTap: () async {
                     Navigator.pop(ctx);
@@ -220,11 +271,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   },
                 ),
                 ListTile(
-                  leading: const Icon(Icons.vpn_key_rounded, color: Colors.amber),
+                  leading:
+                      const Icon(Icons.vpn_key_rounded, color: Colors.amber),
                   title: const Text('تست ۳: دریافت توکن FCM'),
                   onTap: () async {
                     Navigator.pop(ctx);
-                    final token = await FirebaseMessagingService.instance.getToken();
+                    final token =
+                        await FirebaseMessagingService.instance.getToken();
                     if (mounted && token != null) {
                       showDialog(
                         context: context,
@@ -249,10 +302,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ),
     );
   }
-
-  // ═════════════════════════════════════════════
-  //  ضبط ویس
-  // ═════════════════════════════════════════════
 
   Future<void> _handleStartRecordVoice() async {
     final started = await _voiceRecordService.startRecording();
@@ -284,10 +333,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  // ═════════════════════════════════════════════
-  //  انتخاب و آپلود فایل
-  // ═════════════════════════════════════════════
-
   Future<void> _handleAttachmentPick() async {
     showModalBottomSheet(
       context: context,
@@ -310,7 +355,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.insert_drive_file_rounded, color: Colors.amber),
+                leading: const Icon(Icons.insert_drive_file_rounded,
+                    color: Colors.amber),
                 title: const Text('ارسال فایل و اسناد'),
                 subtitle: const Text('می‌توانید چند فایل انتخاب کنید'),
                 onTap: () {
@@ -345,9 +391,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         final name = pf.name;
         final ext = name.split('.').last.toLowerCase();
         String mediaType = 'document';
-        if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif'].contains(ext)) {
+        if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif']
+            .contains(ext)) {
           mediaType = 'photo';
-        } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'].contains(ext)) {
+        } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']
+            .contains(ext)) {
           mediaType = 'video';
         } else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'].contains(ext)) {
           mediaType = 'audio';
@@ -386,11 +434,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     required String token,
     required AuthUser user,
   }) async {
+    final replyTarget = _replyingMessage;
+
     final optimistic = widget.chatRepository.addOptimisticMultiUpload(
       files: files,
       mediaTypes: mediaTypes,
       currentUser: user,
-      replyTo: _replyingMessage,
+      replyTo: replyTarget,
     );
     final tempId = optimistic.id;
     final clientMessageId = optimistic.clientMessageId;
@@ -405,6 +455,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         originalNames: originalNames,
         sessionToken: token,
         clientMessageId: clientMessageId,
+        replyTo: replyTarget != null
+            ? {
+                'id': replyTarget.id,
+                'name': replyTarget.senderName,
+                'text': replyTarget.text,
+                'tgMsgId': replyTarget.telegramMessageId,
+              }
+            : null,
         onProgress: (p) {
           widget.chatRepository.updateUploadProgress(tempId, p);
         },
@@ -425,8 +483,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         attachments: result.attachments,
       );
 
-      // کش کردن فایل‌های ارسالی با attachmentId سرور.
-      for (int i = 0; i < result.attachments.length && i < files.length; i++) {
+      for (int i = 0;
+          i < result.attachments.length && i < files.length;
+          i++) {
         try {
           final cached = await MediaDownloadManager.instance.cacheUploadedFile(
             attachmentId: result.attachments[i].id,
@@ -638,7 +697,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 final pinned = widget.chatRepository.pinnedMessage;
                 if (pinned == null) return const SizedBox.shrink();
                 return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   color: theme.colorScheme.primaryContainer.withAlpha(128),
                   child: Row(
                     children: [
@@ -696,7 +756,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                         'هنوز پیامی وجود ندارد.\nنخستین پیام را ارسال کنید!',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
+                          color:
+                              theme.colorScheme.onSurfaceVariant.withAlpha(160),
                         ),
                       ),
                     );
@@ -712,17 +773,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           (message.senderId == currentUser.id ||
                               message.senderName == currentUser.fullName);
 
-                      return RepaintBoundary(
-                        key: ValueKey(message.id),
-                        child: KeyedSubtree(
-                          key: PageStorageKey('msg_${message.id}'),
+                      return KeyedSubtree(
+                        key: _keyForMessage(message.id),
+                        child: RepaintBoundary(
                           child: MessageBubble(
                             message: message,
                             isMe: isMe,
-                            isSenderOnline: widget.chatRepository.isUserOnline(message.senderId),
-                            onReply: () => setState(() => _replyingMessage = message),
-                            onEdit: isMe ? () => _showEditDialog(message) : null,
-                            onPin: () => widget.chatRepository.pinMessage(message.id),
+                            isSenderOnline: widget.chatRepository
+                                .isUserOnline(message.senderId),
+                            isHighlighted:
+                                _highlightedMessageId == message.id,
+                            onReply: () =>
+                                setState(() => _replyingMessage = message),
+                            onEdit: isMe
+                                ? () => _showEditDialog(message)
+                                : null,
+                            onPin: () =>
+                                widget.chatRepository.pinMessage(message.id),
+                            onTapReplyMessage: message.replyToMessageId != null
+                                ? () => _handleTapReplyMessage(
+                                    message.replyToMessageId!)
+                                : null,
                           ),
                         ),
                       );

@@ -1,6 +1,7 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/swipe_to_reply.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/user_avatar.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/widgets/media_bubble_content.dart';
 
@@ -8,18 +9,22 @@ class MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool isMe;
   final bool isSenderOnline;
+  final bool isHighlighted;
   final VoidCallback? onReply;
   final VoidCallback? onEdit;
   final VoidCallback? onPin;
+  final VoidCallback? onTapReplyMessage;
 
   const MessageBubble({
     super.key,
     required this.message,
     required this.isMe,
     this.isSenderOnline = false,
+    this.isHighlighted = false,
     this.onReply,
     this.onEdit,
     this.onPin,
+    this.onTapReplyMessage,
   });
 
   Color _colorFromName(String name) {
@@ -40,39 +45,43 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!isMe) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            UserAvatar(
-              userId: message.senderId,
-              fullName: message.senderName,
-              size: 36,
-              showOnlineBadge: true,
-              isOnline: isSenderOnline,
+    final content = !isMe
+        ? Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                UserAvatar(
+                  userId: message.senderId,
+                  fullName: message.senderName,
+                  size: 36,
+                  showOnlineBadge: true,
+                  isOnline: isSenderOnline,
+                ),
+                const SizedBox(width: 8),
+                Flexible(child: _buildBubble(context, isMe: false)),
+              ],
             ),
-            const SizedBox(width: 8),
-            Flexible(child: _buildBubble(context, isMe: false)),
-          ],
-        ),
-      );
-    }
+          )
+        : Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _buildBubble(context, isMe: true),
+            ),
+          );
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: _buildBubble(context, isMe: true),
-      ),
+    return SwipeToReply(
+      onReply: () => onReply?.call(),
+      enabled: onReply != null,
+      child: content,
     );
   }
 
   Widget _buildBubble(BuildContext context, {required bool isMe}) {
     final theme = Theme.of(context);
 
-    return ConstrainedBox(
+    final bubble = ConstrainedBox(
       constraints: BoxConstraints(
         maxWidth: MediaQuery.of(context).size.width * 0.78,
       ),
@@ -112,43 +121,8 @@ class MessageBubble extends StatelessWidget {
                   ],
 
                   if (message.replyToName != null) ...[
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.onSurface.withAlpha(16),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border(
-                          right: BorderSide(
-                            color: theme.colorScheme.primary,
-                            width: 3,
-                          ),
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            message.replyToName!,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: theme.colorScheme.primary,
-                            ),
-                          ),
-                          Text(
-                            message.replyToText ?? 'پیام',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    _buildReplyPreview(theme),
+                    const SizedBox(height: 6),
                   ],
 
                   if (message.hasAttachments) ...[
@@ -191,7 +165,8 @@ class MessageBubble extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 10,
                             fontStyle: FontStyle.italic,
-                            color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
+                            color:
+                                theme.colorScheme.onSurfaceVariant.withAlpha(160),
                           ),
                         ),
                       ],
@@ -199,7 +174,8 @@ class MessageBubble extends StatelessWidget {
                         message.formattedTime,
                         style: TextStyle(
                           fontSize: 11,
-                          color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
+                          color:
+                              theme.colorScheme.onSurfaceVariant.withAlpha(180),
                         ),
                       ),
                       if (isMe) ...[
@@ -215,9 +191,94 @@ class MessageBubble extends StatelessWidget {
         ),
       ),
     );
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.0, end: isHighlighted ? 1.0 : 0.0),
+      duration: const Duration(milliseconds: 300),
+      builder: (context, value, child) {
+        return Stack(
+          children: [
+            child!,
+            if (value > 0.01)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withAlpha((value * 120).toInt()),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+      child: bubble,
+    );
   }
 
-  /// نمایش چند پیوست: گرید دو ستونه ساده.
+  Widget _buildReplyPreview(ThemeData theme) {
+    final tappable = onTapReplyMessage != null;
+
+    final content = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.onSurface.withAlpha(16),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(
+          right: BorderSide(
+            color: theme.colorScheme.primary,
+            width: 3,
+          ),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.reply_rounded,
+            size: 14,
+            color: theme.colorScheme.primary,
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  message.replyToName ?? 'کاربر',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                Text(
+                  message.replyToText ?? 'پیام',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (!tappable) return content;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTapReplyMessage,
+      child: content,
+    );
+  }
+
   Widget _buildMultiAttachments(ThemeData theme, bool isMe) {
     final atts = message.attachments;
     final rows = <Widget>[];
@@ -230,9 +291,7 @@ class MessageBubble extends StatelessWidget {
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: _buildAttachmentCell(left, isMe),
-            ),
+            Expanded(child: _buildAttachmentCell(left, isMe)),
             const SizedBox(width: 4),
             Expanded(
               child: right != null
@@ -269,9 +328,7 @@ class MessageBubble extends StatelessWidget {
   Widget _buildUploadProgress(ThemeData theme) {
     final count = message.attachments.length;
     final firstAtt = message.attachments.first;
-    final label = count > 1
-        ? 'در حال ارسال $count فایل…'
-        : firstAtt.fileName;
+    final label = count > 1 ? 'در حال ارسال $count فایل…' : firstAtt.fileName;
 
     return Container(
       width: 220,

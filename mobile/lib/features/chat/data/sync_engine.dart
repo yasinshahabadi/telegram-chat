@@ -129,9 +129,48 @@ class SyncEngine {
 
     switch (eventType) {
       case 'message_created':
-        final message = ChatMessageModel.fromJson(payload);
-        await _localDao.saveMessage(message.toDbMap());
-        for (final a in message.attachments) {
+        final incoming = ChatMessageModel.fromJson(payload);
+
+        // ✅ merge با رکورد موجود تا فیلدهای محلی (replyToName، replyToText،
+        //    readAt، localPath پیوست‌ها) در اثر جایگزینی کورکورانه از بین نروند.
+        ChatMessageModel toSave = incoming;
+        final existingRow = await _localDao.getMessageById(incoming.id);
+        if (existingRow != null) {
+          final existing = ChatMessageModel.fromDbMap(existingRow);
+
+          if (toSave.replyToName == null && existing.replyToName != null) {
+            toSave = toSave.copyWith(replyToName: existing.replyToName);
+          }
+          if (toSave.replyToText == null && existing.replyToText != null) {
+            toSave = toSave.copyWith(replyToText: existing.replyToText);
+          }
+          if (toSave.readAt == null && existing.readAt != null) {
+            toSave = toSave.copyWith(readAt: existing.readAt);
+          }
+
+          // پیوست‌ها: حفظ localPath از سمت موجود
+          if (existing.attachments.isNotEmpty && toSave.attachments.isNotEmpty) {
+            final merged = <dynamic>[];
+            for (int i = 0; i < toSave.attachments.length; i++) {
+              final inc = toSave.attachments[i];
+              if (i < existing.attachments.length) {
+                final ex = existing.attachments[i];
+                merged.add(inc.copyWith(
+                  localPath: inc.localPath ?? ex.localPath,
+                  isDownloaded: inc.isDownloaded || ex.isDownloaded,
+                ));
+              } else {
+                merged.add(inc);
+              }
+            }
+            toSave = toSave.copyWith(
+              attachments: merged.cast(),
+            );
+          }
+        }
+
+        await _localDao.saveMessage(toSave.toDbMap());
+        for (final a in toSave.attachments) {
           try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
         }
         break;

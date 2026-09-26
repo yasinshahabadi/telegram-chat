@@ -125,7 +125,6 @@ export class ChatRoom extends DurableObject {
             "SELECT id FROM messages WHERE client_message_id = ?"
           ).bind(clientMessageId).first();
           if (existing) {
-            // ✅ ارسال تأیید به کلاینت برای idempotency
             ws.send(JSON.stringify({
               type: "message_ack",
               clientMessageId: clientMessageId,
@@ -136,14 +135,24 @@ export class ChatRoom extends DurableObject {
           }
         }
 
+        // ✅ آماده‌سازی اطلاعات ریپلای (نام + متن پیام اصلی)
         const replyToId = data.replyTo ? data.replyTo.id : null;
         let tgReplyMsgId = null;
+        let replyToName = null;
+        let replyToText = null;
 
         if (replyToId) {
-          const replyRow = await this.env.DB.prepare(
-            "SELECT telegram_message_id FROM messages WHERE id = ?"
-          ).bind(replyToId).first();
-          if (replyRow) tgReplyMsgId = replyRow.telegram_message_id;
+          const replyRow = await this.env.DB.prepare(`
+            SELECT m.telegram_message_id, m.text, u.full_name AS sender_name
+            FROM messages m
+            LEFT JOIN users u ON m.sender_id = u.id
+            WHERE m.id = ?
+          `).bind(replyToId).first();
+          if (replyRow) {
+            tgReplyMsgId = replyRow.telegram_message_id;
+            replyToName = replyRow.sender_name || null;
+            replyToText = replyRow.text || null;
+          }
         }
 
         await this.env.DB.prepare(`
@@ -153,8 +162,8 @@ export class ChatRoom extends DurableObject {
           VALUES (?, ?, ?, ?, 0, ?, ?, ?)
         `).bind(msgId, clientMessageId, user.userId, data.text, now, now, replyToId).run();
 
-        // ✅ ابتدا sync_event ثبت می‌شود تا مطمئن باشیم قبل از برودکست در DB است
-        await emitSyncEvent(this.env.DB, "message_created", msgId, {
+        // ✅ payload کامل با اطلاعات ریپلای
+        const syncPayload = {
           id: msgId,
           clientMessageId,
           senderId: user.userId,
@@ -163,17 +172,14 @@ export class ChatRoom extends DurableObject {
           isFromTelegram: false,
           createdAt: now,
           replyToId,
-        });
+          replyToName,
+          replyToText,
+        };
+
+        await emitSyncEvent(this.env.DB, "message_created", msgId, syncPayload);
 
         const messagePayload = {
-          id: msgId,
-          clientMessageId,
-          senderId: user.userId,
-          senderName: user.fullName,
-          text: data.text,
-          isFromTelegram: false,
-          createdAt: now,
-          replyToId,
+          ...syncPayload,
           reactions: []
         };
 

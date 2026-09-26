@@ -1,10 +1,6 @@
 ﻿import 'package:sqflite/sqflite.dart';
 import 'app_database.dart';
 
-///
-/// Data Access Object (DAO) for Local SQLite Storage
-/// Provides high-performance database operations for chat messages and offline queues.
-///
 class LocalChatDao {
   final AppDatabase _appDatabase;
 
@@ -14,10 +10,9 @@ class LocalChatDao {
   Future<Database> get _db async => await _appDatabase.database;
 
   // ==========================================
-  // ۱. عملیات پیام‌ها (Messages)
+  // پیام‌ها
   // ==========================================
 
-  /// ذخیره یا به‌روزرسانی پیام در دیتابیس محلی
   Future<void> saveMessage(Map<String, dynamic> messageData) async {
     final db = await _db;
     await db.insert(
@@ -44,7 +39,6 @@ class LocalChatDao {
     );
   }
 
-  /// دریافت تاریخچه پیام‌های محلی با صفحه‌بندی جهت رندر سریع و روان در UI
   Future<List<Map<String, dynamic>>> getMessagesList({int limit = 40, int? beforeCreatedAt}) async {
     final db = await _db;
     if (beforeCreatedAt != null) {
@@ -64,7 +58,18 @@ class LocalChatDao {
     );
   }
 
-  /// به‌روزرسانی وضعیت ارسال پیام (مثلاً از pending به synced)
+  /// ✅ واکشی یک پیام بر اساس شناسه (برای merge در sync)
+  Future<Map<String, dynamic>?> getMessageById(String id) async {
+    final db = await _db;
+    final rows = await db.query(
+      'messages',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
   Future<void> updateMessageStatus(String messageId, String newStatus) async {
     final db = await _db;
     await db.update(
@@ -75,7 +80,6 @@ class LocalChatDao {
     );
   }
 
-  /// علامت‌گذاری پیام به عنوان ویرایش‌شده
   Future<void> updateMessageText(String messageId, String newText) async {
     final db = await _db;
     await db.update(
@@ -90,7 +94,6 @@ class LocalChatDao {
     );
   }
 
-  /// تنظیم وضعیت پین بودن پیام
   Future<void> setPinnedMessage(String messageId, bool isPinned) async {
     final db = await _db;
     if (isPinned) {
@@ -104,19 +107,18 @@ class LocalChatDao {
     );
   }
 
-  /// علامت‌گذاری پیام‌های مشخص به‌عنوان خوانده‌شده
-Future<void> markMessagesAsRead(List<String> messageIds, int readAt) async {
-  if (messageIds.isEmpty) return;
-  final db = await _db;
-  final placeholders = List.filled(messageIds.length, '?').join(',');
-  await db.rawUpdate(
-    'UPDATE messages SET read_at = ? WHERE id IN ($placeholders) AND read_at IS NULL',
-    [readAt, ...messageIds],
-  );
-}
+  Future<void> markMessagesAsRead(List<String> messageIds, int readAt) async {
+    if (messageIds.isEmpty) return;
+    final db = await _db;
+    final placeholders = List.filled(messageIds.length, '?').join(',');
+    await db.rawUpdate(
+      'UPDATE messages SET read_at = ? WHERE id IN ($placeholders) AND read_at IS NULL',
+      [readAt, ...messageIds],
+    );
+  }
 
   // ==========================================
-  // ۲. عملیات پیوست‌ها و فایل‌ها (Attachments)
+  // پیوست‌ها
   // ==========================================
 
   Future<void> saveAttachment(Map<String, dynamic> data) async {
@@ -152,25 +154,23 @@ Future<void> markMessagesAsRead(List<String> messageIds, int readAt) async {
     );
   }
 
-  /// به‌روزرسانی مسیر محلی و وضعیت دانلود پیوست
-Future<void> updateAttachmentLocalPath(String attachmentId, String localPath) async {
-  final db = await _db;
-  await db.update(
-    'attachments',
-    {
-      'local_path': localPath,
-      'is_downloaded': 1,
-    },
-    where: 'id = ?',
-    whereArgs: [attachmentId],
-  );
-}
+  Future<void> updateAttachmentLocalPath(String attachmentId, String localPath) async {
+    final db = await _db;
+    await db.update(
+      'attachments',
+      {
+        'local_path': localPath,
+        'is_downloaded': 1,
+      },
+      where: 'id = ?',
+      whereArgs: [attachmentId],
+    );
+  }
 
   // ==========================================
-  // ۳. صف اکشن‌های معلق آفلاین (Pending Actions Queue)
+  // صف اکشن‌های معلق
   // ==========================================
 
-  /// افزودن یک کار معلق (مانند پیام ارسال‌نشده در زمان قطعی نت)
   Future<void> enqueuePendingAction(String id, String actionType, String payloadJson) async {
     final db = await _db;
     await db.insert(
@@ -186,23 +186,20 @@ Future<void> updateAttachmentLocalPath(String attachmentId, String localPath) as
     );
   }
 
-  /// واکشی تمام کارهای در صف به ترتیب زمانی
   Future<List<Map<String, dynamic>>> getPendingActions() async {
     final db = await _db;
     return await db.query('pending_actions', orderBy: 'created_at ASC');
   }
 
-  /// حذف تسک پس از ارسال موفق به سرور
   Future<void> removePendingAction(String id) async {
     final db = await _db;
     await db.delete('pending_actions', where: 'id = ?', whereArgs: [id]);
   }
 
   // ==========================================
-  // ۴. مدیریت نشانگر همگام‌سازی (Sync State)
+  // نشانگر همگام‌سازی
   // ==========================================
 
-  /// ذخیره آخرین نشانگر سرور (last_cursor)
   Future<void> setSyncCursor(int cursor) async {
     final db = await _db;
     await db.insert(
@@ -216,7 +213,6 @@ Future<void> updateAttachmentLocalPath(String attachmentId, String localPath) as
     );
   }
 
-  /// دریافت آخرین نشانگر سرور جهت واکشی دلتای جدید
   Future<int> getSyncCursor() async {
     final db = await _db;
     final results = await db.query(

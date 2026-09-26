@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
-import 'package:path/path.dart' as p;
 import '../../../config.dart';
 import '../domain/models/media_attachment_model.dart';
 
@@ -67,7 +66,6 @@ class MediaRemoteService {
     }
   }
 
-  /// Wraps a byte stream to emit progress as bytes flow through.
   Stream<List<int>> _progressTrackingStream(
     Stream<List<int>> source,
     void Function(int chunkSize) onChunk,
@@ -78,7 +76,6 @@ class MediaRemoteService {
     }
   }
 
-  /// آپلود چند فایل به‌صورت یک پیام واحد با پیشرفت تجمیعی.
   Future<MediaUploadResult> uploadFiles({
     required List<File> files,
     required List<String> mediaTypes,
@@ -192,7 +189,6 @@ class MediaRemoteService {
     }
   }
 
-  /// دانلود مستقیم به مسیر مشخص (بدون cache check — آن‌را manager انجام می‌دهد).
   Future<File?> downloadToFile({
     required MediaAttachmentModel attachment,
     required String targetPath,

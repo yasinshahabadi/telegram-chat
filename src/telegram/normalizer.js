@@ -3,11 +3,6 @@
  * Translates raw Telegram updates into normalized database entities and sync events.
  */
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024;
-
-/**
- * اطمینان از وجود کاربر تلگرامی در جدول users برای حفظ یکپارچگی کلید خارجی
- */
 export async function ensureTelegramUser(db, fromUser) {
   if (!fromUser || !fromUser.id) return null;
   const tgId = fromUser.id.toString();
@@ -30,9 +25,6 @@ export async function ensureTelegramUser(db, fromUser) {
   return newUserId;
 }
 
-/**
- * ثبت یک رویداد ترتیبی در جدول sync_events برای موتور همگام‌سازی آفلاین
- */
 export async function emitSyncEvent(db, eventType, entityId, payload) {
   try {
     const result = await db.prepare(`
@@ -46,9 +38,6 @@ export async function emitSyncEvent(db, eventType, entityId, payload) {
   }
 }
 
-/**
- * نرمال‌سازی و ذخیره پیام ورودی از تلگرام در جدول‌های messages, attachments و sync_events
- */
 export async function normalizeIncomingTelegramMessage(db, msg) {
   const msgId = crypto.randomUUID();
   const senderId = await ensureTelegramUser(db, msg.from);
@@ -56,16 +45,24 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
   const timestamp = Date.now();
   const text = msg.text || msg.caption || "";
 
-  // کشف شناسه پیام داخلی ریپلای‌شده در صورت وجود
+  // ✅ کشف اطلاعات کامل ریپلای (id + name + text) از دیتابیس محلی سرور
   let replyToId = null;
+  let replyToName = null;
+  let replyToText = null;
   if (msg.reply_to_message) {
-    const parentMsg = await db.prepare(
-      "SELECT id FROM messages WHERE telegram_message_id = ?"
-    ).bind(msg.reply_to_message.message_id).first();
-    if (parentMsg) replyToId = parentMsg.id;
+    const parentMsg = await db.prepare(`
+      SELECT m.id, m.text, u.full_name AS sender_name
+      FROM messages m
+      LEFT JOIN users u ON m.sender_id = u.id
+      WHERE m.telegram_message_id = ?
+    `).bind(msg.reply_to_message.message_id).first();
+    if (parentMsg) {
+      replyToId = parentMsg.id;
+      replyToName = parentMsg.sender_name || null;
+      replyToText = parentMsg.text || null;
+    }
   }
 
-  // استخراج فایل و رسانه
   let mediaType = null, fileId = null, fileName = null, fileSize = null, thumbId = null, duration = 0;
 
   if (msg.photo && msg.photo.length > 0) {
@@ -101,7 +98,6 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     fileName = msg.document.file_name || "file";
   }
 
-  // ۱. درج پیام در جدول messages
   await db.prepare(`
     INSERT INTO messages (
       id, sender_id, text, is_from_telegram, created_at, updated_at, telegram_message_id, reply_to_message_id
@@ -109,7 +105,6 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     VALUES (?, ?, ?, 1, ?, ?, ?, ?)
   `).bind(msgId, senderId, text, timestamp, timestamp, msg.message_id, replyToId).run();
 
-  // ۲. درج اطلاعات فایل در جدول attachments در صورت وجود
   let attachmentRecord = null;
   if (fileId) {
     const attachmentId = crypto.randomUUID();
@@ -141,10 +136,11 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     createdAt: timestamp,
     telegramMessageId: msg.message_id,
     replyToId,
+    replyToName,
+    replyToText,
     attachment: attachmentRecord
   };
 
-  // ۳. ثبت رویداد در جدول sync_events برای همگام‌سازی آفلاین کلاینت
   const cursor = await emitSyncEvent(db, "message_created", msgId, normalizedMessage);
 
   return {
@@ -153,9 +149,6 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
   };
 }
 
-/**
- * نرمال‌سازی رویداد ویرایش پیام
- */
 export async function normalizeTelegramEdit(db, editMsg) {
   const newText = editMsg.text || editMsg.caption || "";
   const now = Date.now();
@@ -184,9 +177,6 @@ export async function normalizeTelegramEdit(db, editMsg) {
   return { payload, cursor };
 }
 
-/**
- * نرمال‌سازی رویداد ری‌اکشن در جدول رابطه‌ای reactions
- */
 export async function normalizeTelegramReaction(db, reactionUpdate) {
   const tgMsgId = reactionUpdate.message_id;
   const tgUserId = reactionUpdate.user?.id ? reactionUpdate.user.id.toString() : "anonymous";
@@ -198,12 +188,10 @@ export async function normalizeTelegramReaction(db, reactionUpdate) {
 
   if (!msgRow) return null;
 
-  // ۱. حذف ری‌اکشن‌های قبلی این کاربر تلگرام برای این پیام
   await db.prepare(
     "DELETE FROM reactions WHERE message_id = ? AND telegram_user_id = ?"
   ).bind(msgRow.id, tgUserId).run();
 
-  // ۲. ثبت ایموجی‌های جدید
   const newEmojis = [];
   if (reactionUpdate.new_reaction && Array.isArray(reactionUpdate.new_reaction)) {
     for (const r of reactionUpdate.new_reaction) {
@@ -217,7 +205,6 @@ export async function normalizeTelegramReaction(db, reactionUpdate) {
     }
   }
 
-  // ۳. واکشی مجموع کل ری‌اکشن‌های فعلی پیام به صورت نرمال
   const { results: allReactions } = await db.prepare(`
     SELECT emoji, COUNT(*) AS count 
     FROM reactions 
@@ -236,9 +223,6 @@ export async function normalizeTelegramReaction(db, reactionUpdate) {
   return { payload, cursor };
 }
 
-/**
- * نرمال‌سازی رویداد سنجاق (Pin) شدن پیام
- */
 export async function normalizeTelegramPin(db, pinnedTgId) {
   const now = Date.now();
 
