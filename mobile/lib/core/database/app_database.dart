@@ -2,10 +2,18 @@
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
-/// Local SQLite Database Manager with fail-safe pragmas
+/// Local SQLite Database Manager with fail-safe pragmas.
+///
+/// Schema version history:
+///   v1 → initial
+///   v2 → added messages.read_at
+///   v3 → added reply preview media fields (reply_to_media_type,
+///        reply_to_attachment_id, reply_to_telegram_file_id,
+///        reply_to_file_name, reply_to_duration)
 class AppDatabase {
   static final AppDatabase instance = AppDatabase._internal();
   static Database? _database;
+  static const int _schemaVersion = 3;
 
   AppDatabase._internal();
 
@@ -21,7 +29,7 @@ class AppDatabase {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: _schemaVersion,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -33,11 +41,27 @@ class AppDatabase {
     try { await db.execute('PRAGMA synchronous = NORMAL'); } catch (_) {}
   }
 
-  /// مهاجرت از نسخه ۱ به ۲: افزودن ستون read_at
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       try {
         await db.execute('ALTER TABLE messages ADD COLUMN read_at INTEGER');
+      } catch (_) {}
+    }
+    if (oldVersion < 3) {
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_media_type TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_attachment_id TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_telegram_file_id TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_file_name TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_duration INTEGER');
       } catch (_) {}
     }
   }
@@ -55,6 +79,11 @@ class AppDatabase {
         reply_to_message_id TEXT,
         reply_to_name TEXT,
         reply_to_text TEXT,
+        reply_to_media_type TEXT,
+        reply_to_attachment_id TEXT,
+        reply_to_telegram_file_id TEXT,
+        reply_to_file_name TEXT,
+        reply_to_duration INTEGER,
         is_pinned INTEGER NOT NULL DEFAULT 0,
         is_edited INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'synced',

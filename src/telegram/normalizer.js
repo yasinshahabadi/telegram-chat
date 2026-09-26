@@ -1,6 +1,5 @@
 ﻿/**
  * Telegram Event Normalizer & D1 Ingestion Engine
- * Translates raw Telegram updates into normalized database entities and sync events.
  */
 
 export async function ensureTelegramUser(db, fromUser) {
@@ -45,21 +44,38 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
   const timestamp = Date.now();
   const text = msg.text || msg.caption || "";
 
-  // ✅ کشف اطلاعات کامل ریپلای (id + name + text) از دیتابیس محلی سرور
+  // ✅ اطلاعات کامل ریپلای شامل پیوست
   let replyToId = null;
   let replyToName = null;
   let replyToText = null;
+  let replyToMediaType = null;
+  let replyToAttachmentId = null;
+  let replyToTelegramFileId = null;
+  let replyToFileName = null;
+  let replyToDuration = null;
+
   if (msg.reply_to_message) {
-    const parentMsg = await db.prepare(`
-      SELECT m.id, m.text, u.full_name AS sender_name
+    const parentRow = await db.prepare(`
+      SELECT m.id, m.text, u.full_name AS sender_name,
+             a.id AS att_id, a.media_type, a.telegram_file_id,
+             a.file_name, a.duration
       FROM messages m
       LEFT JOIN users u ON m.sender_id = u.id
+      LEFT JOIN attachments a ON a.message_id = m.id
       WHERE m.telegram_message_id = ?
+      ORDER BY a.created_at ASC
+      LIMIT 1
     `).bind(msg.reply_to_message.message_id).first();
-    if (parentMsg) {
-      replyToId = parentMsg.id;
-      replyToName = parentMsg.sender_name || null;
-      replyToText = parentMsg.text || null;
+
+    if (parentRow) {
+      replyToId = parentRow.id;
+      replyToName = parentRow.sender_name || null;
+      replyToText = parentRow.text || null;
+      replyToMediaType = parentRow.media_type || null;
+      replyToAttachmentId = parentRow.att_id || null;
+      replyToTelegramFileId = parentRow.telegram_file_id || null;
+      replyToFileName = parentRow.file_name || null;
+      replyToDuration = parentRow.duration ?? null;
     }
   }
 
@@ -138,6 +154,11 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     replyToId,
     replyToName,
     replyToText,
+    replyToMediaType,
+    replyToAttachmentId,
+    replyToTelegramFileId,
+    replyToFileName,
+    replyToDuration,
     attachment: attachmentRecord
   };
 

@@ -28,6 +28,11 @@ class LocalChatDao {
         'reply_to_message_id': messageData['reply_to_message_id'] ?? messageData['replyToId'],
         'reply_to_name': messageData['reply_to_name'] ?? messageData['replyToName'],
         'reply_to_text': messageData['reply_to_text'] ?? messageData['replyToText'],
+        'reply_to_media_type': messageData['reply_to_media_type'] ?? messageData['replyToMediaType'],
+        'reply_to_attachment_id': messageData['reply_to_attachment_id'] ?? messageData['replyToAttachmentId'],
+        'reply_to_telegram_file_id': messageData['reply_to_telegram_file_id'] ?? messageData['replyToTelegramFileId'],
+        'reply_to_file_name': messageData['reply_to_file_name'] ?? messageData['replyToFileName'],
+        'reply_to_duration': messageData['reply_to_duration'] ?? messageData['replyToDuration'],
         'is_pinned': (messageData['is_pinned'] == 1 || messageData['isPinned'] == true) ? 1 : 0,
         'is_edited': (messageData['is_edited'] == 1 || messageData['isEdited'] == true) ? 1 : 0,
         'status': messageData['status'] ?? 'synced',
@@ -58,7 +63,6 @@ class LocalChatDao {
     );
   }
 
-  /// ✅ واکشی یک پیام بر اساس شناسه (برای merge در sync)
   Future<Map<String, dynamic>?> getMessageById(String id) async {
     final db = await _db;
     final rows = await db.query(

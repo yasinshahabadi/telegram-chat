@@ -103,6 +103,22 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
+  /// استخراج اطلاعات مدیای پیام والد برای پیش‌نمایش ریپلای.
+  _ReplyPreviewInfo? _extractReplyPreview(ChatMessageModel? replyTo) {
+    if (replyTo == null) return null;
+    final att = replyTo.attachments.isNotEmpty ? replyTo.attachments.first : null;
+    return _ReplyPreviewInfo(
+      messageId: replyTo.id,
+      name: replyTo.senderName,
+      text: replyTo.text,
+      mediaType: att?.mediaType,
+      attachmentId: att?.id,
+      telegramFileId: att?.telegramFileId,
+      fileName: att?.fileName,
+      duration: att?.duration,
+    );
+  }
+
   Future<void> sendMessage({
     required String text,
     required AuthUser currentUser,
@@ -111,6 +127,7 @@ class ChatRepository extends ChangeNotifier {
     final now = DateTime.now().millisecondsSinceEpoch;
     final messageId = const Uuid().v4();
     final clientMessageId = const Uuid().v4();
+    final rp = _extractReplyPreview(replyTo);
 
     final newMessage = ChatMessageModel(
       id: messageId,
@@ -119,9 +136,14 @@ class ChatRepository extends ChangeNotifier {
       senderName: currentUser.fullName,
       text: text,
       isFromTelegram: false,
-      replyToMessageId: replyTo?.id,
-      replyToName: replyTo?.senderName,
-      replyToText: replyTo?.text,
+      replyToMessageId: rp?.messageId,
+      replyToName: rp?.name,
+      replyToText: rp?.text,
+      replyToMediaType: rp?.mediaType,
+      replyToAttachmentId: rp?.attachmentId,
+      replyToTelegramFileId: rp?.telegramFileId,
+      replyToFileName: rp?.fileName,
+      replyToDuration: rp?.duration,
       status: MessageStatus.pending,
       createdAt: now,
       updatedAt: now,
@@ -139,14 +161,14 @@ class ChatRepository extends ChangeNotifier {
         'messageId': messageId,
         'clientMessageId': clientMessageId,
         'text': text,
-        'replyTo': replyTo != null
-            ? {
-                'id': replyTo.id,
-                'name': replyTo.senderName,
-                'text': replyTo.text,
-                'tgMsgId': replyTo.telegramMessageId,
-              }
-            : null,
+        'replyTo': rp == null
+            ? null
+            : {
+                'id': rp.messageId,
+                'name': rp.name,
+                'text': rp.text,
+                'tgMsgId': replyTo?.telegramMessageId,
+              },
       });
       await _localDao.enqueuePendingAction(messageId, 'send_message', payloadJson);
     } catch (_) {}
@@ -155,14 +177,14 @@ class ChatRepository extends ChangeNotifier {
       final sent = _socketClient.sendChatMessage(
         text: text,
         clientMessageId: clientMessageId,
-        replyTo: replyTo != null
-            ? {
-                'id': replyTo.id,
-                'name': replyTo.senderName,
-                'text': replyTo.text,
-                'tgMsgId': replyTo.telegramMessageId,
-              }
-            : null,
+        replyTo: rp == null
+            ? null
+            : {
+                'id': rp.messageId,
+                'name': rp.name,
+                'text': rp.text,
+                'tgMsgId': replyTo?.telegramMessageId,
+              },
       );
 
       if (sent) {
@@ -217,10 +239,6 @@ class ChatRepository extends ChangeNotifier {
     _socketClient.sendMarkRead(messageIds);
   }
 
-  // ═════════════════════════════════════════════
-  //  آپلود Optimistic (چند پیوست)
-  // ═════════════════════════════════════════════
-
   ChatMessageModel addOptimisticMultiUpload({
     required List<File> files,
     required List<String> mediaTypes,
@@ -230,6 +248,7 @@ class ChatRepository extends ChangeNotifier {
     final tempId = 'temp_upload_${const Uuid().v4()}';
     final clientMessageId = const Uuid().v4();
     final now = DateTime.now().millisecondsSinceEpoch;
+    final rp = _extractReplyPreview(replyTo);
 
     final optimisticAtts = <MediaAttachmentModel>[];
     for (int i = 0; i < files.length; i++) {
@@ -252,9 +271,14 @@ class ChatRepository extends ChangeNotifier {
       senderName: currentUser.fullName,
       text: '',
       isFromTelegram: false,
-      replyToMessageId: replyTo?.id,
-      replyToName: replyTo?.senderName,
-      replyToText: replyTo?.text,
+      replyToMessageId: rp?.messageId,
+      replyToName: rp?.name,
+      replyToText: rp?.text,
+      replyToMediaType: rp?.mediaType,
+      replyToAttachmentId: rp?.attachmentId,
+      replyToTelegramFileId: rp?.telegramFileId,
+      replyToFileName: rp?.fileName,
+      replyToDuration: rp?.duration,
       status: MessageStatus.sending,
       createdAt: now,
       updatedAt: now,
@@ -276,7 +300,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// جایگزینی پیام موقت با پیام واقعی سرور. Idempotent.
   void finalizeMultiUpload({
     required String tempId,
     String? clientMessageId,
@@ -303,7 +326,6 @@ class ChatRepository extends ChangeNotifier {
     );
     notifyListeners();
 
-    // Persist locally so restart preserves the state.
     _localDao.saveMessage(_messages[idx].toDbMap()).catchError((_) {});
     for (final a in mergedAtts) {
       _localDao.saveAttachment(a.toDbMap()).catchError((_) {});
@@ -321,7 +343,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// به‌روزرسانی مسیر محلی یک پیوست پس از کش شدن آپلود.
   void setLocalPathForAttachment(
     String messageId,
     String attachmentId,
@@ -344,10 +365,6 @@ class ChatRepository extends ChangeNotifier {
 
     _localDao.updateAttachmentLocalPath(attachmentId, localPath).catchError((_) {});
   }
-
-  // ═════════════════════════════════════════════
-  //  Socket events
-  // ═════════════════════════════════════════════
 
   Future<void> _handleIncomingSocketEvent(
       Map<String, dynamic> event, AuthUser currentUser) async {
@@ -396,7 +413,6 @@ class ChatRepository extends ChangeNotifier {
       final incoming = ChatMessageModel.fromJson(msgJson);
       final clientMsgId = incoming.clientMessageId;
 
-      // Case 1: our own optimistic upload echo.
       if (clientMsgId != null) {
         final idx = _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
         if (idx != -1) {
@@ -412,6 +428,13 @@ class ChatRepository extends ChangeNotifier {
             uploadProgress: 1.0,
             attachments: mergedAtts,
             updatedAt: incoming.updatedAt,
+            replyToName: incoming.replyToName ?? existing.replyToName,
+            replyToText: incoming.replyToText ?? existing.replyToText,
+            replyToMediaType: incoming.replyToMediaType ?? existing.replyToMediaType,
+            replyToAttachmentId: incoming.replyToAttachmentId ?? existing.replyToAttachmentId,
+            replyToTelegramFileId: incoming.replyToTelegramFileId ?? existing.replyToTelegramFileId,
+            replyToFileName: incoming.replyToFileName ?? existing.replyToFileName,
+            replyToDuration: incoming.replyToDuration ?? existing.replyToDuration,
           );
           await _localDao.saveMessage(merged.toDbMap());
           for (final a in merged.attachments) {
@@ -424,7 +447,6 @@ class ChatRepository extends ChangeNotifier {
         }
       }
 
-      // Case 2: already-processed echo (by id).
       final idxById = _messages.indexWhere((m) => m.id == incoming.id);
       if (idxById != -1) {
         final existing = _messages[idxById];
@@ -444,7 +466,6 @@ class ChatRepository extends ChangeNotifier {
         return;
       }
 
-      // Case 3: truly new message.
       await _localDao.saveMessage(incoming.toDbMap());
       for (final a in incoming.attachments) {
         try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
@@ -525,8 +546,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ادغام پیوست‌ها بر اساس ترتیب (برای optimistic → server).
-  /// حفظ `localPath` از سمت موجود.
   List<MediaAttachmentModel> _mergeAttachmentsByIndex(
     List<MediaAttachmentModel> existing,
     List<MediaAttachmentModel> incoming,
@@ -577,4 +596,27 @@ class ChatRepository extends ChangeNotifier {
     _typingTimer?.cancel();
     super.dispose();
   }
+}
+
+/// داده موقت استخراج‌شده از پیام والد برای پیش‌نمایش ریپلای.
+class _ReplyPreviewInfo {
+  final String messageId;
+  final String name;
+  final String text;
+  final String? mediaType;
+  final String? attachmentId;
+  final String? telegramFileId;
+  final String? fileName;
+  final int? duration;
+
+  const _ReplyPreviewInfo({
+    required this.messageId,
+    required this.name,
+    required this.text,
+    this.mediaType,
+    this.attachmentId,
+    this.telegramFileId,
+    this.fileName,
+    this.duration,
+  });
 }

@@ -30,6 +30,11 @@ class ChatMessageModel {
   final String? replyToMessageId;
   final String? replyToName;
   final String? replyToText;
+  final String? replyToMediaType;
+  final String? replyToAttachmentId;
+  final String? replyToTelegramFileId;
+  final String? replyToFileName;
+  final int? replyToDuration;
   final bool isPinned;
   final bool isEdited;
   final MessageStatus status;
@@ -52,6 +57,11 @@ class ChatMessageModel {
     this.replyToMessageId,
     this.replyToName,
     this.replyToText,
+    this.replyToMediaType,
+    this.replyToAttachmentId,
+    this.replyToTelegramFileId,
+    this.replyToFileName,
+    this.replyToDuration,
     this.isPinned = false,
     this.isEdited = false,
     this.status = MessageStatus.synced,
@@ -64,11 +74,15 @@ class ChatMessageModel {
     this.isUploading = false,
   });
 
-  /// Backward-compatible getter: first attachment, or null.
   MediaAttachmentModel? get attachment =>
       attachments.isEmpty ? null : attachments.first;
 
   bool get hasAttachments => attachments.isNotEmpty;
+
+  /// آیا پیام والد دارای مدیا است (برای نمایش thumbnail در پیش‌نمایش ریپلای).
+  bool get replyHasMedia =>
+      (replyToMediaType ?? '').isNotEmpty &&
+      (replyToTelegramFileId ?? '').isNotEmpty;
 
   factory ChatMessageModel.fromDbMap(
     Map<String, dynamic> map, {
@@ -86,6 +100,11 @@ class ChatMessageModel {
       replyToMessageId: map['reply_to_message_id'] as String?,
       replyToName: map['reply_to_name'] as String?,
       replyToText: map['reply_to_text'] as String?,
+      replyToMediaType: map['reply_to_media_type'] as String?,
+      replyToAttachmentId: map['reply_to_attachment_id'] as String?,
+      replyToTelegramFileId: map['reply_to_telegram_file_id'] as String?,
+      replyToFileName: map['reply_to_file_name'] as String?,
+      replyToDuration: map['reply_to_duration'] as int?,
       isPinned: (map['is_pinned'] as int? ?? 0) == 1,
       isEdited: (map['is_edited'] as int? ?? 0) == 1,
       status: MessageStatus.fromString(map['status'] as String?),
@@ -109,6 +128,11 @@ class ChatMessageModel {
       'reply_to_message_id': replyToMessageId,
       'reply_to_name': replyToName,
       'reply_to_text': replyToText,
+      'reply_to_media_type': replyToMediaType,
+      'reply_to_attachment_id': replyToAttachmentId,
+      'reply_to_telegram_file_id': replyToTelegramFileId,
+      'reply_to_file_name': replyToFileName,
+      'reply_to_duration': replyToDuration,
       'is_pinned': isPinned ? 1 : 0,
       'is_edited': isEdited ? 1 : 0,
       'status': status.name,
@@ -141,6 +165,11 @@ class ChatMessageModel {
       replyToMessageId: json['replyToId'] as String? ?? json['reply_to_id'] as String?,
       replyToName: json['replyToName'] as String? ?? json['reply_to_name'] as String?,
       replyToText: json['replyToText'] as String? ?? json['reply_to_text'] as String?,
+      replyToMediaType: json['replyToMediaType'] as String? ?? json['reply_to_media_type'] as String?,
+      replyToAttachmentId: json['replyToAttachmentId'] as String? ?? json['reply_to_attachment_id'] as String?,
+      replyToTelegramFileId: json['replyToTelegramFileId'] as String? ?? json['reply_to_telegram_file_id'] as String?,
+      replyToFileName: json['replyToFileName'] as String? ?? json['reply_to_file_name'] as String?,
+      replyToDuration: json['replyToDuration'] as int? ?? json['reply_to_duration'] as int?,
       isPinned: json['isPinned'] == true || json['is_pinned'] == 1,
       isEdited: json['isEdited'] == true || json['is_edited'] == 1,
       status: MessageStatus.synced,
@@ -162,6 +191,11 @@ class ChatMessageModel {
     String? replyToMessageId,
     String? replyToName,
     String? replyToText,
+    String? replyToMediaType,
+    String? replyToAttachmentId,
+    String? replyToTelegramFileId,
+    String? replyToFileName,
+    int? replyToDuration,
     bool? isPinned,
     bool? isEdited,
     MessageStatus? status,
@@ -184,6 +218,11 @@ class ChatMessageModel {
       replyToMessageId: replyToMessageId ?? this.replyToMessageId,
       replyToName: replyToName ?? this.replyToName,
       replyToText: replyToText ?? this.replyToText,
+      replyToMediaType: replyToMediaType ?? this.replyToMediaType,
+      replyToAttachmentId: replyToAttachmentId ?? this.replyToAttachmentId,
+      replyToTelegramFileId: replyToTelegramFileId ?? this.replyToTelegramFileId,
+      replyToFileName: replyToFileName ?? this.replyToFileName,
+      replyToDuration: replyToDuration ?? this.replyToDuration,
       isPinned: isPinned ?? this.isPinned,
       isEdited: isEdited ?? this.isEdited,
       status: status ?? this.status,

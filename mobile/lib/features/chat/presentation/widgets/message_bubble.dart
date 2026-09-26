@@ -1,6 +1,7 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reply_thumbnail.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/swipe_to_reply.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/user_avatar.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/widgets/media_bubble_content.dart';
@@ -219,6 +220,13 @@ class MessageBubble extends StatelessWidget {
 
   Widget _buildReplyPreview(ThemeData theme) {
     final tappable = onTapReplyMessage != null;
+    final hasMedia = (message.replyToMediaType ?? '').isNotEmpty;
+    final replyText = (message.replyToText ?? '').trim();
+    final label = replyText.isNotEmpty
+        ? replyText
+        : (hasMedia
+            ? ReplyPreviewHelpers.labelFor(message.replyToMediaType)
+            : 'پیام');
 
     final content = Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -226,21 +234,26 @@ class MessageBubble extends StatelessWidget {
         color: theme.colorScheme.onSurface.withAlpha(16),
         borderRadius: BorderRadius.circular(8),
         border: Border(
-          right: BorderSide(
-            color: theme.colorScheme.primary,
-            width: 3,
-          ),
+          right: BorderSide(color: theme.colorScheme.primary, width: 3),
         ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.reply_rounded,
-            size: 14,
-            color: theme.colorScheme.primary,
-          ),
-          const SizedBox(width: 6),
+          if (hasMedia) ...[
+            ReplyThumbnail(
+              mediaType: message.replyToMediaType,
+              attachmentId: message.replyToAttachmentId,
+              telegramFileId: message.replyToTelegramFileId,
+              fileName: message.replyToFileName,
+              baseUrl: AppConfig.baseUrl,
+              size: 40,
+            ),
+            const SizedBox(width: 8),
+          ] else ...[
+            Icon(Icons.reply_rounded, size: 14, color: theme.colorScheme.primary),
+            const SizedBox(width: 6),
+          ],
           Flexible(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -255,8 +268,8 @@ class MessageBubble extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  message.replyToText ?? 'پیام',
-                  maxLines: 1,
+                  label,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11,
@@ -271,7 +284,6 @@ class MessageBubble extends StatelessWidget {
     );
 
     if (!tappable) return content;
-
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTapReplyMessage,

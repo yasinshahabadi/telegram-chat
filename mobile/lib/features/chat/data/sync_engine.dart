@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 
 class SyncResult {
   final bool success;
@@ -131,26 +132,41 @@ class SyncEngine {
       case 'message_created':
         final incoming = ChatMessageModel.fromJson(payload);
 
-        // ✅ merge با رکورد موجود تا فیلدهای محلی (replyToName، replyToText،
-        //    readAt، localPath پیوست‌ها) در اثر جایگزینی کورکورانه از بین نروند.
         ChatMessageModel toSave = incoming;
         final existingRow = await _localDao.getMessageById(incoming.id);
         if (existingRow != null) {
           final existing = ChatMessageModel.fromDbMap(existingRow);
 
+          // ✅ حفظ فیلدهای ریپلای از رکورد موجود در صورتی که incoming آن‌ها را ندارد
+          // (برای سازگاری با رویدادهای قدیمی قبل از افزودن این فیلدها).
           if (toSave.replyToName == null && existing.replyToName != null) {
             toSave = toSave.copyWith(replyToName: existing.replyToName);
           }
           if (toSave.replyToText == null && existing.replyToText != null) {
             toSave = toSave.copyWith(replyToText: existing.replyToText);
           }
+          if (toSave.replyToMediaType == null && existing.replyToMediaType != null) {
+            toSave = toSave.copyWith(replyToMediaType: existing.replyToMediaType);
+          }
+          if (toSave.replyToAttachmentId == null && existing.replyToAttachmentId != null) {
+            toSave = toSave.copyWith(replyToAttachmentId: existing.replyToAttachmentId);
+          }
+          if (toSave.replyToTelegramFileId == null && existing.replyToTelegramFileId != null) {
+            toSave = toSave.copyWith(replyToTelegramFileId: existing.replyToTelegramFileId);
+          }
+          if (toSave.replyToFileName == null && existing.replyToFileName != null) {
+            toSave = toSave.copyWith(replyToFileName: existing.replyToFileName);
+          }
+          if (toSave.replyToDuration == null && existing.replyToDuration != null) {
+            toSave = toSave.copyWith(replyToDuration: existing.replyToDuration);
+          }
           if (toSave.readAt == null && existing.readAt != null) {
             toSave = toSave.copyWith(readAt: existing.readAt);
           }
 
-          // پیوست‌ها: حفظ localPath از سمت موجود
+          // حفظ localPath پیوست‌های موجود
           if (existing.attachments.isNotEmpty && toSave.attachments.isNotEmpty) {
-            final merged = <dynamic>[];
+            final List<MediaAttachmentModel> merged = [];
             for (int i = 0; i < toSave.attachments.length; i++) {
               final inc = toSave.attachments[i];
               if (i < existing.attachments.length) {
@@ -163,9 +179,7 @@ class SyncEngine {
                 merged.add(inc);
               }
             }
-            toSave = toSave.copyWith(
-              attachments: merged.cast(),
-            );
+            toSave = toSave.copyWith(attachments: merged);
           }
         }
 

@@ -88,7 +88,6 @@ export class ChatRoom extends DurableObject {
       const data = JSON.parse(message);
       const now = Date.now();
 
-      // ═══════════════ حضور (online/away) ═══════════════
       if (data.type === "presence") {
         const isOnline = data.status === "online";
         if (user.isOnline !== isOnline) {
@@ -99,7 +98,6 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ═══════════════ در حال تایپ ═══════════════
       if (data.type === "typing") {
         this.broadcast({
           type: "typing",
@@ -109,13 +107,11 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ═══════════════ خوانده‌شدن پیام‌ها ═══════════════
       if (data.type === "mark_read" && Array.isArray(data.messageIds) && data.messageIds.length > 0) {
         this.ctx.waitUntil(this._handleMarkRead(user, data.messageIds, now));
         return;
       }
 
-      // ═══════════════ ارسال پیام جدید ═══════════════
       if (data.type === "chat_message" && data.text) {
         const clientMessageId = data.clientMessageId || null;
         const msgId = crypto.randomUUID();
@@ -135,23 +131,39 @@ export class ChatRoom extends DurableObject {
           }
         }
 
-        // ✅ آماده‌سازی اطلاعات ریپلای (نام + متن پیام اصلی)
+        // ✅ اطلاعات کامل ریپلای شامل پیوست
         const replyToId = data.replyTo ? data.replyTo.id : null;
         let tgReplyMsgId = null;
         let replyToName = null;
         let replyToText = null;
+        let replyToMediaType = null;
+        let replyToAttachmentId = null;
+        let replyToTelegramFileId = null;
+        let replyToFileName = null;
+        let replyToDuration = null;
 
         if (replyToId) {
           const replyRow = await this.env.DB.prepare(`
-            SELECT m.telegram_message_id, m.text, u.full_name AS sender_name
+            SELECT m.telegram_message_id, m.text, u.full_name AS sender_name,
+                   a.id AS att_id, a.media_type, a.telegram_file_id,
+                   a.file_name, a.duration
             FROM messages m
             LEFT JOIN users u ON m.sender_id = u.id
+            LEFT JOIN attachments a ON a.message_id = m.id
             WHERE m.id = ?
+            ORDER BY a.created_at ASC
+            LIMIT 1
           `).bind(replyToId).first();
+
           if (replyRow) {
             tgReplyMsgId = replyRow.telegram_message_id;
             replyToName = replyRow.sender_name || null;
             replyToText = replyRow.text || null;
+            replyToMediaType = replyRow.media_type || null;
+            replyToAttachmentId = replyRow.att_id || null;
+            replyToTelegramFileId = replyRow.telegram_file_id || null;
+            replyToFileName = replyRow.file_name || null;
+            replyToDuration = replyRow.duration ?? null;
           }
         }
 
@@ -162,7 +174,6 @@ export class ChatRoom extends DurableObject {
           VALUES (?, ?, ?, ?, 0, ?, ?, ?)
         `).bind(msgId, clientMessageId, user.userId, data.text, now, now, replyToId).run();
 
-        // ✅ payload کامل با اطلاعات ریپلای
         const syncPayload = {
           id: msgId,
           clientMessageId,
@@ -174,6 +185,11 @@ export class ChatRoom extends DurableObject {
           replyToId,
           replyToName,
           replyToText,
+          replyToMediaType,
+          replyToAttachmentId,
+          replyToTelegramFileId,
+          replyToFileName,
+          replyToDuration,
         };
 
         await emitSyncEvent(this.env.DB, "message_created", msgId, syncPayload);
@@ -183,13 +199,11 @@ export class ChatRoom extends DurableObject {
           reactions: []
         };
 
-        // برودکست به کاربران متصل
         this.broadcast({
           type: "new_message",
           message: messagePayload
         });
 
-        // ارسال ACK به فرستنده
         ws.send(JSON.stringify({
           type: "message_ack",
           clientMessageId: clientMessageId,
@@ -197,7 +211,6 @@ export class ChatRoom extends DurableObject {
           status: "sent"
         }));
 
-        // FCM + Telegram در پس‌زمینه
         this.ctx.waitUntil(
           this._dispatchSideEffects(messagePayload, user, tgReplyMsgId, data.replyTo)
         );
@@ -205,7 +218,6 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ═══════════════ ویرایش پیام ═══════════════
       if (data.type === "edit_message" && data.messageId && data.newText) {
         const msgRow = await this.env.DB.prepare(
           "SELECT sender_id, telegram_message_id FROM messages WHERE id = ?"
@@ -247,7 +259,6 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ═══════════════ تغییر ری‌اکشن ═══════════════
       if (data.type === "toggle_reaction" && data.messageId && data.emoji) {
         const existing = await this.env.DB.prepare(
           "SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?"
@@ -301,7 +312,6 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ═══════════════ پین پیام ═══════════════
       if (data.type === "pin_message" && data.messageId) {
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1").run();
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 1, updated_at = ? WHERE id = ?")
@@ -339,7 +349,6 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
-      // ═══════════════ حذف پین ═══════════════
       if (data.type === "unpin_message") {
         await this.env.DB.prepare("UPDATE messages SET is_pinned = 0 WHERE is_pinned = 1").run();
         this.broadcast({ type: "message_unpinned" });

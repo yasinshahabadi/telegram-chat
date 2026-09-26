@@ -1,8 +1,9 @@
 ﻿import 'package:flutter/material.dart';
+import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reply_thumbnail.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 
-/// نوار ورودی پایین صفحه چت با بهینه‌سازی مصرف حافظه و رندرینگ
 class ChatInputBar extends StatelessWidget {
   final TextEditingController controller;
   final ChatMessageModel? replyMessage;
@@ -60,54 +61,12 @@ class ChatInputBar extends StatelessWidget {
           return Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ۱. نوار ریپلای در صورت انتخاب پیام
+              // نوار ریپلای
               if (replyMessage != null && !isRecording) ...[
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  color: theme.colorScheme.surface.withAlpha(40),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.reply_rounded,
-                        size: 20,
-                        color: theme.colorScheme.primary,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'پاسخ به ${replyMessage!.senderName}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: theme.colorScheme.primary,
-                              ),
-                            ),
-                            Text(
-                              replyMessage!.text,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded, size: 18),
-                        onPressed: onCancelReply,
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    ],
-                  ),
-                ),
+                _buildReplyBar(theme, replyMessage!),
               ],
 
-              // ۲. نوار حالت ضبط صدا
+              // نوار حالت ضبط صدا
               if (isRecording) ...[
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
@@ -154,7 +113,6 @@ class ChatInputBar extends StatelessWidget {
                   ),
                 ),
               ] else ...[
-                // ۳. نوار استاندارد تایپ متن و الصاق مدیا
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
                   child: Row(
@@ -219,6 +177,74 @@ class ChatInputBar extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildReplyBar(ThemeData theme, ChatMessageModel reply) {
+    final hasMedia = reply.attachments.isNotEmpty;
+    final firstAtt = hasMedia ? reply.attachments.first : null;
+    final hasText = reply.text.trim().isNotEmpty;
+    final label = hasText
+        ? reply.text
+        : (hasMedia
+            ? ReplyPreviewHelpers.labelFor(firstAtt!.mediaType)
+            : 'پیام');
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: theme.colorScheme.surface.withAlpha(40),
+      child: Row(
+        children: [
+          if (hasMedia) ...[
+            ReplyThumbnail(
+              mediaType: firstAtt!.mediaType,
+              attachmentId: firstAtt.id,
+              telegramFileId: firstAtt.telegramFileId,
+              fileName: firstAtt.fileName,
+              baseUrl: AppConfig.baseUrl,
+              size: 40,
+            ),
+            const SizedBox(width: 10),
+          ] else ...[
+            Icon(
+              Icons.reply_rounded,
+              size: 20,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(width: 10),
+          ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'پاسخ به ${reply.senderName}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded, size: 18),
+            onPressed: onCancelReply,
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
       ),
     );
   }
