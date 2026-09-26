@@ -102,6 +102,10 @@
 
 ## ۱۱. فایل‌های اخیراً تغییر یافته
 
+- `.gitignore` (استثنای migrations، حذف دو خط آشغال)
+- `schema.sql` (حذف شد — اسکیمای قدیمی ناسازگار با migrations)
+- `Guides/TARGET_ARCHITECTURE.md` (هم‌راستا با واقعیت کد: R2 حذف، TypeScript→JS، Drift→sqflite)
+
 **سرور:**
 - `src/media/mediaController.js`
 
