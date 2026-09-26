@@ -8,9 +8,12 @@
 
 - نام: **Guysgram**
 - پکیج اندروید: `com.yasinshahabadi.guysgram`
-- نسخهٔ فعلی: `1.0.7+7`
+- نسخهٔ فعلی: **1.0.8+8** (منتشرشده)
+- نسخهٔ بعدی برنامه‌ریزی‌شده: **1.0.9+9**
 - پلتفرم هدف: **فقط اندروید**
 - نوع پروژه: چت گروهی متصل به سوپرگروه تلگرام
+- **ریپوی GitHub:** `yasinshahabadi/telegram-chat`
+- **آخرین Release:** `v1.0.8` (تاریخ: 1405/07/05)
 
 ## ۲. هدف پروژه
 
@@ -48,12 +51,16 @@
 
 ## ۶. حالت کاری فعلی
 
-- **Last verified build:** ✅ سرور staging + کلاینت روی دستگاه واقعی.
+- **Last verified build:** ✅ سرور staging + کلاینت روی دستگاه واقعی
+- **Last verified release:** ✅ GitHub Release `v1.0.8` با APK ضمیمه
+- **Last verified update flow:** ✅ از `v1.0.7+7` → `v1.0.8+8` روی دستگاه واقعی
 - **Last verified tests:**
   - ماژول مدیا: ۷ سناریو
   - ماژول ریپلای: ۵ سناریو
-  - ماژول ری‌اکشن + حذف: ۷ سناریو (شامل حذف آفلاین با retry)
-  - تست بهینگی retry: ۳ سناریو (reconnect، empty queue، توزیع زمانی)
+  - ماژول ری‌اکشن + حذف: ۷ سناریو
+  - تست بهینگی retry: ۳ سناریو
+  - انتشار و به‌روزرسانی خودکار: ✅
+- **Known blocking bug:** ندارد.
 - **Known blocking bug:** ندارد.
 
 ## ۷. دیتابیس محلی — تاریخچهٔ schema
@@ -174,6 +181,8 @@
 - [ ] بهبود `_ensureConnectedAndSynced`
 - [ ] حذف endpoint دیباگ `/api/test-push` از production
 - [ ] بررسی security: `X-Telegram-Bot-Api-Secret-Token`
+- [ ] ساخت keystore واقعی release (به‌جای debug) — قبل از انتشار روی Google Play
+- [ ] آماده‌سازی برای Google Play (اگر مد نظر باشد)
 
 ## ۱۴. فرضیات فعال
 
