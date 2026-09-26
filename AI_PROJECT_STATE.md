@@ -1,6 +1,6 @@
 # AI_PROJECT_STATE.md
 
-آخرین به‌روزرسانی: 1405/07/04 (2026-09-26)
+آخرین به‌روزرسانی: 1405/07/05 (2026-09-27)
 
 ---
 
@@ -21,7 +21,7 @@
 ## ۳. مرحلهٔ فعلی
 
 - **توسعهٔ فعال** روی محیط **staging**.
-- ماژول مدیا + ریپلای با پشتیبانی کامل مدیا: **تأیید شد**.
+- ماژول مدیا، ریپلای، ری‌اکشن و حذف پیام: **تأیید شده**.
 - آماده برای فاز بعدی.
 
 ## ۴. معماری فعلی
@@ -30,18 +30,18 @@
 - تفکیک فیچر-محور: `auth`, `chat`, `media`, `notifications`, `core`, `update`
 - مدیریت وضعیت: `ChangeNotifier` + `ListenableBuilder`
 - دیتابیس محلی: `sqflite` نسخهٔ **۳**
-- همگام‌سازی: نشانگر ترتیبی (`sync_events` سرور + `sync_state` کلاینت)
-- بلادرنگ: `WebSocket` → `Durable Object`
+- همگام‌سازی: نشانگر ترتیبی + pending_actions
+- بلادرنگ: WebSocket → Durable Object
 - مدیا: بر پایهٔ `file_id` تلگرام (بدون R2)
 
 **سرور (Cloudflare Workers):**
 - JavaScript ESM
 - D1 + Durable Object `ChatRoom`
-- احراز هویت Zero-Trust
+- Zero-Trust Session
 
 ## ۵. محدودیت‌های مهم
 
-- R2 استفاده نمی‌شود (محدودیت کارت اعتباری در ایران).
+- R2 استفاده نمی‌شود (محدودیت کارت اعتباری ایران).
 - سقف حجم هر آپلود: ۲۰ مگابایت.
 - حداکثر پیوست در یک پیام: ۱۰.
 - Android فقط. RTL.
@@ -50,127 +50,142 @@
 
 - **Last verified build:** ✅ سرور staging + کلاینت روی دستگاه واقعی.
 - **Last verified tests:**
-  - ماژول مدیا: ۷ سناریو پاس
-  - ماژول ریپلای: ۵ سناریو پاس
+  - ماژول مدیا: ۷ سناریو
+  - ماژول ریپلای: ۵ سناریو
+  - ماژول ری‌اکشن + حذف: ۷ سناریو (شامل حذف آفلاین با retry)
+  - تست بهینگی retry: ۳ سناریو (reconnect، empty queue، توزیع زمانی)
 - **Known blocking bug:** ندارد.
 
 ## ۷. دیتابیس محلی — تاریخچهٔ schema
 
 | نسخه | تغییرات |
 |---|---|
-| v1 | ساخت اولیه: messages, attachments, reactions, pending_actions, sync_state |
+| v1 | ساخت اولیه |
 | v2 | افزودن `messages.read_at` |
-| v3 | افزودن ۵ ستون ریپلای مدیا به `messages`: `reply_to_media_type`, `reply_to_attachment_id`, `reply_to_telegram_file_id`, `reply_to_file_name`, `reply_to_duration` |
+| v3 | افزودن ۵ ستون ریپلای مدیا به `messages` |
 
-## ۸. باگ‌های رفع‌شده
+**نکته:** برای ری‌اکشن‌ها و حذف پیام، migration لازم نبود — جدول `reactions` از ابتدا وجود داشت؛ فیلدهای حذف روی خود پیام پیاده‌سازی شدند (بدون ستون جدید در کلاینت).
+
+## ۸. باگ‌های رفع‌شده این جلسه
 
 ### ماژول مدیا
-| باگ | ریشه | فایل‌های تغییر یافته |
-|---|---|---|
-| همه پیوست‌ها یک فایل نشان می‌دادند | نام‌گذاری بر اساس fileName (یکسان: photo.jpg) | local_storage/manager/remote_service |
-| دکمهٔ دانلود پس از خروج برمی‌گشت | cache-hit مسیر را در DB ذخیره نمی‌کرد | media_download_manager |
-| پست تکراری هنگام آپلود | نبود idempotency | chat_repository + server |
-| نوار پیشرفت پرش می‌کرد | ByteStream بدون گزارش | media_remote_service |
+| باگ | ریشه |
+|---|---|
+| همه پیوست‌ها یک فایل نشان می‌دادند | نام‌گذاری بر اساس fileName |
+| دکمهٔ دانلود پس از خروج برمی‌گشت | cache-hit مسیر را در DB ذخیره نمی‌کرد |
+| پست تکراری هنگام آپلود | نبود idempotency |
+| نوار پیشرفت پرش می‌کرد | ByteStream بدون گزارش |
 
 ### ماژول ریپلای
-| باگ | ریشه | راه‌حل |
-|---|---|---|
-| پیش‌نمایش بعد از restart می‌پرید | sync جایگزینی کورکورانه می‌کرد | merge در sync_engine + payload غنی سرور |
-| tap روی پیش‌نمایش کار نمی‌کرد | پیاده‌سازی نشده بود | GlobalKey + Scrollable.ensureVisible + highlight |
-| thumbnail مدیا نبود | پیاده‌سازی نشده بود | ReplyThumbnail widget + JOIN در سرور |
+| باگ | ریشه |
+|---|---|
+| پیش‌نمایش بعد از restart می‌پرید | sync جایگزین کورکورانه |
+| Tap روی پیش‌نمایش کار نمی‌کرد | پیاده‌سازی نشده بود |
+| Thumbnail مدیا نبود | پیاده‌سازی نشده بود |
+| Overflow در picker ردیف ایموجی | Row ثابت بدون اسکرول |
 
-## ۹. فیچرهای افزوده‌شده
+### ماژول حذف + retry
+| باگ | ریشه |
+|---|---|
+| حذف آفلاین گم می‌شد | enqueue بعد از send ناموفق انجام می‌شد؛ اما WebSocket تا ۳۰s آفلاین را تشخیص نمی‌دهد |
+| retry بعد از Force Stop نمی‌ماند | pending action گم می‌شد یا اصلاً ثبت نمی‌شد |
+| sync پیام حذف‌شده را دوباره اضافه می‌کرد | DAO گارد نداشت |
 
-### ماژول مدیا
+## ۹. فیچرهای افزوده‌شده این جلسه
+
+### مدیا
 - پشتیبانی چند پیوست در یک پیام (گرید ۲ ستونه)
 - نوار پیشرفت واقعی از stream
 
-### ماژول ریپلای
-- **Swipe-to-Reply** (کشیدن چپ→راست) با فیدبک لمسی
-- **Jump-to-Parent** با هایلایت کهربایی ~۱.۵ ثانیه
-- **Preview پایدار** پس از Force Stop و روی دستگاه‌های دیگر
-- **Thumbnail مدیا** در پیش‌نمایش (کش → شبکه → آیکون)
-- **برچسب فارسی** نوع مدیا: عکس / ویدیو / پیام صوتی / صدا / فایل
-- **زنجیرهٔ ریپلای** (A → B → C) کاملاً پیمایش‌پذیر
+### ریپلای
+- Swipe-to-Reply با فیدبک لمسی
+- Jump-to-Parent با هایلایت کهربایی
+- Thumbnail مدیا در پیش‌نمایش (کش → شبکه → آیکون)
+- برچسب فارسی نوع مدیا
+
+### ری‌اکشن
+- چیپ‌های واکنش زیر پیام با toggle
+- منوی picker با ۸ ایموجی رایج (قابل اسکرول افقی)
+- همگام‌سازی دوطرفه با تلگرام
+- نمایش "من واکنش داده‌ام" با هایلایت
+
+### حذف پیام
+- تأییدیهٔ modal قبل از حذف
+- Optimistic removal (فوری از UI)
+- Idempotent (تلاش‌های تکراری آسیب نمی‌زنند)
+- همگام‌سازی با تلگرام (deleteMessage API)
+- آفلاین-safe: pending action قبل از send ثبت می‌شود
+- Garbage collection خودکار پس از تأیید سرور
+- Admin می‌تواند پیام هر کسی را حذف کند؛ کاربر عادی فقط پیام خودش
 
 ## ۱۰. تصمیمات معماری اخیر
 
 **تصمیم:** نام‌گذاری فایل محلی بر اساس `attachment.id` (نه fileName)
-- **جایگزین‌های رد شده:** hash از fileName+size+createdAt
-- **نتیجه:** `{attachmentId}{ext}`
+- **دلیل:** جلوگیری از تصادم بین پیوست‌های مختلف
 
 **تصمیم:** دیتابیس محلی، آرایهٔ `attachments` جایگزین `attachment` شد
-- **سازگاری عقب‌رو:** getter `attachment` (first)
+- **سازگاری عقب‌رو:** getter `attachment` (first) باقی ماند
 
 **تصمیم:** R2 کنار گذاشته شد (محدودیت کارت اعتباری)
 
-**تصمیم:** اطلاعات ریپلای مدیا روی خود پیام denormalize شد
-- **دلیل:** اجتناب از JOIN در زمان render روی کلاینت
-- **هزینه:** ۵ ستون اضافی؛ در عوض هر پیام بدون query اضافی رندر می‌شود
+**تصمیم:** اطلاعات ریپلای مدیا denormalize شد
+- **دلیل:** اجتناب از JOIN در render
+- **هزینه:** ۵ ستون اضافی
+
+**تصمیم:** retry هوشمند و آگاهی از connection
+- **قبلی:** timer ثابت هر ۱۲s، حتی آفلاین
+- **جدید:** آفلاین = صفر کوئری DB؛ اتصال مجدد = retry فوری؛ queue خالی = توقف خودکار
+- **جایگزین‌های رد شده:** exponential backoff (پیچیدگی اضافی برای سود ناچیز)
+
+**تصمیم:** delete به‌صورت idempotent در سرور
+- **دلیل:** retry-safe و آفلاین-safe
+
+**تصمیم:** aggregate reactions با userIds برای نمایش "من واکنش دادم"
+- **جایگزین رد شده:** کوئری جداگانه برای هر کاربر (کندی + N+1)
 
 ## ۱۱. بدهی فنی
 
-- `Guides/TARGET_ARCHITECTURE.md` — **اصلاح شد** در این فاز.
-- `.gitignore` — **اصلاح شد** (migrations tracked).
-- **بدون تست خودکار** (فقط placeholder در widget_test.dart).
-- **آلبوم تلگرام (Media Group):** هر عکس در آلبوم یک پیام جدا می‌سازد.
+- **بدون تست خودکار** (فقط placeholder).
+- **آلبوم تلگرام (Media Group):** هر عکس در آلبوم → یک پیام جدا.
 - `_ensureConnectedAndSynced()` در `build()` — الگوی کارآمد ولی زیبا نیست.
-- **`sync_engine.dart` merge پیچیده شده:** اگر ستون جدیدی اضافه شود، باید این فایل هم به‌روز شود. در آینده می‌توان به یک متد `mergeFrom` روی مدل منتقل کرد.
+- **`sync_engine.dart` merge پیچیده شده:** هر ستون جدید نیاز به تکرار در merge دارد. می‌توان به متد `mergeFrom` روی مدل منتقل کرد.
+- **`AI_PROJECT_STATE.md` هنوز در گیت نباشد؟** — بررسی شود.
 
 ## ۱۲. فایل‌های اخیراً تغییر یافته
 
-### فاز «رفع باگ‌های مدیا + چند پیوست»
-- `src/media/mediaController.js`
-- `mobile/lib/features/chat/domain/models/chat_message_model.dart`
-- `mobile/lib/features/chat/data/chat_repository.dart`
-- `mobile/lib/features/chat/data/sync_engine.dart`
-- `mobile/lib/features/media/data/media_local_storage.dart`
-- `mobile/lib/features/media/data/media_remote_service.dart`
-- `mobile/lib/features/media/data/media_download_manager.dart`
-- `mobile/lib/features/media/presentation/widgets/media_bubble_content.dart`
-- `mobile/lib/features/chat/presentation/widgets/message_bubble.dart`
-- `mobile/lib/features/chat/presentation/screens/chat_screen.dart`
-- `mobile/lib/main.dart`
+### فاز ۱ — رفع باگ‌های مدیا + چند پیوست
+### فاز ۲ — ریپلای کامل
+### فاز ۳ — ری‌اکشن + حذف + retry آفلاین
 
-### فاز «ریپلای کامل»
-- `src/realtime/ChatRoom.js`
-- `src/telegram/normalizer.js`
-- `src/media/mediaController.js`
-- `mobile/lib/core/database/app_database.dart`
-- `mobile/lib/core/database/local_chat_dao.dart`
-- `mobile/lib/features/chat/domain/models/chat_message_model.dart`
-- `mobile/lib/features/chat/data/sync_engine.dart`
-- `mobile/lib/features/chat/data/chat_repository.dart`
-- `mobile/lib/features/chat/presentation/widgets/reply_thumbnail.dart` **(جدید)**
-- `mobile/lib/features/chat/presentation/widgets/swipe_to_reply.dart` **(جدید در فاز قبل)**
-- `mobile/lib/features/chat/presentation/widgets/message_bubble.dart`
-- `mobile/lib/features/chat/presentation/widgets/chat_input_bar.dart`
-- `mobile/lib/features/chat/presentation/screens/chat_screen.dart`
+**سرور (۳):** `ChatRoom.js`, `normalizer.js`, `telegramClient.js`, `mediaController.js`
+**کلاینت (۱۲):** فایل‌های `mobile/lib/**` مرتبط
 
 ### پاک‌سازی‌ها
-- `schema.sql` (حذف شد)
-- `.gitignore` (اصلاح: migrations tracked)
-- `Guides/TARGET_ARCHITECTURE.md` (هم‌راستا با واقعیت)
+- `schema.sql` حذف شد
+- `.gitignore` اصلاح شد
+- `Guides/TARGET_ARCHITECTURE.md` هم‌راستا شد
 
 ## ۱۳. گام بعدی برنامه‌ریزی‌شده
 
-- [ ] تعیین و ثبت نسخهٔ Flutter/Dart دقیق در این فایل
-- [ ] تصمیم درباره گروه‌بندی آلبوم تلگرام (Media Group)
-- [ ] افزودن تست واحد برای `MediaLocalStorage`, `ChatRepository._mergeAttachmentsByIndex`, `SyncEngine._applyEventToLocalDatabase`
-- [ ] بررسی FCM در پس‌زمینه (تست روی گوشی‌های مختلف OEM)
-- [ ] افزودن سیستم ری‌اکشن در UI (server دارد، UI ندارد)
-- [ ] بهبود `_ensureConnectedAndSynced` (نقل به مکانی خارج از build)
+- [ ] تعیین نسخهٔ Flutter/Dart دقیق
+- [ ] افزودن تست واحد برای `LocalChatDao` (merge، pending_delete guard)
+- [ ] بررسی FCM در پس‌زمینه روی OEMهای مختلف
+- [ ] گروه‌بندی آلبوم تلگرام
+- [ ] بهبود `_ensureConnectedAndSynced`
+- [ ] حذف endpoint دیباگ `/api/test-push` از production
+- [ ] بررسی security: `X-Telegram-Bot-Api-Secret-Token`
 
 ## ۱۴. فرضیات فعال
 
 - یک ادمین (Telegram ID `122623127`) در `wrangler.toml`.
 - تعداد کاربران: محدود.
-- جهت رابط: RTL (فارسی).
+- جهت رابط: RTL.
 
 ## ۱۵. قواعد کاری این پروژه
 
 - فقط تغییرات کوچک و قابل بازگشت.
-- پس از هر تغییر، `flutter analyze` باید پاک باشد.
-- استقرار: اول staging، سپس در صورت تأیید production.
+- `flutter analyze` باید پاک باشد.
+- استقرار: اول staging، سپس production.
 - R2 استفاده نمی‌شود.
-- تست روی دستگاه واقعی، نه شبیه‌ساز.
+- تست روی دستگاه واقعی.
+- پس از هر فاز، `AI_PROJECT_STATE.md` به‌روز می‌شود.
