@@ -100,7 +100,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final user = widget.authRepository.currentUser;
     if (user == null) return;
 
-    final unreadIds = widget.chatRepository.messages
+    // ✅ auto-scroll به پایین اگر پیام جدید آمد
+    final messages = widget.chatRepository.messages;
+    if (messages.isNotEmpty && _scrollController.hasClients) {
+      // فقط اگر در حال اسکرول نیستیم
+      if (!_scrollController.position.isScrollingNotifier.value) {
+        _scrollToBottom();
+      }
+    }
+
+    final unreadIds = messages
         .where((m) => m.senderId != user.id && m.readAt == null)
         .map((m) => m.id)
         .toSet();
@@ -701,17 +710,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
                       return RepaintBoundary(
                         key: ValueKey(message.id),
-                        child: MessageBubble(
-                          message: message,
-                          isMe: isMe,
-                          isSenderOnline: widget.chatRepository
-                              .isUserOnline(message.senderId),
-                          onReply: () =>
-                              setState(() => _replyingMessage = message),
-                          onEdit:
-                              isMe ? () => _showEditDialog(message) : null,
-                          onPin: () =>
-                              widget.chatRepository.pinMessage(message.id),
+                        child: KeyedSubtree(
+                          key: PageStorageKey('msg_${message.id}'),
+                          child: MessageBubble(
+                            message: message,
+                            isMe: isMe,
+                            isSenderOnline: widget.chatRepository.isUserOnline(message.senderId),
+                            onReply: () => setState(() => _replyingMessage = message),
+                            onEdit: isMe ? () => _showEditDialog(message) : null,
+                            onPin: () => widget.chatRepository.pinMessage(message.id),
+                          ),
                         ),
                       );
                     },

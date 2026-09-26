@@ -33,11 +33,11 @@
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon">
 
+        <!-- ✅ حذف شد: android:taskAffinity="" -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
@@ -52,17 +52,17 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ کانال پیش‌فرض اعلان‌های FCM -->
+        <!-- کانال پیش‌فرض اعلان‌های FCM -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="guysgram_default_channel_v2" />
 
-        <!-- ✅ آیکون پیش‌فرض اعلان‌ها -->
+        <!-- آیکون پیش‌فرض اعلان‌ها -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@mipmap/launcher_icon" />
 
-        <!-- ✅ رنگ پیش‌فرض اعلان‌ها -->
+        <!-- رنگ پیش‌فرض اعلان‌ها -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_color"
             android:resource="@color/ic_launcher_background" />

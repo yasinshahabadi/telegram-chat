@@ -102,7 +102,7 @@ export async function handleTelegramWebhook(request, env, ctx) {
       return new Response("OK");
     }
 
-    // ۸. پردازش پیام‌های جدید از سوپرگروه اختصاصی
+    // در بخش ۸: پردازش پیام‌های جدید از سوپرگروه اختصاصی
     if (update.message && update.message.chat) {
       const isTargetChat = checkIsTargetGroup(update.message.chat.id, env.TELEGRAM_GROUP_ID);
       if (isTargetChat && !update.message.from?.is_bot) {
@@ -118,11 +118,25 @@ export async function handleTelegramWebhook(request, env, ctx) {
             handler: async (p, e) => broadcastToChatRoom(e, p)
           });
 
-          // ب) ارسال موازی پوش‌نوتیفیکیشن بومی FCM به تمام گوشی‌های اندروید (فاز ۱۱)
+          // ب) ارسال FCM به سایر کاربران
+          // ✅ تلگرام user_id را به عنوان excludeUserId پاس می‌دهیم تا فرستنده نوتیفیکیشن خودش را نگیرد
+          const senderTgId = update.message.from?.id?.toString();
+          let excludeAppUserId = null;
+          
+          if (senderTgId) {
+            const senderUser = await env.DB.prepare(
+              "SELECT id FROM users WHERE telegram_id = ?"
+            ).bind(senderTgId).first();
+            if (senderUser) excludeAppUserId = senderUser.id;
+          }
+
           enqueueJob(ctx, env, {
             type: "DISPATCH_FCM_PUSH",
-            payload: normalized.message,
-            handler: async (msg, e) => dispatchNewMessagePush(e, msg)
+            payload: { 
+              message: normalized.message, 
+              excludeUserId: excludeAppUserId 
+            },
+            handler: async (p, e) => dispatchNewMessagePush(e, p.message, p.excludeUserId)
           });
         }
       }

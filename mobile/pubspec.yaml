@@ -1,7 +1,7 @@
 name: telegram_chat_mobile
 description: "Telegram Connected Chat Mobile Application"
 publish_to: 'none'
-version: 1.0.6+6
+version: 1.0.7+7
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -11,10 +11,8 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
-  # Markdown برای نمایش تغییرات نسخه
   flutter_markdown_plus: ^1.0.3
 
-  # شبکه، سوکت و اینترنت
   http: ^1.2.2
   http_parser: ^4.1.2
   web_socket_channel: ^3.0.1
@@ -22,26 +20,21 @@ dependencies:
   cached_network_image: ^3.4.1
   connectivity_plus: ^6.1.0
 
-  # آپدیت درون‌برنامه‌ای و نصب APK
   open_filex: ^4.5.0
   package_info_plus: ^8.1.0
 
-  # مالتی‌مدیا و ضبط صدا
   record: ^5.2.0
   audioplayers: ^6.1.0
   video_player: ^2.9.2
   file_picker: ^8.1.7
   path_provider: ^2.1.5
 
-  # ذخیره‌سازی، ابزارها و کیبورد ایموجی تلگرام
   shared_preferences: ^2.3.2
   device_info_plus: ^10.1.2
   uuid: ^4.5.1
   intl: ^0.20.3
   emoji_picker_flutter: ^4.5.4
 
-  # سرویس پس‌زمینه و نوتیفیکیشن نیتیو اندروید
-  flutter_foreground_task: ^8.17.0
   flutter_local_notifications: 17.2.3
   sqflite: ^2.4.4
   path: ^1.9.1
@@ -68,9 +61,8 @@ flutter_launcher_icons:
   ios: false
   image_path: "assets/app_icon.png"
   min_sdk_android: 21
-  adaptive_icon_background: "#000966" # رنگ پس‌زمینه تلگرامی برای آیکون
+  adaptive_icon_background: "#000966"
   adaptive_icon_foreground: "assets/app_icon.png"
-  # تنظیم مستقیم آیکون نوتیفیکیشن
   notification_icon:
     android: true
     image_path: "assets/app_icon.png"

@@ -1,6 +1,5 @@
 ﻿/**
  * Firebase Cloud Messaging (FCM) HTTP v1 API Service
- * جایگزین کامل Pushy با استفاده از Service Account و FCM HTTP v1
  */
 
 let cachedAccessToken = null;
@@ -29,10 +28,6 @@ function base64UrlEncode(input) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/**
- * ✅ تابع داخلی برای pre-warm کردن token
- * در ChatRoom constructor فراخوانی می‌شود
- */
 export async function _internalWarmToken(env) {
   try {
     const serviceAccountJson = env.FIREBASE_SERVICE_ACCOUNT;
@@ -123,9 +118,10 @@ async function sendToToken(accessToken, projectId, token, notification) {
       data: notification.data || {},
       android: {
         priority: "high",
-        // ✅ نگه‌داری ۴ هفته در صف FCM (حداکثر مجاز)
+        // ✅ TTL ۴ هفته (حداکثر مجاز)
         ttl: "2419200s",
-        collapse_key: "chat_messages",
+        // ✅ حذف collapse_key برای جلوگیری از گم شدن پیام‌ها در آفلاین
+        // collapse_key: "chat_messages",
         notification: {
           channel_id: "guysgram_default_channel_v2",
           sound: "default",
@@ -182,7 +178,6 @@ export async function dispatchNewMessagePush(env, messagePayload, excludeUserId 
   }
 
   try {
-    // ۱. واکشی توکن‌های دستگاه
     const startDb = Date.now();
     let query = "SELECT id, fcm_token, user_id FROM device_fcm_tokens";
     let stmt;
@@ -200,13 +195,11 @@ export async function dispatchNewMessagePush(env, messagePayload, excludeUserId 
       return { ok: false, error: "No device tokens found in database" };
     }
 
-    // ۲. دریافت Access Token
     const startToken = Date.now();
     const accessToken = await getAccessToken(serviceAccount);
     const tokenTime = Date.now() - startToken;
     console.log(`[FCM] Token fetch: ${tokenTime}ms`);
 
-    // ۳. آماده‌سازی محتوای اعلان
     const sender = messagePayload.senderName || "Guysgram";
     const bodyText = messagePayload.text || "پیام جدید دریافت شد";
 
@@ -222,7 +215,6 @@ export async function dispatchNewMessagePush(env, messagePayload, excludeUserId 
       },
     };
 
-    // ۴. ارسال موازی
     const startFcm = Date.now();
     const results = await Promise.all(
       rows.map(async (row) => {

@@ -24,7 +24,8 @@ class MediaBubbleContent extends StatefulWidget {
   State<MediaBubbleContent> createState() => _MediaBubbleContentState();
 }
 
-class _MediaBubbleContentState extends State<MediaBubbleContent> {
+class _MediaBubbleContentState extends State<MediaBubbleContent>
+    with AutomaticKeepAliveClientMixin {
   AudioPlayer? _audioPlayer;
   bool _isPlaying = false;
   Duration _position = Duration.zero;
@@ -33,6 +34,9 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
   bool _isDownloading = false;
   double _progress = 0.0;
   bool _downloadFailed = false;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -160,14 +164,10 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Placeholder + Download Button (مثل تلگرام)
-  // ─────────────────────────────────────────────
   Widget _buildPlaceholder({
     required IconData icon,
     required int height,
   }) {
-    
     return Container(
       height: height.toDouble(),
       decoration: BoxDecoration(
@@ -182,14 +182,11 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
       ),
       child: Stack(
         children: [
-          // آیکون پس‌زمینه
           Positioned(
             left: -20,
             bottom: -20,
             child: Icon(icon, size: 120, color: Colors.white.withAlpha(20)),
           ),
-
-          // اطلاعات فایل (بالا)
           Positioned(
             top: 10,
             left: 10,
@@ -230,8 +227,6 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
               ],
             ),
           ),
-
-          // دکمه دانلود / درصد پیشرفت (وسط)
           Center(
             child: _isDownloading
                 ? _buildProgressCircle()
@@ -292,6 +287,7 @@ class _MediaBubbleContentState extends State<MediaBubbleContent> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // برای AutomaticKeepAliveClientMixin
     final att = widget.attachment;
     final theme = Theme.of(context);
 

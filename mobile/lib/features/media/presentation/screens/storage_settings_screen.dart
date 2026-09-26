@@ -108,7 +108,7 @@ class _StorageSettingsScreenState extends State<StorageSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final maxBytes = MediaLocalStorage.maxCacheBytes;
+    const maxBytes = MediaLocalStorage.maxCacheBytes;
     final percent = maxBytes > 0 ? (_totalSize / maxBytes).clamp(0.0, 1.0) : 0.0;
 
     return Scaffold(

@@ -1,6 +1,8 @@
-﻿import 'package:flutter/material.dart';
+﻿import 'dart:async';
+import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 import 'core/database/app_database.dart';
 import 'core/database/local_chat_dao.dart';
@@ -79,8 +81,6 @@ void main() async {
       },
     );
 
-    // ✅ اگر در حین آفلاین بودن پیام‌هایی از دست رفت و اپ در پس‌زمینه بود
-    // → نمایش اعلان خلاصه
     if (result.newMessagesCount > 0 && chatRepository.isAppInBackground) {
       await NotificationService.instance.showMissedMessagesNotification(
         count: result.newMessagesCount,
@@ -148,16 +148,61 @@ class TelegramChatApp extends StatefulWidget {
 
 class _TelegramChatAppState extends State<TelegramChatApp>
     with WidgetsBindingObserver {
+  StreamSubscription<RemoteMessage>? _notificationClickSubscription;
+  bool _hasInitialized = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // ✅ گوش دادن به رویداد کلیک روی اعلان
+    _notificationClickSubscription =
+        notificationClickStream.listen(_onNotificationClicked);
   }
 
   @override
   void dispose() {
+    _notificationClickSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// ✅ مدیریت کلیک روی اعلان: sync + mark_read
+  Future<void> _onNotificationClicked(RemoteMessage message) async {
+    debugPrint('[Main] Notification clicked, syncing messages...');
+    final token = widget.authStorage.getSessionToken();
+    if (token == null || token.isEmpty) return;
+
+    if (!widget.socketClient.isConnected) {
+      widget.socketClient.connect(token);
+    }
+
+    final currentUser = widget.authRepository.currentUser;
+    await widget.syncEngine.syncMissedEvents(
+      token,
+      currentUserId: currentUser?.id,
+      onSyncCompleted: () {
+        widget.chatRepository.loadLocalMessages();
+        widget.chatRepository.processPendingQueue();
+        // ✅ mark_read پس از sync
+        _markAllUnreadAsRead();
+      },
+    );
+  }
+
+  Future<void> _markAllUnreadAsRead() async {
+    final currentUser = widget.authRepository.currentUser;
+    if (currentUser == null) return;
+
+    final unreadIds = widget.chatRepository.messages
+        .where((m) => m.senderId != currentUser.id && m.readAt == null)
+        .map((m) => m.id)
+        .toList();
+
+    if (unreadIds.isNotEmpty) {
+      await widget.chatRepository.markMessagesAsRead(unreadIds);
+    }
   }
 
   @override
@@ -175,7 +220,11 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     }
   }
 
+  /// ✅ فقط یک بار در زمان احراز هویت فراخوانی می‌شود
   void _ensureConnectedAndSynced() {
+    if (_hasInitialized) return;
+    _hasInitialized = true;
+
     final token = widget.authStorage.getSessionToken();
     if (token == null || token.isEmpty) return;
 
@@ -195,7 +244,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
           },
         )
         .then((result) {
-      // ✅ اگر پیام‌های از دست رفته وجود دارد و اپ در پس‌زمینه است
       if (result.newMessagesCount > 0 &&
           widget.chatRepository.isAppInBackground) {
         NotificationService.instance.showMissedMessagesNotification(
@@ -204,6 +252,8 @@ class _TelegramChatAppState extends State<TelegramChatApp>
           text: result.lastMessageText,
         );
       }
+    }).catchError((e) {
+      debugPrint('[Main] Sync error: $e');
     });
 
     widget.authStorage.getOrCreateDeviceIdentifier().then((deviceId) {
@@ -261,24 +311,34 @@ class _TelegramChatAppState extends State<TelegramChatApp>
           if (widget.authRepository.status == AuthStatus.unauthenticated) {
             return LoginScreen(
               authRepository: widget.authRepository,
-              onAuthenticated: _ensureConnectedAndSynced,
+              onAuthenticated: () {
+                _hasInitialized = false;
+                _ensureConnectedAndSynced();
+              },
             );
           }
 
           if (widget.authRepository.status == AuthStatus.pendingApproval) {
             return PendingApprovalScreen(
               authRepository: widget.authRepository,
-              onApproved: _ensureConnectedAndSynced,
+              onApproved: () {
+                _hasInitialized = false;
+                _ensureConnectedAndSynced();
+              },
             );
           }
 
           if (widget.authRepository.isAuthenticated) {
-            _ensureConnectedAndSynced();
+            // ✅ فقط یک بار فراخوانی می‌شود (نه در هر rebuild)
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _ensureConnectedAndSynced();
+            });
 
             return ChatScreen(
               authRepository: widget.authRepository,
               chatRepository: widget.chatRepository,
               onLogout: () async {
+                _hasInitialized = false;
                 widget.socketClient.sendPresence(online: false);
                 await Future.delayed(const Duration(milliseconds: 200));
                 widget.socketClient.disconnect();
@@ -291,7 +351,10 @@ class _TelegramChatAppState extends State<TelegramChatApp>
 
           return LoginScreen(
             authRepository: widget.authRepository,
-            onAuthenticated: _ensureConnectedAndSynced,
+            onAuthenticated: () {
+              _hasInitialized = false;
+              _ensureConnectedAndSynced();
+            },
           );
         },
       ),

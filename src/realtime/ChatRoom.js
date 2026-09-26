@@ -21,10 +21,6 @@ export class ChatRoom extends DurableObject {
     this._prewarmFcmToken();
   }
 
-  /**
-   * ✅ Pre-warm OAuth2 token هنگام ساخت DO
-   * تا اولین پیام نیازی به انتظار برای token نداشته باشد
-   */
   _prewarmFcmToken() {
     try {
       this.ctx.waitUntil(
@@ -43,20 +39,17 @@ export class ChatRoom extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // ۱. دریافت برودکست‌های داخلی
     if (url.pathname === "/broadcast") {
       const payload = await request.json();
       this.broadcast(payload);
       return new Response("OK");
     }
 
-    // ۲. احراز هویت
     const auth = await authenticateRequest(this.env.DB, request);
     if (!auth.authenticated) {
       return errorResponse(auth.message, auth.status, auth.error);
     }
 
-    // ۳. ایجاد جفت سوکت
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
@@ -118,7 +111,6 @@ export class ChatRoom extends DurableObject {
 
       // ═══════════════ خوانده‌شدن پیام‌ها ═══════════════
       if (data.type === "mark_read" && Array.isArray(data.messageIds) && data.messageIds.length > 0) {
-        // ✅ پردازش در پس‌زمینه (non-blocking) - خواندن نباید پیام‌های بعدی را مسدود کند
         this.ctx.waitUntil(this._handleMarkRead(user, data.messageIds, now));
         return;
       }
@@ -128,12 +120,20 @@ export class ChatRoom extends DurableObject {
         const clientMessageId = data.clientMessageId || null;
         const msgId = crypto.randomUUID();
 
-        // بررسی Idempotency
         if (clientMessageId) {
           const existing = await this.env.DB.prepare(
             "SELECT id FROM messages WHERE client_message_id = ?"
           ).bind(clientMessageId).first();
-          if (existing) return;
+          if (existing) {
+            // ✅ ارسال تأیید به کلاینت برای idempotency
+            ws.send(JSON.stringify({
+              type: "message_ack",
+              clientMessageId: clientMessageId,
+              messageId: existing.id,
+              status: "duplicate"
+            }));
+            return;
+          }
         }
 
         const replyToId = data.replyTo ? data.replyTo.id : null;
@@ -153,6 +153,18 @@ export class ChatRoom extends DurableObject {
           VALUES (?, ?, ?, ?, 0, ?, ?, ?)
         `).bind(msgId, clientMessageId, user.userId, data.text, now, now, replyToId).run();
 
+        // ✅ ابتدا sync_event ثبت می‌شود تا مطمئن باشیم قبل از برودکست در DB است
+        await emitSyncEvent(this.env.DB, "message_created", msgId, {
+          id: msgId,
+          clientMessageId,
+          senderId: user.userId,
+          senderName: user.fullName,
+          text: data.text,
+          isFromTelegram: false,
+          createdAt: now,
+          replyToId,
+        });
+
         const messagePayload = {
           id: msgId,
           clientMessageId,
@@ -165,14 +177,21 @@ export class ChatRoom extends DurableObject {
           reactions: []
         };
 
-        // ✅ ۱. برودکست فوری به کاربران متصل (سریع‌ترین)
+        // برودکست به کاربران متصل
         this.broadcast({
           type: "new_message",
           message: messagePayload
         });
 
-        // ✅ ۲. FCM + Telegram + Sync event به صورت پس‌زمینه (non-blocking)
-        //    این باعث می‌شود که handler فوراً آزاد شود
+        // ارسال ACK به فرستنده
+        ws.send(JSON.stringify({
+          type: "message_ack",
+          clientMessageId: clientMessageId,
+          messageId: msgId,
+          status: "sent"
+        }));
+
+        // FCM + Telegram در پس‌زمینه
         this.ctx.waitUntil(
           this._dispatchSideEffects(messagePayload, user, tgReplyMsgId, data.replyTo)
         );
@@ -202,7 +221,6 @@ export class ChatRoom extends DurableObject {
             ...editPayload
           });
 
-          // ✅ در پس‌زمینه
           this.ctx.waitUntil((async () => {
             try {
               await emitSyncEvent(this.env.DB, "message_edited", data.messageId, editPayload);
@@ -338,13 +356,9 @@ export class ChatRoom extends DurableObject {
     }
   }
 
-  /**
-   * ✅ پردازش mark_read در پس‌زمینه
-   */
   async _handleMarkRead(user, messageIds, now) {
     try {
       const validIds = [];
-      // Batch query: بررسی همه پیام‌ها یکجا
       const placeholders = messageIds.map(() => '?').join(',');
       const { results: rows } = await this.env.DB.prepare(
         `SELECT id, sender_id FROM messages WHERE id IN (${placeholders})`
@@ -361,7 +375,6 @@ export class ChatRoom extends DurableObject {
 
       if (validIds.length === 0) return;
 
-      // Batch insert message_reads
       const stmt = this.env.DB.prepare(
         "INSERT OR IGNORE INTO message_reads (id, message_id, user_id, read_at) VALUES (?, ?, ?, ?)"
       );
@@ -381,12 +394,7 @@ export class ChatRoom extends DurableObject {
     }
   }
 
-  /**
-   * ✅ اثرات جانبی پیام جدید: FCM + Telegram + SyncEvent
-   *    به صورت موازی و در پس‌زمینه اجرا می‌شوند
-   */
   async _dispatchSideEffects(messagePayload, user, tgReplyMsgId, replyToData) {
-    // ۱. FCM + SyncEvent (موازی)
     const fcmPromise = (async () => {
       try {
         const { dispatchNewMessagePush } = await import("../notifications/fcmService.js");
@@ -396,13 +404,6 @@ export class ChatRoom extends DurableObject {
       }
     })();
 
-    const syncPromise = (async () => {
-      try {
-        await emitSyncEvent(this.env.DB, "message_created", messagePayload.id, messagePayload);
-      } catch (_) {}
-    })();
-
-    // ۲. Telegram (موازی با FCM)
     const tgPromise = (async () => {
       try {
         let caption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(user.fullName)}\n`;
@@ -427,7 +428,7 @@ export class ChatRoom extends DurableObject {
       }
     })();
 
-    await Promise.allSettled([fcmPromise, syncPromise, tgPromise]);
+    await Promise.allSettled([fcmPromise, tgPromise]);
   }
 
   async webSocketClose(ws, code, reason, wasClean) {

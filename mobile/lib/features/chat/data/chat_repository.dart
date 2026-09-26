@@ -8,12 +8,6 @@ import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_mo
 import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 import 'chat_websocket_client.dart';
 
-/// ریپازیتوری چت با پشتیبانی از:
-/// - نمایش پیام‌ها و مدیا
-/// - کاربران آنلاین
-/// - تیک خوانده‌شدن
-/// - آپلود خوش‌بینانه با نوار پیشرفت
-/// - حفظ localPath پس از برودکست WebSocket
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
@@ -25,7 +19,6 @@ class ChatRepository extends ChangeNotifier {
   bool _isLoading = false;
   bool isAppInBackground = false;
 
-  // ✅ کاربران آنلاین
   final Map<String, Map<String, dynamic>> _onlineUsers = {};
 
   StreamSubscription? _socketSubscription;
@@ -37,7 +30,6 @@ class ChatRepository extends ChangeNotifier {
   })  : _localDao = localDao,
         _socketClient = socketClient;
 
-  // ─── Getters ───
   List<ChatMessageModel> get messages => _messages;
   ChatMessageModel? get pinnedMessage => _pinnedMessage;
   String? get typingUserName => _typingUserName;
@@ -49,7 +41,6 @@ class ChatRepository extends ChangeNotifier {
   int get onlineCount => _onlineUsers.length;
   bool isUserOnline(String userId) => _onlineUsers.containsKey(userId);
 
-  // ─── Initialize ───
   Future<void> initialize(AuthUser currentUser) async {
     _isLoading = true;
     notifyListeners();
@@ -61,7 +52,6 @@ class ChatRepository extends ChangeNotifier {
       _socketStateSubscription = _socketClient.stateStream.listen((state) {
         if (state == SocketConnectionState.connected) {
           processPendingQueue();
-          // ✅ اطلاع‌رسانی وضعیت فعلی حضور به سرور
           _socketClient.sendPresence(online: !isAppInBackground);
         }
         notifyListeners();
@@ -78,7 +68,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  // ─── Load local messages with attachments ───
   Future<void> loadLocalMessages({int limit = 50}) async {
     try {
       final rawList = await _localDao.getMessagesList(limit: limit);
@@ -114,7 +103,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  // ─── Send text message ───
   Future<void> sendMessage({
     required String text,
     required AuthUser currentUser,
@@ -185,7 +173,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  // ─── Pending queue ───
   Future<void> processPendingQueue() async {
     final pendingActions = await _localDao.getPendingActions();
     if (pendingActions.isEmpty || !_socketClient.isConnected) return;
@@ -214,7 +201,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  // ─── Mark as read ───
   Future<void> markMessagesAsRead(List<String> messageIds) async {
     if (messageIds.isEmpty) return;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -232,7 +218,6 @@ class ChatRepository extends ChangeNotifier {
     _socketClient.sendMarkRead(messageIds);
   }
 
-  // ─── Optimistic Upload ───
   String addOptimisticUpload({
     required String fileName,
     required int fileSize,
@@ -330,7 +315,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ✅ به‌روزرسانی localPath پیام پس از کش شدن فایل
   void setLocalPathForMessage(String messageId, String localPath) {
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
@@ -356,13 +340,11 @@ class ChatRepository extends ChangeNotifier {
         .catchError((_) {});
   }
 
-  // ─── Handle socket events ───
   Future<void> _handleIncomingSocketEvent(
       Map<String, dynamic> event, AuthUser currentUser) async {
     final type = event['type'] as String?;
     if (type == null) return;
 
-    // ═══════════════ رویداد آنلاین‌ها ═══════════════
     if (type == 'online_users' && event['users'] != null) {
       final usersList = (event['users'] as List).cast<Map<String, dynamic>>();
       _onlineUsers.clear();
@@ -374,7 +356,6 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
-    // ═══════════════ رویداد خوانده‌شدن پیام‌ها ═══════════════
     if (type == 'messages_read' && event['messageIds'] != null) {
       final ids = (event['messageIds'] as List).cast<String>();
       final readerId = event['userId'] as String?;
@@ -402,14 +383,12 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
-    // ═══════════════ پیام جدید ═══════════════
     if (type == 'new_message' && event['message'] != null) {
       final msgJson = event['message'] as Map<String, dynamic>;
       final clientMsgId =
           msgJson['clientMessageId'] ?? msgJson['client_message_id'];
       final incomingId = msgJson['id'] as String?;
 
-      // ۱) پیام خودمان (client message id)
       if (clientMsgId != null) {
         final existingIndex =
             _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
@@ -431,10 +410,8 @@ class ChatRepository extends ChangeNotifier {
         }
       }
 
-      // ۲) ساخت پیام از سرور
       ChatMessageModel incoming = ChatMessageModel.fromJson(msgJson);
 
-      // ✅ حفظ localPath و readAt از پیام قبلی (اگر وجود دارد)
       if (incomingId != null) {
         final existingIndex =
             _messages.indexWhere((m) => m.id == incomingId);
@@ -475,7 +452,22 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
-    // ═══════════════ ویرایش پیام ═══════════════
+    // ✅ مدیریت ACK پیام ارسالی
+    if (type == 'message_ack' && event['clientMessageId'] != null) {
+      final clientMsgId = event['clientMessageId'] as String;
+      final realMessageId = event['messageId'] as String?;
+      final idx = _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
+      if (idx != -1 && realMessageId != null) {
+        _messages[idx] = _messages[idx].copyWith(
+          id: realMessageId,
+          status: MessageStatus.synced,
+        );
+        await _localDao.updateMessageStatus(realMessageId, 'synced');
+        notifyListeners();
+      }
+      return;
+    }
+
     if (type == 'message_edited' && event['messageId'] != null) {
       final mId = event['messageId'] as String;
       final newText = event['text'] as String? ?? '';
@@ -490,13 +482,18 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
-    // ═══════════════ پین پیام ═══════════════
     if (type == 'message_pinned' && event['message'] != null) {
       final msgJson = event['message'] as Map<String, dynamic>;
       final pinned = ChatMessageModel.fromJson(msgJson);
       await _localDao.setPinnedMessage(pinned.id, true);
 
       _pinnedMessage = pinned;
+      // ✅ پاک کردن وضعیت پین پیام‌های قبلی
+      for (int i = 0; i < _messages.length; i++) {
+        if (_messages[i].id != pinned.id && _messages[i].isPinned) {
+          _messages[i] = _messages[i].copyWith(isPinned: false);
+        }
+      }
       final index = _messages.indexWhere((m) => m.id == pinned.id);
       if (index != -1) {
         _messages[index] = _messages[index].copyWith(isPinned: true);
@@ -505,14 +502,17 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
-    // ═══════════════ حذف پین ═══════════════
     if (type == 'message_unpinned') {
       _pinnedMessage = null;
+      for (int i = 0; i < _messages.length; i++) {
+        if (_messages[i].isPinned) {
+          _messages[i] = _messages[i].copyWith(isPinned: false);
+        }
+      }
       notifyListeners();
       return;
     }
 
-    // ═══════════════ در حال تایپ ═══════════════
     if (type == 'typing' && event['fullName'] != null) {
       _typingUserName = event['fullName'] as String;
       notifyListeners();

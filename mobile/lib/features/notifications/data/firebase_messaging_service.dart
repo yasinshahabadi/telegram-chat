@@ -9,28 +9,29 @@ import 'package:http/http.dart' as http;
 
 import '../../../../config.dart';
 
-/// ثابت‌های کانال اعلان (v2 برای بازسازی صدا و ویبره)
 const String _channelId = 'guysgram_default_channel_v2';
 const String _channelName = 'اعلان‌های Guysgram';
 const String _channelDesc = 'اعلان پیام‌های دریافتی از سوپرگروه تلگرام';
 
-/// نام کانال‌های قدیمی که باید حذف شوند
 const List<String> _legacyChannelIds = [
   'guysgram_default_channel',
   'telegram_chat_messages',
   'telegram_chat',
 ];
 
-/// هندلر پیام‌های پس‌زمینه FCM
+/// ✅ Stream سراسری برای اطلاع‌رسانی به ChatRepository در مورد کلیک روی اعلان
+final StreamController<RemoteMessage> _notificationClickController =
+    StreamController<RemoteMessage>.broadcast();
+Stream<RemoteMessage> get notificationClickStream =>
+    _notificationClickController.stream;
+
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-
   debugPrint('[FCM-BG] Message received: ${message.messageId}');
   debugPrint('[FCM-BG] Data: ${message.data}');
 }
 
-/// سرویس مدیریت اعلان‌های Firebase Cloud Messaging
 class FirebaseMessagingService {
   static final FirebaseMessagingService instance =
       FirebaseMessagingService._internal();
@@ -43,7 +44,6 @@ class FirebaseMessagingService {
 
   bool _isInitialized = false;
 
-  /// مقداردهی اولیه Firebase و FCM
   Future<void> initialize() async {
     if (_isInitialized) return;
 
@@ -88,7 +88,6 @@ class FirebaseMessagingService {
     }
   }
 
-  /// تنظیمات Local Notifications + حذف کانال‌های قدیمی + ساخت کانال جدید
   Future<void> _initLocalNotifications() async {
     const androidInit = AndroidInitializationSettings('@mipmap/launcher_icon');
     const iosInit = DarwinInitializationSettings(
@@ -113,7 +112,6 @@ class FirebaseMessagingService {
             AndroidFlutterLocalNotificationsPlugin>();
 
     if (androidImpl != null) {
-      // حذف کانال‌های قدیمی
       for (final legacyId in _legacyChannelIds) {
         try {
           await androidImpl.deleteNotificationChannel(legacyId);
@@ -123,7 +121,6 @@ class FirebaseMessagingService {
         }
       }
 
-      // ساخت کانال جدید با تنظیمات صحیح
       await androidImpl.createNotificationChannel(
         const AndroidNotificationChannel(
           _channelId,
@@ -149,6 +146,10 @@ class FirebaseMessagingService {
 
   void _handleMessageOpenedApp(RemoteMessage message) {
     debugPrint('[FCM] Notification opened app: ${message.data}');
+    // ✅ انتشار رویداد کلیک روی اعلان
+    if (!_notificationClickController.isClosed) {
+      _notificationClickController.add(message);
+    }
   }
 
   Future<String?> getToken() async {
