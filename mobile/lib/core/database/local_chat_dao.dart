@@ -1,5 +1,9 @@
-﻿import 'package:sqflite/sqflite.dart';
+﻿import 'dart:convert';
+import 'package:sqflite/sqflite.dart';
+import 'package:uuid/uuid.dart';
 import 'app_database.dart';
+
+const _uuid = Uuid();
 
 class LocalChatDao {
   final AppDatabase _appDatabase;
@@ -13,12 +17,42 @@ class LocalChatDao {
   // پیام‌ها
   // ==========================================
 
+  /// ✅ اگر پیام در صف حذف است، ذخیره نمی‌شود.
+  /// این جلوگیری می‌کند از re-insert پیام حذف‌شده توسط sync.
+  Future<bool> _isPendingDelete(Database db, String messageId) async {
+    try {
+      final rows = await db.query(
+        'pending_actions',
+        columns: ['payload_json'],
+        where: 'action_type = ?',
+        whereArgs: ['delete_message'],
+      );
+      for (final row in rows) {
+        try {
+          final payload = jsonDecode(row['payload_json'] as String);
+          if (payload is Map && payload['messageId'] == messageId) {
+            return true;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return false;
+  }
+
   Future<void> saveMessage(Map<String, dynamic> messageData) async {
     final db = await _db;
+    final messageId = messageData['id'] as String?;
+    if (messageId == null || messageId.isEmpty) return;
+
+    // ✅ رد کردن پیام‌هایی که در صف حذف هستند.
+    if (await _isPendingDelete(db, messageId)) {
+      return;
+    }
+
     await db.insert(
       'messages',
       {
-        'id': messageData['id'],
+        'id': messageId,
         'client_message_id': messageData['client_message_id'] ?? messageData['clientMessageId'],
         'sender_id': messageData['sender_id'] ?? messageData['senderId'],
         'sender_name': messageData['sender_name'] ?? messageData['senderName'] ?? 'کاربر',
@@ -121,6 +155,15 @@ class LocalChatDao {
     );
   }
 
+  Future<void> deleteMessage(String messageId) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      await txn.delete('messages', where: 'id = ?', whereArgs: [messageId]);
+      await txn.delete('attachments', where: 'message_id = ?', whereArgs: [messageId]);
+      await txn.delete('reactions', where: 'message_id = ?', whereArgs: [messageId]);
+    });
+  }
+
   // ==========================================
   // پیوست‌ها
   // ==========================================
@@ -169,6 +212,71 @@ class LocalChatDao {
       where: 'id = ?',
       whereArgs: [attachmentId],
     );
+  }
+
+  // ==========================================
+  // واکنش‌ها
+  // ==========================================
+
+  Future<List<Map<String, dynamic>>> getReactionsForMessage(String messageId) async {
+    final db = await _db;
+    return await db.query(
+      'reactions',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
+  }
+
+  Future<void> replaceReactionsForMessage(
+    String messageId,
+    List<Map<String, dynamic>> aggregated,
+  ) async {
+    final db = await _db;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    await db.transaction((txn) async {
+      await txn.delete('reactions', where: 'message_id = ?', whereArgs: [messageId]);
+
+      for (final r in aggregated) {
+        final emoji = r['emoji'] as String?;
+        if (emoji == null || emoji.isEmpty) continue;
+        final count = (r['count'] as num?)?.toInt() ?? 0;
+        final userIds = (r['userIds'] as List?)
+                ?.whereType<String>()
+                .toList() ??
+            const <String>[];
+
+        for (final uid in userIds) {
+          await txn.insert(
+            'reactions',
+            {
+              'id': _uuid.v4(),
+              'message_id': messageId,
+              'user_id': uid,
+              'telegram_user_id': null,
+              'emoji': emoji,
+              'created_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+
+        final unknown = (count - userIds.length).clamp(0, count);
+        for (int i = 0; i < unknown; i++) {
+          await txn.insert(
+            'reactions',
+            {
+              'id': _uuid.v4(),
+              'message_id': messageId,
+              'user_id': null,
+              'telegram_user_id': null,
+              'emoji': emoji,
+              'created_at': now,
+            },
+          );
+        }
+      }
+    });
   }
 
   // ==========================================

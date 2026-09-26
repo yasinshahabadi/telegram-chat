@@ -5,7 +5,6 @@ import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../../config.dart';
 
-/// وضعیت‌های اتصال وب‌سوکت
 enum SocketConnectionState {
   disconnected,
   connecting,
@@ -13,7 +12,6 @@ enum SocketConnectionState {
   reconnecting,
 }
 
-/// کلاینت وب‌سوکت بلادرنگ چت با پشتیبانی از اتصال مجدد هوشمند
 class ChatWebSocketClient {
   WebSocketChannel? _channel;
   StreamSubscription? _subscription;
@@ -27,7 +25,6 @@ class ChatWebSocketClient {
   int _reconnectAttempts = 0;
   bool _isDisposed = false;
 
-  // ✅ آخرین وضعیت حضور که باید پس از اتصال مجدد بازگردانی شود
   bool _lastPresenceOnline = true;
 
   Stream<SocketConnectionState> get stateStream => _stateController.stream;
@@ -42,7 +39,6 @@ class ChatWebSocketClient {
     }
   }
 
-  /// اتصال به وب‌سوکت با توکن نشست معتبر
   Future<void> connect(String sessionToken) async {
     _sessionToken = sessionToken;
     _isDisposed = false;
@@ -71,7 +67,6 @@ class ChatWebSocketClient {
       _updateState(SocketConnectionState.connected);
       _reconnectAttempts = 0;
 
-      // ✅ بازگردانی وضعیت حضور پس از اتصال مجدد
       sendPresence(online: _lastPresenceOnline);
 
       _subscription?.cancel();
@@ -136,10 +131,6 @@ class ChatWebSocketClient {
     _channel = null;
   }
 
-  // ==========================================
-  // متدهای ارسال رویدادها از طریق سوکت
-  // ==========================================
-
   bool _send(Map<String, dynamic> payload) {
     if (_channel != null && _state == SocketConnectionState.connected) {
       try {
@@ -152,11 +143,6 @@ class ChatWebSocketClient {
     return false;
   }
 
-  /// ✅ ارسال وضعیت حضور (online/away) به سرور
-  /// 
-  /// این متد در چرخه حیات اپ فراخوانی می‌شود:
-  /// - online: وقتی اپ در فورگراند است و کاربر داخل چت است
-  /// - away: وقتی کاربر دکمه Home را می‌زند یا وارد صفحه دیگری می‌شود
   bool sendPresence({required bool online}) {
     _lastPresenceOnline = online;
     return _send({
@@ -165,7 +151,6 @@ class ChatWebSocketClient {
     });
   }
 
-  /// ارسال پیام جدید متنی
   bool sendChatMessage({
     required String text,
     String? clientMessageId,
@@ -179,7 +164,6 @@ class ChatWebSocketClient {
     });
   }
 
-  /// ارسال ویرایش متن پیام
   bool sendEditMessage({
     required String messageId,
     required String newText,
@@ -191,7 +175,13 @@ class ChatWebSocketClient {
     });
   }
 
-  /// ارسال تغییر ری‌اکشن (اموجی)
+  bool sendDeleteMessage(String messageId) {
+    return _send({
+      'type': 'delete_message',
+      'messageId': messageId,
+    });
+  }
+
   bool sendToggleReaction({
     required String messageId,
     required String emoji,
@@ -203,7 +193,6 @@ class ChatWebSocketClient {
     });
   }
 
-  /// ارسال پین کردن پیام
   bool sendPinMessage(String messageId) {
     return _send({
       'type': 'pin_message',
@@ -211,21 +200,18 @@ class ChatWebSocketClient {
     });
   }
 
-  /// ارسال حذف پین پیام
   bool sendUnpinMessage() {
     return _send({
       'type': 'unpin_message',
     });
   }
 
-  /// ارسال رویداد در حال تایپ
   bool sendTyping() {
     return _send({
       'type': 'typing',
     });
   }
 
-  /// ارسال وضعیت خوانده شدن پیام‌ها
   bool sendMarkRead(List<String> messageIds) {
     return _send({
       'type': 'mark_read',
@@ -233,9 +219,7 @@ class ChatWebSocketClient {
     });
   }
 
-  /// قطع اتصال و آزادسازی منابع
   void disconnect() {
-    // ✅ قبل از بستن، به سرور اطلاع بده که offline هستیم
     try {
       sendPresence(online: false);
     } catch (_) {}

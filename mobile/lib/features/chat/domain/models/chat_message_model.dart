@@ -42,6 +42,7 @@ class ChatMessageModel {
   final int createdAt;
   final int updatedAt;
   final Map<String, int> reactions;
+  final Set<String> myReactions;
   final List<MediaAttachmentModel> attachments;
   final double uploadProgress;
   final bool isUploading;
@@ -69,6 +70,7 @@ class ChatMessageModel {
     required this.createdAt,
     required this.updatedAt,
     this.reactions = const {},
+    this.myReactions = const {},
     this.attachments = const [],
     this.uploadProgress = 1.0,
     this.isUploading = false,
@@ -79,7 +81,6 @@ class ChatMessageModel {
 
   bool get hasAttachments => attachments.isNotEmpty;
 
-  /// آیا پیام والد دارای مدیا است (برای نمایش thumbnail در پیش‌نمایش ریپلای).
   bool get replyHasMedia =>
       (replyToMediaType ?? '').isNotEmpty &&
       (replyToTelegramFileId ?? '').isNotEmpty;
@@ -87,6 +88,7 @@ class ChatMessageModel {
   factory ChatMessageModel.fromDbMap(
     Map<String, dynamic> map, {
     Map<String, int> reactions = const {},
+    Set<String> myReactions = const {},
     List<MediaAttachmentModel> attachments = const [],
   }) {
     return ChatMessageModel(
@@ -112,6 +114,7 @@ class ChatMessageModel {
       createdAt: map['created_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: map['updated_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       reactions: reactions,
+      myReactions: myReactions,
       attachments: attachments,
     );
   }
@@ -142,7 +145,10 @@ class ChatMessageModel {
     };
   }
 
-  factory ChatMessageModel.fromJson(Map<String, dynamic> json) {
+  factory ChatMessageModel.fromJson(
+    Map<String, dynamic> json, {
+    String? currentUserId,
+  }) {
     final List<MediaAttachmentModel> atts = [];
     if (json['attachments'] is List) {
       for (final a in (json['attachments'] as List)) {
@@ -152,6 +158,24 @@ class ChatMessageModel {
       }
     } else if (json['attachment'] is Map<String, dynamic>) {
       atts.add(MediaAttachmentModel.fromJson(json['attachment'] as Map<String, dynamic>));
+    }
+
+    final reactionsMap = <String, int>{};
+    final myReactionsSet = <String>{};
+    if (json['reactions'] is List) {
+      for (final raw in (json['reactions'] as List)) {
+        if (raw is! Map) continue;
+        final emoji = raw['emoji'] as String?;
+        if (emoji == null || emoji.isEmpty) continue;
+        final count = (raw['count'] as num?)?.toInt() ?? 1;
+        reactionsMap[emoji] = count;
+        if (currentUserId != null && raw['userIds'] is List) {
+          final ids = (raw['userIds'] as List).whereType<String>();
+          if (ids.contains(currentUserId)) {
+            myReactionsSet.add(emoji);
+          }
+        }
+      }
     }
 
     return ChatMessageModel(
@@ -176,6 +200,8 @@ class ChatMessageModel {
       readAt: json['readAt'] as int? ?? json['read_at'] as int?,
       createdAt: json['createdAt'] as int? ?? json['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: json['updatedAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+      reactions: reactionsMap,
+      myReactions: myReactionsSet,
       attachments: atts,
     );
   }
@@ -203,6 +229,7 @@ class ChatMessageModel {
     int? createdAt,
     int? updatedAt,
     Map<String, int>? reactions,
+    Set<String>? myReactions,
     List<MediaAttachmentModel>? attachments,
     double? uploadProgress,
     bool? isUploading,
@@ -230,6 +257,7 @@ class ChatMessageModel {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       reactions: reactions ?? this.reactions,
+      myReactions: myReactions ?? this.myReactions,
       attachments: attachments ?? this.attachments,
       uploadProgress: uploadProgress ?? this.uploadProgress,
       isUploading: isUploading ?? this.isUploading,

@@ -204,6 +204,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _confirmDeleteMessage(ChatMessageModel message) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('حذف پیام'),
+          content: const Text(
+            'آیا از حذف این پیام اطمینان دارید؟ این عمل روی گروه تلگرام نیز اعمال می‌شود.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('انصراف'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red.shade700,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('حذف'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirm == true) {
+      await widget.chatRepository.deleteMessage(message.id);
+    }
+  }
+
   void _handleSendMessage(String text) {
     final user = widget.authRepository.currentUser;
     if (user == null) return;
@@ -773,6 +804,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           (message.senderId == currentUser.id ||
                               message.senderName == currentUser.fullName);
 
+                      final canDelete = isMe ||
+                          (currentUser?.isAdmin == true);
+
                       return KeyedSubtree(
                         key: _keyForMessage(message.id),
                         child: RepaintBoundary(
@@ -783,10 +817,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                 .isUserOnline(message.senderId),
                             isHighlighted:
                                 _highlightedMessageId == message.id,
+                            canDelete: canDelete,
                             onReply: () =>
                                 setState(() => _replyingMessage = message),
                             onEdit: isMe
                                 ? () => _showEditDialog(message)
+                                : null,
+                            onDelete: canDelete
+                                ? () => _confirmDeleteMessage(message)
                                 : null,
                             onPin: () =>
                                 widget.chatRepository.pinMessage(message.id),
@@ -794,6 +832,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                 ? () => _handleTapReplyMessage(
                                     message.replyToMessageId!)
                                 : null,
+                            onToggleReaction: (emoji) => widget.chatRepository
+                                .toggleReaction(message.id, emoji),
                           ),
                         ),
                       );

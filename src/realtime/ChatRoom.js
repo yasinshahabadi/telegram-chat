@@ -5,15 +5,13 @@ import {
   editTelegramMessageText,
   pinTelegramChatMessage,
   unpinTelegramChatMessage,
-  setTelegramMessageReaction
+  setTelegramMessageReaction,
+  deleteTelegramMessage
 } from "../telegram/telegramClient.js";
 import { emitSyncEvent } from "../telegram/normalizer.js";
 import { authenticateRequest } from "../auth/sessionService.js";
 import { errorResponse } from "../core/response.js";
 
-/**
- * ChatRoom Durable Object (Realtime Engine v2 - Secure Hibernation)
- */
 export class ChatRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -131,7 +129,6 @@ export class ChatRoom extends DurableObject {
           }
         }
 
-        // ✅ اطلاعات کامل ریپلای شامل پیوست
         const replyToId = data.replyTo ? data.replyTo.id : null;
         let tgReplyMsgId = null;
         let replyToName = null;
@@ -259,7 +256,71 @@ export class ChatRoom extends DurableObject {
         return;
       }
 
+      // ═══════════════ حذف پیام (Idempotent) ═══════════════
+      if (data.type === "delete_message" && data.messageId) {
+        const msgRow = await this.env.DB.prepare(
+          "SELECT sender_id, telegram_message_id, deleted_at FROM messages WHERE id = ?"
+        ).bind(data.messageId).first();
+
+        const deletePayload = {
+          messageId: data.messageId,
+          deletedAt: now,
+        };
+
+        // ✅ Idempotent: اگر پیام وجود ندارد یا قبلاً حذف شده، تأیید بفرست.
+        if (!msgRow || msgRow.deleted_at) {
+          this.broadcast({
+            type: "message_deleted",
+            ...deletePayload
+          });
+          return;
+        }
+
+        // فقط فرستنده یا ادمین اجازهٔ حذف دارد.
+        if (msgRow.sender_id !== user.userId && !user.isAdmin) {
+          try {
+            ws.send(JSON.stringify({
+              type: "error",
+              code: "forbidden",
+              message: "اجازهٔ حذف این پیام را ندارید."
+            }));
+          } catch (_) {}
+          return;
+        }
+
+        await this.env.DB.prepare(
+          "UPDATE messages SET deleted_at = ?, updated_at = ? WHERE id = ?"
+        ).bind(now, now, data.messageId).run();
+
+        this.broadcast({
+          type: "message_deleted",
+          ...deletePayload
+        });
+
+        this.ctx.waitUntil((async () => {
+          try {
+            await emitSyncEvent(this.env.DB, "message_deleted", data.messageId, deletePayload);
+          } catch (_) {}
+
+          if (msgRow.telegram_message_id) {
+            try {
+              await deleteTelegramMessage(this.env.TELEGRAM_BOT_TOKEN, {
+                chatId: this.env.TELEGRAM_GROUP_ID,
+                messageId: msgRow.telegram_message_id
+              });
+            } catch (_) {}
+          }
+        })());
+
+        return;
+      }
+
       if (data.type === "toggle_reaction" && data.messageId && data.emoji) {
+        const msgCheck = await this.env.DB.prepare(
+          "SELECT id FROM messages WHERE id = ? AND deleted_at IS NULL"
+        ).bind(data.messageId).first();
+        if (!msgCheck) return;
+
         const existing = await this.env.DB.prepare(
           "SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?"
         ).bind(data.messageId, user.userId, data.emoji).first();
@@ -270,19 +331,31 @@ export class ChatRoom extends DurableObject {
           await this.env.DB.prepare(`
             INSERT OR IGNORE INTO reactions (id, message_id, user_id, telegram_user_id, emoji, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
-          `).bind(crypto.randomUUID(), data.messageId, user.userId, user.telegramId, data.emoji, now).run();
+          `).bind(
+            crypto.randomUUID(), data.messageId, user.userId,
+            user.telegramId, data.emoji, now
+          ).run();
         }
 
-        const { results: allReactions } = await this.env.DB.prepare(`
-          SELECT emoji, COUNT(*) AS count 
-          FROM reactions 
-          WHERE message_id = ? 
-          GROUP BY emoji
+        const { results: rawRows } = await this.env.DB.prepare(`
+          SELECT emoji, user_id FROM reactions WHERE message_id = ?
         `).bind(data.messageId).all();
+
+        const grouped = new Map();
+        for (const r of rawRows || []) {
+          let g = grouped.get(r.emoji);
+          if (!g) {
+            g = { emoji: r.emoji, count: 0, userIds: [] };
+            grouped.set(r.emoji, g);
+          }
+          g.count++;
+          if (r.user_id) g.userIds.push(r.user_id);
+        }
+        const aggregatedReactions = Array.from(grouped.values());
 
         const rxPayload = {
           messageId: data.messageId,
-          reactions: allReactions || []
+          reactions: aggregatedReactions
         };
 
         this.broadcast({

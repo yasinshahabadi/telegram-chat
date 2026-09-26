@@ -137,8 +137,6 @@ class SyncEngine {
         if (existingRow != null) {
           final existing = ChatMessageModel.fromDbMap(existingRow);
 
-          // ✅ حفظ فیلدهای ریپلای از رکورد موجود در صورتی که incoming آن‌ها را ندارد
-          // (برای سازگاری با رویدادهای قدیمی قبل از افزودن این فیلدها).
           if (toSave.replyToName == null && existing.replyToName != null) {
             toSave = toSave.copyWith(replyToName: existing.replyToName);
           }
@@ -164,7 +162,6 @@ class SyncEngine {
             toSave = toSave.copyWith(readAt: existing.readAt);
           }
 
-          // حفظ localPath پیوست‌های موجود
           if (existing.attachments.isNotEmpty && toSave.attachments.isNotEmpty) {
             final List<MediaAttachmentModel> merged = [];
             for (int i = 0; i < toSave.attachments.length; i++) {
@@ -198,6 +195,27 @@ class SyncEngine {
         }
         break;
 
+      case 'message_deleted':
+        final messageId =
+            payload['messageId'] as String? ?? payload['id'] as String?;
+        if (messageId != null) {
+          await _localDao.deleteMessage(messageId);
+        }
+        break;
+
+      case 'reaction_updated':
+        final messageId =
+            payload['messageId'] as String? ?? payload['id'] as String?;
+        final rawList = payload['reactions'];
+        if (messageId != null && rawList is List) {
+          final aggregated = <Map<String, dynamic>>[];
+          for (final r in rawList) {
+            if (r is Map) aggregated.add(r.cast<String, dynamic>());
+          }
+          await _localDao.replaceReactionsForMessage(messageId, aggregated);
+        }
+        break;
+
       case 'message_pinned':
         final messageId =
             payload['messageId'] as String? ?? payload['id'] as String?;
@@ -207,9 +225,6 @@ class SyncEngine {
         break;
 
       case 'message_unpinned':
-        break;
-
-      case 'reaction_updated':
         break;
     }
   }

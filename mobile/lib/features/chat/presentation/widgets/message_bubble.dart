@@ -1,6 +1,7 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reaction_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reply_thumbnail.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/swipe_to_reply.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/user_avatar.dart';
@@ -11,10 +12,13 @@ class MessageBubble extends StatelessWidget {
   final bool isMe;
   final bool isSenderOnline;
   final bool isHighlighted;
+  final bool canDelete;
   final VoidCallback? onReply;
   final VoidCallback? onEdit;
   final VoidCallback? onPin;
+  final VoidCallback? onDelete;
   final VoidCallback? onTapReplyMessage;
+  final ValueChanged<String>? onToggleReaction;
 
   const MessageBubble({
     super.key,
@@ -22,10 +26,13 @@ class MessageBubble extends StatelessWidget {
     required this.isMe,
     this.isSenderOnline = false,
     this.isHighlighted = false,
+    this.canDelete = false,
     this.onReply,
     this.onEdit,
     this.onPin,
+    this.onDelete,
     this.onTapReplyMessage,
+    this.onToggleReaction,
   });
 
   Color _colorFromName(String name) {
@@ -185,6 +192,15 @@ class MessageBubble extends StatelessWidget {
                       ],
                     ],
                   ),
+
+                  if (message.reactions.isNotEmpty) ...[
+                    ReactionBar(
+                      reactions: message.reactions,
+                      myReactions: message.myReactions,
+                      onToggle: (emoji) => onToggleReaction?.call(emoji),
+                      isMe: isMe,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -439,36 +455,59 @@ class MessageBubble extends StatelessWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.reply_rounded),
-              title: const Text('پاسخ (Reply)'),
-              onTap: () {
-                Navigator.pop(ctx);
-                onReply?.call();
-              },
-            ),
-            if (isMe && message.text.isNotEmpty)
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (onToggleReaction != null) ...[
+                ReactionPickerRow(
+                  onPick: (emoji) {
+                    Navigator.pop(ctx);
+                    onToggleReaction?.call(emoji);
+                  },
+                ),
+                const Divider(height: 1),
+              ],
               ListTile(
-                leading: const Icon(Icons.edit_rounded),
-                title: const Text('ویرایش متن'),
+                leading: const Icon(Icons.reply_rounded),
+                title: const Text('پاسخ (Reply)'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  onEdit?.call();
+                  onReply?.call();
                 },
               ),
-            ListTile(
-              leading: const Icon(Icons.push_pin_rounded),
-              title: Text(message.isPinned ? 'حذف پین' : 'سنجاق کردن (Pin)'),
-              onTap: () {
-                Navigator.pop(ctx);
-                onPin?.call();
-              },
-            ),
-          ],
+              if (isMe && message.text.isNotEmpty)
+                ListTile(
+                  leading: const Icon(Icons.edit_rounded),
+                  title: const Text('ویرایش متن'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    onEdit?.call();
+                  },
+                ),
+              if (canDelete && onDelete != null)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline_rounded,
+                      color: Colors.redAccent),
+                  title: const Text('حذف پیام',
+                      style: TextStyle(color: Colors.redAccent)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    onDelete?.call();
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.push_pin_rounded),
+                title: Text(message.isPinned ? 'حذف پین' : 'سنجاق کردن (Pin)'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onPin?.call();
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );

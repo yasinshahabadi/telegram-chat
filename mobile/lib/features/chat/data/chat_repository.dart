@@ -17,7 +17,9 @@ class ChatRepository extends ChangeNotifier {
   List<ChatMessageModel> _messages = [];
   ChatMessageModel? _pinnedMessage;
   String? _typingUserName;
+  String? _currentUserId;
   Timer? _typingTimer;
+  Timer? _pendingRetryTimer;
   bool _isLoading = false;
   bool isAppInBackground = false;
 
@@ -43,6 +45,7 @@ class ChatRepository extends ChangeNotifier {
   bool isUserOnline(String userId) => _onlineUsers.containsKey(userId);
 
   Future<void> initialize(AuthUser currentUser) async {
+    _currentUserId = currentUser.id;
     _isLoading = true;
     notifyListeners();
 
@@ -54,6 +57,8 @@ class ChatRepository extends ChangeNotifier {
         if (state == SocketConnectionState.connected) {
           processPendingQueue();
           _socketClient.sendPresence(online: !isAppInBackground);
+          // ✅ به محض برقراری اتصال، pending queue را با تأخیر صفر پردازش کن.
+          _schedulePendingRetry(immediate: true);
         }
         notifyListeners();
       });
@@ -62,6 +67,11 @@ class ChatRepository extends ChangeNotifier {
       _socketSubscription = _socketClient.messageStream.listen((event) {
         _handleIncomingSocketEvent(event, currentUser);
       });
+
+      // ✅ اگر در لحظهٔ initialize آنلاین هستیم، timer را استارت کن.
+      //    اگر آفلاین هستیم، این متد no-op می‌شود و retry
+      //    از طریق stateStream در زمان اتصال فعال خواهد شد.
+      _schedulePendingRetry();
     } catch (_) {
     } finally {
       _isLoading = false;
@@ -72,6 +82,7 @@ class ChatRepository extends ChangeNotifier {
   Future<void> loadLocalMessages({int limit = 50}) async {
     try {
       final rawList = await _localDao.getMessagesList(limit: limit);
+      final me = _currentUserId;
 
       final loaded = <ChatMessageModel>[];
       for (final raw in rawList) {
@@ -86,7 +97,26 @@ class ChatRepository extends ChangeNotifier {
           }
         } catch (_) {}
 
-        loaded.add(ChatMessageModel.fromDbMap(raw, attachments: atts));
+        final Map<String, int> reactionsMap = {};
+        final Set<String> myReactions = {};
+        try {
+          final rows = await _localDao.getReactionsForMessage(messageId);
+          for (final r in rows) {
+            final emoji = r['emoji'] as String?;
+            if (emoji == null || emoji.isEmpty) continue;
+            reactionsMap[emoji] = (reactionsMap[emoji] ?? 0) + 1;
+            if (me != null && r['user_id'] == me) {
+              myReactions.add(emoji);
+            }
+          }
+        } catch (_) {}
+
+        loaded.add(ChatMessageModel.fromDbMap(
+          raw,
+          attachments: atts,
+          reactions: reactionsMap,
+          myReactions: myReactions,
+        ));
       }
 
       _messages = loaded;
@@ -103,7 +133,6 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// استخراج اطلاعات مدیای پیام والد برای پیش‌نمایش ریپلای.
   _ReplyPreviewInfo? _extractReplyPreview(ChatMessageModel? replyTo) {
     if (replyTo == null) return null;
     final att = replyTo.attachments.isNotEmpty ? replyTo.attachments.first : null;
@@ -192,6 +221,8 @@ class ChatRepository extends ChangeNotifier {
         _updateMessageStatusInMemory(messageId, MessageStatus.sending);
       }
     }
+
+    _schedulePendingRetry();
   }
 
   Future<void> processPendingQueue() async {
@@ -218,8 +249,49 @@ class ChatRepository extends ChangeNotifier {
             _updateMessageStatusInMemory(actionId, MessageStatus.sending);
           }
         } catch (_) {}
+      } else if (actionType == 'delete_message') {
+        try {
+          final Map<String, dynamic> payload =
+              jsonDecode(action['payload_json'] as String);
+          final mId = payload['messageId'] as String?;
+          if (mId != null) {
+            // ✅ فقط send می‌کنیم. pending action را حذف نمی‌کنیم.
+            // منتظر broadcast `message_deleted` از سرور می‌مانیم.
+            _socketClient.sendDeleteMessage(mId);
+          }
+        } catch (_) {}
       }
     }
+  }
+
+  /// ✅ Retry دوره‌ای pending actions.
+  ///
+  /// - اگر آفلاین باشیم: هیچ کوئری DB و هیچ تایمری اجرا نمی‌شود.
+  ///   Retry صرفاً با تغییر connection state فعال می‌شود.
+  /// - اگر آنلاین باشیم: هر ۱۲ ثانیه چک می‌کند.
+  /// - اگر صف خالی باشد: خودش را دوباره زمان‌بندی نمی‌کند.
+  /// - پارامتر `immediate` برای اجرای فوری پس از reconnect استفاده می‌شود.
+  void _schedulePendingRetry({bool immediate = false}) {
+    _pendingRetryTimer?.cancel();
+
+    // ✅ آفلاین → هیچ کاری نکن. retry از طریق stateStream فعال خواهد شد.
+    if (!_socketClient.isConnected) return;
+
+    final delay = immediate ? Duration.zero : const Duration(seconds: 12);
+
+    _pendingRetryTimer = Timer(delay, () async {
+      if (!_socketClient.isConnected) return;
+
+      try {
+        final actions = await _localDao.getPendingActions();
+        if (actions.isEmpty) return;
+
+        await processPendingQueue();
+        _schedulePendingRetry();
+      } catch (_) {
+        _schedulePendingRetry();
+      }
+    });
   }
 
   Future<void> markMessagesAsRead(List<String> messageIds) async {
@@ -237,6 +309,79 @@ class ChatRepository extends ChangeNotifier {
     notifyListeners();
 
     _socketClient.sendMarkRead(messageIds);
+  }
+
+  Future<void> toggleReaction(String messageId, String emoji) async {
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx == -1) return;
+
+    final msg = _messages[idx];
+    final reactions = Map<String, int>.from(msg.reactions);
+    final myReactions = Set<String>.from(msg.myReactions);
+
+    final isMine = myReactions.contains(emoji);
+    if (isMine) {
+      myReactions.remove(emoji);
+      final newCount = (reactions[emoji] ?? 1) - 1;
+      if (newCount <= 0) {
+        reactions.remove(emoji);
+      } else {
+        reactions[emoji] = newCount;
+      }
+    } else {
+      myReactions.add(emoji);
+      reactions[emoji] = (reactions[emoji] ?? 0) + 1;
+    }
+
+    _messages[idx] = msg.copyWith(
+      reactions: reactions,
+      myReactions: myReactions,
+    );
+    notifyListeners();
+
+    final sent = _socketClient.sendToggleReaction(messageId: messageId, emoji: emoji);
+    if (!sent) {
+      _messages[idx] = msg;
+      notifyListeners();
+    }
+  }
+
+  /// ✅ حذف پیام:
+  /// 1) pending action را همیشه enqueue می‌کنیم (قبل از هر تلاشی)
+  /// 2) از حافظه و DB پاک می‌کنیم
+  /// 3) تلاش برای send فوری
+  /// 4) منتظر broadcast سرور می‌مانیم تا pending action را برداریم
+  Future<void> deleteMessage(String messageId) async {
+    final actionId = 'delete_$messageId';
+
+    // ✅ گام ۱: همیشه enqueue کن، قبل از هر چیز.
+    try {
+      await _localDao.enqueuePendingAction(
+        actionId,
+        'delete_message',
+        jsonEncode({'messageId': messageId}),
+      );
+    } catch (_) {}
+
+    // ✅ گام ۲: از حافظه و DB حذف کن.
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx != -1) {
+      _messages.removeAt(idx);
+      if (_pinnedMessage?.id == messageId) _pinnedMessage = null;
+      notifyListeners();
+    }
+
+    try {
+      await _localDao.deleteMessage(messageId);
+    } catch (_) {}
+
+    // ✅ گام ۳: تلاش برای send فوری.
+    if (_socketClient.isConnected) {
+      _socketClient.sendDeleteMessage(messageId);
+    }
+
+    // ✅ گام ۴: retry دوره‌ای فعال.
+    _schedulePendingRetry();
   }
 
   ChatMessageModel addOptimisticMultiUpload({
@@ -410,7 +555,10 @@ class ChatRepository extends ChangeNotifier {
 
     if (type == 'new_message' && event['message'] != null) {
       final msgJson = event['message'] as Map<String, dynamic>;
-      final incoming = ChatMessageModel.fromJson(msgJson);
+      final incoming = ChatMessageModel.fromJson(
+        msgJson,
+        currentUserId: currentUser.id,
+      );
       final clientMsgId = incoming.clientMessageId;
 
       if (clientMsgId != null) {
@@ -503,9 +651,55 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
+    // ✅ message_deleted: حذف محلی + پاک‌سازی pending action.
+    if (type == 'message_deleted' && event['messageId'] != null) {
+      final mId = event['messageId'] as String;
+      _messages.removeWhere((m) => m.id == mId);
+      if (_pinnedMessage?.id == mId) _pinnedMessage = null;
+      notifyListeners();
+      try { await _localDao.deleteMessage(mId); } catch (_) {}
+      try { await _localDao.removePendingAction('delete_$mId'); } catch (_) {}
+      return;
+    }
+
+    if (type == 'reaction_updated' && event['messageId'] != null) {
+      final mId = event['messageId'] as String;
+      final rawList = event['reactions'];
+      final List<Map<String, dynamic>> aggregated = [];
+      if (rawList is List) {
+        for (final r in rawList) {
+          if (r is Map) aggregated.add(r.cast<String, dynamic>());
+        }
+      }
+
+      final idx = _messages.indexWhere((m) => m.id == mId);
+      if (idx != -1) {
+        final newReactions = <String, int>{};
+        final newMyReactions = <String>{};
+        for (final r in aggregated) {
+          final emoji = r['emoji'] as String?;
+          if (emoji == null || emoji.isEmpty) continue;
+          final count = (r['count'] as num?)?.toInt() ?? 0;
+          newReactions[emoji] = count;
+          final ids = (r['userIds'] as List?)?.whereType<String>().toList() ?? const [];
+          if (ids.contains(currentUser.id)) newMyReactions.add(emoji);
+        }
+        _messages[idx] = _messages[idx].copyWith(
+          reactions: newReactions,
+          myReactions: newMyReactions,
+        );
+        notifyListeners();
+      }
+
+      try {
+        await _localDao.replaceReactionsForMessage(mId, aggregated);
+      } catch (_) {}
+      return;
+    }
+
     if (type == 'message_pinned' && event['message'] != null) {
       final msgJson = event['message'] as Map<String, dynamic>;
-      final pinned = ChatMessageModel.fromJson(msgJson);
+      final pinned = ChatMessageModel.fromJson(msgJson, currentUserId: currentUser.id);
       await _localDao.setPinnedMessage(pinned.id, true);
 
       _pinnedMessage = pinned;
@@ -542,6 +736,11 @@ class ChatRepository extends ChangeNotifier {
         _typingUserName = null;
         notifyListeners();
       });
+      return;
+    }
+
+    if (type == 'error') {
+      debugPrint('[Socket] Server error: ${event['message']}');
       return;
     }
   }
@@ -594,11 +793,11 @@ class ChatRepository extends ChangeNotifier {
     _socketSubscription?.cancel();
     _socketStateSubscription?.cancel();
     _typingTimer?.cancel();
+    _pendingRetryTimer?.cancel();
     super.dispose();
   }
 }
 
-/// داده موقت استخراج‌شده از پیام والد برای پیش‌نمایش ریپلای.
 class _ReplyPreviewInfo {
   final String messageId;
   final String name;
