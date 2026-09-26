@@ -104,11 +104,16 @@ yarn-error.log*
 #  Database & Backups
 # ============================================================
 backups/
-*.sql
 *.sqlite
 *.sqlite3
 *.db
 *.db-journal
+
+# SQL dumps are ignored, EXCEPT versioned migrations.
+# Migrations are source code, not backups.
+*.sql
+!migrations/*.sql
+!migrations/**/*.sql
 
 # ============================================================
 #  IDE & Editor
@@ -164,9 +169,3 @@ dump_all_files.ps1
 # ============================================================
 mobile/.widget_preview/
 **/.widget_preview/
-
-# ============================================================
-#  Strange accidental files
-# ============================================================
-({}))
-r.fcm_token).filter(Boolean)
