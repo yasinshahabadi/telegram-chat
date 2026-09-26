@@ -5,9 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
-import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 
-/// ✅ نتیجه همگام‌سازی — برای تصمیم‌گیری درباره نمایش اعلان
 class SyncResult {
   final bool success;
   final int newMessagesCount;
@@ -24,7 +22,6 @@ class SyncResult {
   SyncResult.failure() : this(success: false);
 }
 
-/// موتور همگام‌سازی آفلاین و دریافت دلتای رویدادها بر پایه نشانگر ترتیبی سرور
 class SyncEngine {
   final LocalChatDao _localDao;
   final http.Client _client;
@@ -43,7 +40,6 @@ class SyncEngine {
 
   bool get isSyncing => _isSyncing;
 
-  /// اجرای همگام‌سازی + بازگرداندن تعداد پیام‌های جدید
   Future<SyncResult> syncMissedEvents(
     String sessionToken, {
     String? currentUserId,
@@ -85,7 +81,6 @@ class SyncEngine {
           final event = rawEvent as Map<String, dynamic>;
           final eventType = event['eventType'] as String?;
 
-          // ✅ شمارش پیام‌های جدید از سایر کاربران (برای اعلان بعدی)
           if (eventType == 'message_created') {
             final payload = event['payload'] as Map<String, dynamic>?;
             if (payload != null) {
@@ -136,16 +131,8 @@ class SyncEngine {
       case 'message_created':
         final message = ChatMessageModel.fromJson(payload);
         await _localDao.saveMessage(message.toDbMap());
-
-        if (message.attachment != null) {
-          try {
-            await _localDao.saveAttachment(message.attachment!.toDbMap());
-          } catch (_) {}
-        } else if (payload['attachment'] != null &&
-            payload['attachment'] is Map<String, dynamic>) {
-          final att = MediaAttachmentModel.fromJson(
-              payload['attachment'] as Map<String, dynamic>);
-          await _localDao.saveAttachment(att.toDbMap());
+        for (final a in message.attachments) {
+          try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
         }
         break;
 

@@ -4,40 +4,89 @@ import { emitSyncEvent } from "../telegram/normalizer.js";
 import { escapeXml } from "../telegram/telegramClient.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
+const MAX_FILES_PER_MESSAGE = 10;
 
-// ✅ تشخیص نوع مدیا از پسوند فایل (مستقل از MIME)
 const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif'];
 const VIDEO_EXTS = ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'];
 const AUDIO_EXTS = ['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'];
-const VOICE_EXTS = ['m4a', 'ogg', 'opus'];
 
 function detectMediaType(fileName, mimeType, customType) {
   const name = (fileName || '').toLowerCase();
   const ext = name.includes('.') ? name.split('.').pop() : '';
   const mime = (mimeType || '').toLowerCase();
 
-  // اولویت اول: customType از کلاینت
-  if (customType === 'voice') {
-    return { mediaType: 'voice', tgEndpoint: 'sendVoice', fileField: 'voice' };
-  }
+  if (customType === 'voice') return 'voice';
+  if (customType === 'photo' || customType === 'image') return 'photo';
+  if (customType === 'video') return 'video';
+  if (customType === 'audio') return 'audio';
+  if (customType === 'document') return 'document';
 
-  // اولویت دوم: نام فایل شامل voice
   if (name.includes('voice_') || name.endsWith('_voice.m4a') || name.endsWith('_voice.ogg')) {
-    return { mediaType: 'voice', tgEndpoint: 'sendVoice', fileField: 'voice' };
+    return 'voice';
+  }
+  if (IMAGE_EXTS.includes(ext) || mime.startsWith('image/')) return 'photo';
+  if (VIDEO_EXTS.includes(ext) || mime.startsWith('video/')) return 'video';
+  if (AUDIO_EXTS.includes(ext) || mime.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
+function endpointFor(mediaType) {
+  switch (mediaType) {
+    case 'photo': return { tgEndpoint: 'sendPhoto', fileField: 'photo' };
+    case 'video': return { tgEndpoint: 'sendVideo', fileField: 'video' };
+    case 'voice': return { tgEndpoint: 'sendVoice', fileField: 'voice' };
+    case 'audio': return { tgEndpoint: 'sendAudio', fileField: 'audio' };
+    default:      return { tgEndpoint: 'sendDocument', fileField: 'document' };
+  }
+}
+
+async function uploadOneToTelegram(env, file, mediaType, caption, tgReplyMsgId) {
+  const { tgEndpoint, fileField } = endpointFor(mediaType);
+
+  const tgFormData = new FormData();
+  tgFormData.append("chat_id", env.TELEGRAM_GROUP_ID);
+  if (caption) {
+    tgFormData.append("caption", caption);
+    tgFormData.append("parse_mode", "HTML");
+  }
+  tgFormData.append(fileField, file, file.name);
+  if (tgReplyMsgId) {
+    tgFormData.append("reply_parameters", JSON.stringify({ message_id: tgReplyMsgId }));
   }
 
-  // اولویت سوم: پسوند فایل (مطمئن‌ترین روش)
-  if (IMAGE_EXTS.includes(ext) || mime.startsWith('image/')) {
-    return { mediaType: 'photo', tgEndpoint: 'sendPhoto', fileField: 'photo' };
-  }
-  if (VIDEO_EXTS.includes(ext) || mime.startsWith('video/')) {
-    return { mediaType: 'video', tgEndpoint: 'sendVideo', fileField: 'video' };
-  }
-  if (AUDIO_EXTS.includes(ext) || mime.startsWith('audio/')) {
-    return { mediaType: 'audio', tgEndpoint: 'sendAudio', fileField: 'audio' };
+  const tgRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${tgEndpoint}`, {
+    method: "POST",
+    body: tgFormData,
+  });
+  const tgData = await tgRes.json();
+  if (!tgData.ok) {
+    throw new Error(tgData.description || "خطا در ارسال فایل به تلگرام");
   }
 
-  return { mediaType: 'document', tgEndpoint: 'sendDocument', fileField: 'document' };
+  const resMsg = tgData.result;
+  let tgFileId = "";
+  let duration = 0;
+  if (resMsg.photo && resMsg.photo.length > 0) tgFileId = resMsg.photo[resMsg.photo.length - 1].file_id;
+  else if (resMsg.video) { tgFileId = resMsg.video.file_id; duration = resMsg.video.duration || 0; }
+  else if (resMsg.voice) { tgFileId = resMsg.voice.file_id; duration = resMsg.voice.duration || 0; }
+  else if (resMsg.audio) { tgFileId = resMsg.audio.file_id; duration = resMsg.audio.duration || 0; }
+  else if (resMsg.document) tgFileId = resMsg.document.file_id;
+
+  return { telegramMessageId: resMsg.message_id, telegramFileId: tgFileId, duration };
+}
+
+function attachmentToApi(a) {
+  return {
+    id: a.id,
+    messageId: a.message_id ?? a.messageId,
+    mediaType: a.media_type ?? a.mediaType,
+    telegramFileId: a.telegram_file_id ?? a.telegramFileId,
+    fileName: a.file_name ?? a.fileName,
+    fileSize: a.file_size ?? a.fileSize,
+    mimeType: a.mime_type ?? a.mimeType,
+    duration: a.duration ?? 0,
+    createdAt: a.created_at ?? a.createdAt,
+  };
 }
 
 export async function handleMediaUpload(request, env) {
@@ -48,122 +97,170 @@ export async function handleMediaUpload(request, env) {
 
   try {
     const formData = await request.formData();
-    const file = formData.get("file");
-    const caption = (formData.get("caption") || "").trim();
-    const replyToRaw = formData.get("replyTo");
-    const customType = formData.get("mediaType");
 
-    if (!file || !(file instanceof File) || file.size > MAX_FILE_SIZE) {
-      return errorResponse("فایل ارسالی نامعتبر است یا حجم آن بیش از ۲۰ مگابایت است.", 400);
+    let files = formData.getAll("files").filter(f => f instanceof File);
+    if (files.length === 0) {
+      const single = formData.get("file");
+      if (single instanceof File) files = [single];
+    }
+
+    if (files.length === 0) {
+      return errorResponse("هیچ فایلی برای آپلود یافت نشد.", 400);
+    }
+    if (files.length > MAX_FILES_PER_MESSAGE) {
+      return errorResponse(`حداکثر ${MAX_FILES_PER_MESSAGE} فایل در هر پیام مجاز است.`, 400);
+    }
+
+    let totalSize = 0;
+    for (const f of files) totalSize += f.size;
+    if (totalSize > MAX_FILE_SIZE) {
+      return errorResponse("مجموع حجم فایل‌های ارسالی بیش از ۲۰ مگابایت است.", 400);
+    }
+
+    const caption = (formData.get("caption") || "").toString().trim();
+    const replyToRaw = formData.get("replyTo");
+    const clientMessageId = (formData.get("clientMessageId") || "").toString() || null;
+
+    let fileMeta = [];
+    const fileMetaRaw = formData.get("fileMeta");
+    if (fileMetaRaw) {
+      try { fileMeta = JSON.parse(fileMetaRaw); } catch (_) { fileMeta = []; }
     }
 
     let replyTo = null;
     if (replyToRaw) {
-      try { replyTo = JSON.parse(replyToRaw); } catch (e) {}
+      try { replyTo = JSON.parse(replyToRaw); } catch (_) {}
     }
 
-    // ✅ تشخیص نوع از پسوند + MIME + customType
-    const { mediaType, tgEndpoint, fileField } = detectMediaType(
-      file.name, file.type, customType
-    );
-
-    const tgFormData = new FormData();
-    tgFormData.append("chat_id", env.TELEGRAM_GROUP_ID);
-
-    let tgCaption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(auth.user.fullName)}`;
-    if (replyTo && !replyTo.tgMsgId) {
-      tgCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml((replyTo.text || "").substring(0, 30))}»`;
-    }
-    if (caption) tgCaption += `\n💬 ${escapeXml(caption)}`;
-
-    tgFormData.append("caption", tgCaption);
-    tgFormData.append("parse_mode", "HTML");
-    tgFormData.append(fileField, file, file.name);
-
-    if (replyTo && replyTo.tgMsgId) {
-      tgFormData.append("reply_parameters", JSON.stringify({ message_id: replyTo.tgMsgId }));
+    // Idempotency: return existing message if we already handled this clientMessageId.
+    if (clientMessageId) {
+      const existing = await env.DB.prepare(
+        "SELECT id FROM messages WHERE client_message_id = ?"
+      ).bind(clientMessageId).first();
+      if (existing) {
+        const { results: atts } = await env.DB.prepare(
+          "SELECT id, message_id, media_type, telegram_file_id, file_name, file_size, mime_type, duration, created_at FROM attachments WHERE message_id = ?"
+        ).bind(existing.id).all();
+        return jsonResponse({
+          ok: true,
+          duplicate: true,
+          messageId: existing.id,
+          clientMessageId,
+          attachments: (atts || []).map(attachmentToApi),
+        });
+      }
     }
 
-    const tgRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${tgEndpoint}`, {
-      method: "POST",
-      body: tgFormData
-    });
-    const tgData = await tgRes.json();
-    if (!tgData.ok) {
-      return errorResponse(tgData.description || "خطا در ارسال فایل به تلگرام", 500);
+    // Resolve reply-to telegram message id
+    let tgReplyMsgId = null;
+    if (replyTo && replyTo.id) {
+      const replyRow = await env.DB.prepare(
+        "SELECT telegram_message_id FROM messages WHERE id = ?"
+      ).bind(replyTo.id).first();
+      if (replyRow) tgReplyMsgId = replyRow.telegram_message_id;
     }
 
-    let tgFileId = "";
-    let duration = 0;
-    const resMsg = tgData.result;
+    // Upload all files to Telegram FIRST, then persist. Avoids orphan DB rows on failure.
+    const uploadedResults = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const meta = fileMeta[i] || {};
+      const mediaType = detectMediaType(
+        meta.fileName || file.name, file.type, meta.mediaType
+      );
 
-    if (resMsg.photo && resMsg.photo.length > 0) tgFileId = resMsg.photo[resMsg.photo.length - 1].file_id;
-    else if (resMsg.video) { tgFileId = resMsg.video.file_id; duration = resMsg.video.duration || 0; }
-    else if (resMsg.voice) { tgFileId = resMsg.voice.file_id; duration = resMsg.voice.duration || 0; }
-    else if (resMsg.audio) { tgFileId = resMsg.audio.file_id; duration = resMsg.audio.duration || 0; }
-    else if (resMsg.document) tgFileId = resMsg.document.file_id;
+      let fileCaption = null;
+      if (i === 0) {
+        fileCaption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(auth.user.fullName)}`;
+        if (replyTo && !tgReplyMsgId) {
+          fileCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml((replyTo.text || "").substring(0, 30))}»`;
+        }
+        if (caption) fileCaption += `\n💬 ${escapeXml(caption)}`;
+      }
+
+      const uploaded = await uploadOneToTelegram(
+        env, file, mediaType, fileCaption, i === 0 ? tgReplyMsgId : null
+      );
+
+      uploadedResults.push({
+        file,
+        mediaType,
+        telegramMessageId: uploaded.telegramMessageId,
+        telegramFileId: uploaded.telegramFileId,
+        duration: uploaded.duration,
+      });
+    }
 
     const now = Date.now();
     const msgId = crypto.randomUUID();
     const replyId = replyTo ? replyTo.id : null;
+    const firstTgMsgId = uploadedResults[0]?.telegramMessageId || null;
 
     await env.DB.prepare(`
-      INSERT INTO messages (id, sender_id, text, is_from_telegram, created_at, updated_at, telegram_message_id, reply_to_message_id)
-      VALUES (?, ?, ?, 0, ?, ?, ?, ?)
-    `).bind(msgId, auth.user.id, caption, now, now, resMsg.message_id, replyId).run();
+      INSERT INTO messages (id, client_message_id, sender_id, text, is_from_telegram, created_at, updated_at, telegram_message_id, reply_to_message_id)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
+    `).bind(
+      msgId, clientMessageId, auth.user.id, caption, now, now, firstTgMsgId, replyId
+    ).run();
 
-    const attachmentId = crypto.randomUUID();
-    const attachmentData = {
-      id: attachmentId,
-      messageId: msgId,
-      mediaType,
-      telegramFileId: tgFileId,
-      fileName: file.name,
-      fileSize: file.size,
-      mimeType: file.type || "application/octet-stream",
-      duration,
-      createdAt: now
-    };
+    const attachmentRecords = [];
+    for (const r of uploadedResults) {
+      const attachmentId = crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO attachments (id, message_id, media_type, telegram_file_id, file_name, file_size, mime_type, duration, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        attachmentId, msgId, r.mediaType, r.telegramFileId,
+        r.file.name, r.file.size, r.file.type || "application/octet-stream",
+        r.duration, now
+      ).run();
 
-    await env.DB.prepare(`
-      INSERT INTO attachments (id, message_id, media_type, telegram_file_id, file_name, file_size, mime_type, duration, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(attachmentId, msgId, mediaType, tgFileId, file.name, file.size, file.type, duration, now).run();
+      attachmentRecords.push({
+        id: attachmentId,
+        messageId: msgId,
+        mediaType: r.mediaType,
+        telegramFileId: r.telegramFileId,
+        fileName: r.file.name,
+        fileSize: r.file.size,
+        mimeType: r.file.type || "application/octet-stream",
+        duration: r.duration,
+        createdAt: now,
+      });
+    }
 
     const normalizedMessage = {
       id: msgId,
+      clientMessageId,
       senderId: auth.user.id,
       senderName: auth.user.fullName,
       text: caption,
       isFromTelegram: false,
       createdAt: now,
-      telegramMessageId: resMsg.message_id,
+      telegramMessageId: firstTgMsgId,
       replyToId: replyId,
-      attachment: attachmentData
+      attachments: attachmentRecords,
     };
 
     await emitSyncEvent(env.DB, "message_created", msgId, normalizedMessage);
 
-    // برودکست
     try {
       const roomId = env.CHAT_ROOM.idFromName("global_room");
       await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
         method: "POST",
-        body: JSON.stringify({ type: "new_message", message: normalizedMessage })
+        body: JSON.stringify({ type: "new_message", message: normalizedMessage }),
       });
-    } catch (e) {}
+    } catch (_) {}
 
-    // FCM به سایر دستگاه‌ها
     try {
       const { dispatchNewMessagePush } = await import("../notifications/fcmService.js");
       await dispatchNewMessagePush(env, normalizedMessage, auth.user.id);
-    } catch (e) {}
+    } catch (_) {}
 
     return jsonResponse({
       ok: true,
       messageId: msgId,
-      fileId: tgFileId,
-      mediaUrl: `/api/media/file?fileId=${encodeURIComponent(tgFileId)}`
+      clientMessageId,
+      attachments: attachmentRecords,
     });
   } catch (err) {
     return errorResponse("خطا در پردازش رسانه.", 500, "UPLOAD_ERROR", err.message);
@@ -197,7 +294,7 @@ export async function handleMediaDownload(request, env) {
 
       return new Response(mediaRes.body, {
         status: mediaRes.status,
-        headers: resHeaders
+        headers: resHeaders,
       });
     }
   } catch (_) {}

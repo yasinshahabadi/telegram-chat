@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/features/notifications/data/firebase_messaging_service.dart';
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
+import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_websocket_client.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
@@ -41,7 +42,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _isMarkingRead = false;
   bool _isAppVisible = true;
 
-  // ✅ Debounce برای mark_read (کاهش ترافیک WebSocket و DB)
   Timer? _markReadDebounce;
   final Set<String> _pendingMarkReadIds = {};
 
@@ -57,7 +57,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final currentUser = widget.authRepository.currentUser;
     if (currentUser != null) {
       await widget.chatRepository.initialize(currentUser);
-      // در ابتدای ورود به چت، اگر اپ visible است، پیام‌های خوانده‌نشده را علامت بزن
       await _markUnreadMessagesAsRead();
     }
   }
@@ -73,7 +72,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // ✅ مدیریت چرخه حیات اپ
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final isVisible = state == AppLifecycleState.resumed;
@@ -82,28 +80,22 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       debugPrint('[ChatScreen] App visibility: $_isAppVisible ($state)');
 
       if (_isAppVisible) {
-        // ✅ هنگامی که به فورگراند برمی‌گردد، فوراً همه را یکجا بخوان
         _markReadDebounce?.cancel();
         _flushMarkRead();
       } else {
-        // ✅ هنگام رفتن به پس‌زمینه، debounce را لغو کن
         _markReadDebounce?.cancel();
       }
     }
   }
 
-  /// ✅ با debounce: به‌جای فراخوانی فوری mark_read برای هر پیام،
-  /// پیام‌ها را جمع کرده و بعد از ۸۰۰ میلی‌ثانیه یکجا ارسال کن
   void _onChatUpdate() {
     if (!_isAppVisible) return;
 
     final user = widget.authRepository.currentUser;
     if (user == null) return;
 
-    // ✅ auto-scroll به پایین اگر پیام جدید آمد
     final messages = widget.chatRepository.messages;
     if (messages.isNotEmpty && _scrollController.hasClients) {
-      // فقط اگر در حال اسکرول نیستیم
       if (!_scrollController.position.isScrollingNotifier.value) {
         _scrollToBottom();
       }
@@ -124,7 +116,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  /// ✅ ارسال یکجای mark_read
   Future<void> _flushMarkRead() async {
     if (!_isAppVisible) return;
     if (_isMarkingRead) return;
@@ -217,8 +208,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 12),
                 ListTile(
-                  leading: const Icon(Icons.notifications_active,
-                      color: Colors.green),
+                  leading: const Icon(Icons.notifications_active, color: Colors.green),
                   title: const Text('تست ۱: اعلان مستقیم محلی'),
                   onTap: () async {
                     Navigator.pop(ctx);
@@ -230,13 +220,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   },
                 ),
                 ListTile(
-                  leading:
-                      const Icon(Icons.vpn_key_rounded, color: Colors.amber),
+                  leading: const Icon(Icons.vpn_key_rounded, color: Colors.amber),
                   title: const Text('تست ۳: دریافت توکن FCM'),
                   onTap: () async {
                     Navigator.pop(ctx);
-                    final token =
-                        await FirebaseMessagingService.instance.getToken();
+                    final token = await FirebaseMessagingService.instance.getToken();
                     if (mounted && token != null) {
                       showDialog(
                         context: context,
@@ -262,6 +250,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  // ═════════════════════════════════════════════
+  //  ضبط ویس
+  // ═════════════════════════════════════════════
+
   Future<void> _handleStartRecordVoice() async {
     final started = await _voiceRecordService.startRecording();
     if (!started && mounted) {
@@ -283,15 +275,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final file = File(path);
     if (!await file.exists()) return;
 
-    await _uploadWithOptimisticUI(
-      file: file,
-      mediaType: 'voice',
-      fileName: file.uri.pathSegments.last,
-      mimeType: 'audio/m4a',
+    await _uploadFilesWithOptimisticUI(
+      files: [file],
+      mediaTypes: ['voice'],
+      originalNames: [file.uri.pathSegments.last],
       token: token,
       user: user,
     );
   }
+
+  // ═════════════════════════════════════════════
+  //  انتخاب و آپلود فایل
+  // ═════════════════════════════════════════════
 
   Future<void> _handleAttachmentPick() async {
     showModalBottomSheet(
@@ -308,18 +303,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               ListTile(
                 leading: const Icon(Icons.image_rounded, color: Colors.blue),
                 title: const Text('ارسال عکس یا ویدیو'),
+                subtitle: const Text('می‌توانید چند فایل انتخاب کنید'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _pickAndSendFile(FileType.media);
+                  _pickAndSendFiles(FileType.media);
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.insert_drive_file_rounded,
-                    color: Colors.amber),
+                leading: const Icon(Icons.insert_drive_file_rounded, color: Colors.amber),
                 title: const Text('ارسال فایل و اسناد'),
+                subtitle: const Text('می‌توانید چند فایل انتخاب کنید'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _pickAndSendFile(FileType.any);
+                  _pickAndSendFiles(FileType.any);
                 },
               ),
             ],
@@ -329,12 +325,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _pickAndSendFile(FileType type) async {
+  Future<void> _pickAndSendFiles(FileType type) async {
     try {
-      final result = await FilePicker.platform.pickFiles(type: type);
-      if (result == null || result.files.single.path == null) return;
+      final result = await FilePicker.platform.pickFiles(
+        type: type,
+        allowMultiple: true,
+      );
+      if (result == null || result.files.isEmpty) return;
 
-      final file = File(result.files.single.path!);
+      final validFiles = <File>[];
+      final mediaTypes = <String>[];
+      final originalNames = <String>[];
+
+      for (final pf in result.files) {
+        if (pf.path == null) continue;
+        final file = File(pf.path!);
+        if (!await file.exists()) continue;
+
+        final name = pf.name;
+        final ext = name.split('.').last.toLowerCase();
+        String mediaType = 'document';
+        if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif'].contains(ext)) {
+          mediaType = 'photo';
+        } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'].contains(ext)) {
+          mediaType = 'video';
+        } else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'].contains(ext)) {
+          mediaType = 'audio';
+        }
+
+        validFiles.add(file);
+        mediaTypes.add(mediaType);
+        originalNames.add(name);
+      }
+
+      if (validFiles.isEmpty) return;
+
       final user = widget.authRepository.currentUser;
       final token = widget.authRepository.sessionToken;
       if (user == null || token == null) {
@@ -342,24 +367,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         return;
       }
 
-      final fileName = result.files.single.name;
-      final ext = fileName.split('.').last.toLowerCase();
-      String mediaType = 'document';
-      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif']
-          .contains(ext)) {
-        mediaType = 'photo';
-      } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']
-          .contains(ext)) {
-        mediaType = 'video';
-      } else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'].contains(ext)) {
-        mediaType = 'audio';
-      }
-
-      await _uploadWithOptimisticUI(
-        file: file,
-        mediaType: mediaType,
-        fileName: fileName,
-        mimeType: result.files.single.extension ?? 'application/octet-stream',
+      await _uploadFilesWithOptimisticUI(
+        files: validFiles,
+        mediaTypes: mediaTypes,
+        originalNames: originalNames,
         token: token,
         user: user,
       );
@@ -368,73 +379,70 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _uploadWithOptimisticUI({
-    required File file,
-    required String mediaType,
-    required String fileName,
-    required String mimeType,
+  Future<void> _uploadFilesWithOptimisticUI({
+    required List<File> files,
+    required List<String> mediaTypes,
+    required List<String> originalNames,
     required String token,
-    required dynamic user,
+    required AuthUser user,
   }) async {
-    final fileSize = await file.length();
-
-    final tempId = widget.chatRepository.addOptimisticUpload(
-      fileName: fileName,
-      fileSize: fileSize,
-      mediaType: mediaType,
+    final optimistic = widget.chatRepository.addOptimisticMultiUpload(
+      files: files,
+      mediaTypes: mediaTypes,
       currentUser: user,
       replyTo: _replyingMessage,
     );
+    final tempId = optimistic.id;
+    final clientMessageId = optimistic.clientMessageId;
 
     setState(() => _replyingMessage = null);
     _scrollToBottom();
 
     try {
-      final uploadResult = await _mediaRemoteService.uploadFile(
-        file: file,
+      final result = await _mediaRemoteService.uploadFiles(
+        files: files,
+        mediaTypes: mediaTypes,
+        originalNames: originalNames,
         sessionToken: token,
-        mediaType: mediaType,
-        caption: '',
-        onProgress: (progress) {
-          widget.chatRepository.updateUploadProgress(tempId, progress);
+        clientMessageId: clientMessageId,
+        onProgress: (p) {
+          widget.chatRepository.updateUploadProgress(tempId, p);
         },
       );
 
       if (!mounted) return;
 
-      if (!uploadResult.isSuccess) {
-        widget.chatRepository.failUpload(tempId, uploadResult.error ?? 'خطا');
-        _showError(uploadResult.error ?? 'خطا در آپلود فایل');
+      if (!result.isSuccess || result.messageId == null) {
+        widget.chatRepository.failUpload(tempId, result.error ?? 'خطا');
+        _showError(result.error ?? 'خطا در آپلود فایل');
         return;
       }
 
-      widget.chatRepository.finalizeUpload(
+      widget.chatRepository.finalizeMultiUpload(
         tempId: tempId,
-        realMessageId: uploadResult.messageId!,
-        fileId: uploadResult.fileId ?? '',
-        fileName: fileName,
-        fileSize: fileSize,
-        mimeType: mimeType,
-        mediaType: mediaType,
+        clientMessageId: clientMessageId,
+        realMessageId: result.messageId!,
+        attachments: result.attachments,
       );
 
-      // کش فایل ارسالی
-      try {
-        final cachedFile =
-            await MediaDownloadManager.instance.cacheUploadedFile(
-          attachmentId: 'att_${uploadResult.messageId}',
-          sourcePath: file.path,
-          fileName: fileName,
-        );
-
-        if (cachedFile != null) {
-          widget.chatRepository.setLocalPathForMessage(
-            uploadResult.messageId!,
-            cachedFile.path,
+      // کش کردن فایل‌های ارسالی با attachmentId سرور.
+      for (int i = 0; i < result.attachments.length && i < files.length; i++) {
+        try {
+          final cached = await MediaDownloadManager.instance.cacheUploadedFile(
+            attachmentId: result.attachments[i].id,
+            sourcePath: files[i].path,
+            originalFileName: originalNames[i],
           );
+          if (cached != null) {
+            widget.chatRepository.setLocalPathForAttachment(
+              result.messageId!,
+              result.attachments[i].id,
+              cached.path,
+            );
+          }
+        } catch (e) {
+          debugPrint('Cache uploaded file failed: $e');
         }
-      } catch (e) {
-        debugPrint('Cache uploaded file failed: $e');
       }
 
       _scrollToBottom();
@@ -624,15 +632,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ),
         body: Column(
           children: [
-            // نوار پیام پین‌شده
             AnimatedBuilder(
               animation: widget.chatRepository,
               builder: (_, __) {
                 final pinned = widget.chatRepository.pinnedMessage;
                 if (pinned == null) return const SizedBox.shrink();
                 return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   color: theme.colorScheme.primaryContainer.withAlpha(128),
                   child: Row(
                     children: [
@@ -674,7 +680,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               },
             ),
 
-            // لیست پیام‌ها
             Expanded(
               child: AnimatedBuilder(
                 animation: widget.chatRepository,
@@ -691,8 +696,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                         'هنوز پیامی وجود ندارد.\nنخستین پیام را ارسال کنید!',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                          color:
-                              theme.colorScheme.onSurfaceVariant.withAlpha(160),
+                          color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
                         ),
                       ),
                     );
@@ -728,7 +732,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               ),
             ),
 
-            // نوار ورودی
             ChatInputBar(
               controller: _inputController,
               replyMessage: _replyingMessage,

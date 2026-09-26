@@ -6,7 +6,7 @@ import 'package:telegram_chat_mobile/features/media/domain/models/media_attachme
 import 'media_remote_service.dart';
 import 'media_local_storage.dart';
 
-/// مدیر دانلود و کش مدیا - هماهنگی بین UI، سرور و حافظه محلی
+/// مدیر دانلود و کش مدیا — کلیدگذاری بر اساس `attachment.id`.
 class MediaDownloadManager extends ChangeNotifier {
   static final MediaDownloadManager instance = MediaDownloadManager._();
   MediaDownloadManager._();
@@ -15,77 +15,88 @@ class MediaDownloadManager extends ChangeNotifier {
   final MediaRemoteService _remote = MediaRemoteService();
   final LocalChatDao _dao = LocalChatDao();
 
+  /// callback: (attachmentId, messageId, localPath)
+  void Function(String attachmentId, String messageId, String localPath)?
+      onDownloadCompleted;
+
   final Map<String, double> _progress = {};
   final Map<String, Future<File?>> _active = {};
 
-  double? progressFor(String messageId) => _progress[messageId];
-  bool isDownloading(String messageId) => _active.containsKey(messageId);
+  double? progressFor(String attachmentId) => _progress[attachmentId];
+  bool isDownloading(String attachmentId) => _active.containsKey(attachmentId);
 
-  /// دانلود فایل + ذخیره در حافظه محلی + به‌روزرسانی DB
-  Future<File?> downloadAndCache({
-    required String messageId,
-    required MediaAttachmentModel attachment,
-  }) async {
-    // ۱. اگر فایل در حافظه هست، برگردان
-    final cached = await _storage.getCachedFile(attachment.fileName);
-    if (cached != null) return cached;
+  /// بررسی بدون دانلود: آیا فایل قبلاً روی دستگاه هست؟
+  Future<File?> resolveLocalFile(MediaAttachmentModel attachment) async {
+    final explicit = await _storage.resolveExisting(attachment.localPath);
+    if (explicit != null) return explicit;
+    return await _storage.getCachedFileForAttachment(attachment.id, attachment.fileName);
+  }
 
-    // ۲. اگر در حال دانلود است، به همان وصل شو
-    if (_active.containsKey(messageId)) {
-      return _active[messageId];
+  /// دانلود + ذخیره در کش + به‌روزرسانی DB.
+  Future<File?> downloadAndCache(MediaAttachmentModel attachment) async {
+    // 1) قبلاً روی دستگاه هست؟ — مسیر را در DB تضمین کن.
+    final existing = await resolveLocalFile(attachment);
+    if (existing != null) {
+      try { await _dao.updateAttachmentLocalPath(attachment.id, existing.path); } catch (_) {}
+      return existing;
     }
 
-    _progress[messageId] = 0.0;
+    // 2) همان فایل در حال دانلود است؟ به همان وصل شو.
+    if (_active.containsKey(attachment.id)) {
+      return _active[attachment.id];
+    }
+
+    _progress[attachment.id] = 0.0;
     notifyListeners();
 
-    final future = _performDownload(messageId, attachment);
-    _active[messageId] = future;
+    final future = _performDownload(attachment);
+    _active[attachment.id] = future;
 
     try {
-      return await future;
+      final file = await future;
+      if (file != null) {
+        try { await _dao.updateAttachmentLocalPath(attachment.id, file.path); } catch (_) {}
+        onDownloadCompleted?.call(attachment.id, attachment.messageId, file.path);
+      }
+      return file;
     } finally {
-      _active.remove(messageId);
-      _progress.remove(messageId);
+      _active.remove(attachment.id);
+      _progress.remove(attachment.id);
       notifyListeners();
     }
   }
 
-  Future<File?> _performDownload(String messageId, MediaAttachmentModel attachment) async {
+  Future<File?> _performDownload(MediaAttachmentModel attachment) async {
     try {
-      final file = await _remote.downloadMedia(
+      final targetPath = await _storage.getTargetPathForAttachment(
+        attachment.id, attachment.fileName,
+      );
+      return await _remote.downloadToFile(
         attachment: attachment,
+        targetPath: targetPath,
         onProgress: (p) {
-          _progress[messageId] = p;
+          _progress[attachment.id] = p;
           notifyListeners();
         },
       );
-
-      if (file != null) {
-        try {
-          await _dao.updateAttachmentLocalPath(attachment.id, file.path);
-        } catch (_) {}
-        notifyListeners();
-      }
-
-      return file;
     } catch (e) {
       debugPrint('[MediaDownload] Failed: $e');
       return null;
     }
   }
 
-  /// کش فایل ارسالی (سمت فرستنده) - کپی از temp به telegram_media
+  /// کش کردن فایل آپلودی (پس از آپلود موفق، تا فایل با attachmentId سرور ذخیره شود).
   Future<File?> cacheUploadedFile({
     required String attachmentId,
     required String sourcePath,
-    required String fileName,
+    required String originalFileName,
   }) async {
     try {
-      final saved = await _storage.saveFileFromPath(sourcePath, fileName);
+      final saved = await _storage.saveFileFromPathForAttachment(
+        sourcePath, attachmentId, originalFileName,
+      );
       if (saved != null) {
-        try {
-          await _dao.updateAttachmentLocalPath(attachmentId, saved.path);
-        } catch (_) {}
+        try { await _dao.updateAttachmentLocalPath(attachmentId, saved.path); } catch (_) {}
         notifyListeners();
       }
       return saved;
@@ -95,7 +106,6 @@ class MediaDownloadManager extends ChangeNotifier {
     }
   }
 
-  /// پاک‌سازی یک فایل خاص (اختیاری)
   Future<void> deleteLocalFile(String localPath) async {
     await _storage.deleteLocalFile(localPath);
     notifyListeners();

@@ -1,6 +1,8 @@
 ﻿import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
 import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
@@ -36,8 +38,7 @@ class ChatRepository extends ChangeNotifier {
   bool get isLoading => _isLoading;
   SocketConnectionState get connectionState => _socketClient.state;
 
-  Map<String, Map<String, dynamic>> get onlineUsers =>
-      Map.unmodifiable(_onlineUsers);
+  Map<String, Map<String, dynamic>> get onlineUsers => Map.unmodifiable(_onlineUsers);
   int get onlineCount => _onlineUsers.length;
   bool isUserOnline(String userId) => _onlineUsers.containsKey(userId);
 
@@ -77,16 +78,15 @@ class ChatRepository extends ChangeNotifier {
         final messageId = raw['id'] as String?;
         if (messageId == null) continue;
 
-        MediaAttachmentModel? attachment;
+        final List<MediaAttachmentModel> atts = [];
         try {
-          final attachments =
-              await _localDao.getAttachmentsForMessage(messageId);
-          if (attachments.isNotEmpty) {
-            attachment = MediaAttachmentModel.fromDbMap(attachments.first);
+          final attachments = await _localDao.getAttachmentsForMessage(messageId);
+          for (final a in attachments) {
+            atts.add(MediaAttachmentModel.fromDbMap(a));
           }
         } catch (_) {}
 
-        loaded.add(ChatMessageModel.fromDbMap(raw, attachment: attachment));
+        loaded.add(ChatMessageModel.fromDbMap(raw, attachments: atts));
       }
 
       _messages = loaded;
@@ -148,8 +148,7 @@ class ChatRepository extends ChangeNotifier {
               }
             : null,
       });
-      await _localDao.enqueuePendingAction(
-          messageId, 'send_message', payloadJson);
+      await _localDao.enqueuePendingAction(messageId, 'send_message', payloadJson);
     } catch (_) {}
 
     if (_socketClient.isConnected) {
@@ -218,18 +217,37 @@ class ChatRepository extends ChangeNotifier {
     _socketClient.sendMarkRead(messageIds);
   }
 
-  String addOptimisticUpload({
-    required String fileName,
-    required int fileSize,
-    required String mediaType,
+  // ═════════════════════════════════════════════
+  //  آپلود Optimistic (چند پیوست)
+  // ═════════════════════════════════════════════
+
+  ChatMessageModel addOptimisticMultiUpload({
+    required List<File> files,
+    required List<String> mediaTypes,
     required AuthUser currentUser,
     ChatMessageModel? replyTo,
   }) {
     final tempId = 'temp_upload_${const Uuid().v4()}';
+    final clientMessageId = const Uuid().v4();
     final now = DateTime.now().millisecondsSinceEpoch;
+
+    final optimisticAtts = <MediaAttachmentModel>[];
+    for (int i = 0; i < files.length; i++) {
+      final f = files[i];
+      optimisticAtts.add(MediaAttachmentModel(
+        id: 'att_${tempId}_$i',
+        messageId: tempId,
+        mediaType: mediaTypes[i],
+        localPath: f.path,
+        fileName: p.basename(f.path),
+        isDownloaded: true,
+        createdAt: now,
+      ));
+    }
 
     final optimistic = ChatMessageModel(
       id: tempId,
+      clientMessageId: clientMessageId,
       senderId: currentUser.id,
       senderName: currentUser.fullName,
       text: '',
@@ -242,66 +260,54 @@ class ChatRepository extends ChangeNotifier {
       updatedAt: now,
       isUploading: true,
       uploadProgress: 0.0,
-      attachment: MediaAttachmentModel(
-        id: 'att_$tempId',
-        messageId: tempId,
-        mediaType: mediaType,
-        fileName: fileName,
-        fileSize: fileSize,
-        isDownloaded: false,
-        createdAt: now,
-      ),
+      attachments: optimisticAtts,
     );
 
     _messages.insert(0, optimistic);
     notifyListeners();
-    return tempId;
+    return optimistic;
   }
 
   void updateUploadProgress(String tempId, double progress) {
     final idx = _messages.indexWhere((m) => m.id == tempId);
     if (idx != -1) {
-      _messages[idx] = _messages[idx].copyWith(uploadProgress: progress);
+      _messages[idx] = _messages[idx].copyWith(uploadProgress: progress.clamp(0.0, 1.0));
       notifyListeners();
     }
   }
 
-  void finalizeUpload({
+  /// جایگزینی پیام موقت با پیام واقعی سرور. Idempotent.
+  void finalizeMultiUpload({
     required String tempId,
+    String? clientMessageId,
     required String realMessageId,
-    required String fileId,
-    required String fileName,
-    required int fileSize,
-    required String mimeType,
-    required String mediaType,
+    required List<MediaAttachmentModel> attachments,
   }) {
-    final idx = _messages.indexWhere((m) => m.id == tempId);
+    int idx = _messages.indexWhere((m) => m.id == tempId);
+    if (idx == -1 && clientMessageId != null) {
+      idx = _messages.indexWhere((m) => m.clientMessageId == clientMessageId);
+    }
     if (idx == -1) return;
 
     final old = _messages[idx];
     final now = DateTime.now().millisecondsSinceEpoch;
+    final mergedAtts = _mergeAttachmentsByIndex(old.attachments, attachments);
 
-    final finalMessage = old.copyWith(
+    _messages[idx] = old.copyWith(
       id: realMessageId,
       status: MessageStatus.synced,
       isUploading: false,
       uploadProgress: 1.0,
       updatedAt: now,
-      attachment: MediaAttachmentModel(
-        id: 'att_$realMessageId',
-        messageId: realMessageId,
-        mediaType: mediaType,
-        telegramFileId: fileId,
-        fileName: fileName,
-        fileSize: fileSize,
-        mimeType: mimeType,
-        isDownloaded: false,
-        createdAt: now,
-      ),
+      attachments: mergedAtts,
     );
-
-    _messages[idx] = finalMessage;
     notifyListeners();
+
+    // Persist locally so restart preserves the state.
+    _localDao.saveMessage(_messages[idx].toDbMap()).catchError((_) {});
+    for (final a in mergedAtts) {
+      _localDao.saveAttachment(a.toDbMap()).catchError((_) {});
+    }
   }
 
   void failUpload(String tempId, String error) {
@@ -315,30 +321,33 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  void setLocalPathForMessage(String messageId, String localPath) {
+  /// به‌روزرسانی مسیر محلی یک پیوست پس از کش شدن آپلود.
+  void setLocalPathForAttachment(
+    String messageId,
+    String attachmentId,
+    String localPath,
+  ) {
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
 
-    final currentAttachment = _messages[idx].attachment;
-    if (currentAttachment == null) return;
+    final msg = _messages[idx];
+    final atts = List<MediaAttachmentModel>.from(msg.attachments);
+    final attIdx = atts.indexWhere((a) => a.id == attachmentId);
+    if (attIdx == -1) return;
 
-    if (currentAttachment.localPath != null &&
-        currentAttachment.localPath == localPath) {
-      return;
-    }
-
-    _messages[idx] = _messages[idx].copyWith(
-      attachment: currentAttachment.copyWith(
-        localPath: localPath,
-        isDownloaded: true,
-      ),
+    atts[attIdx] = atts[attIdx].copyWith(
+      localPath: localPath,
+      isDownloaded: true,
     );
+    _messages[idx] = msg.copyWith(attachments: atts);
     notifyListeners();
 
-    _localDao
-        .updateAttachmentLocalPath(currentAttachment.id, localPath)
-        .catchError((_) {});
+    _localDao.updateAttachmentLocalPath(attachmentId, localPath).catchError((_) {});
   }
+
+  // ═════════════════════════════════════════════
+  //  Socket events
+  // ═════════════════════════════════════════════
 
   Future<void> _handleIncomingSocketEvent(
       Map<String, dynamic> event, AuthUser currentUser) async {
@@ -359,8 +368,7 @@ class ChatRepository extends ChangeNotifier {
     if (type == 'messages_read' && event['messageIds'] != null) {
       final ids = (event['messageIds'] as List).cast<String>();
       final readerId = event['userId'] as String?;
-      final readAt = event['readAt'] as int? ??
-          DateTime.now().millisecondsSinceEpoch;
+      final readAt = event['readAt'] as int? ?? DateTime.now().millisecondsSinceEpoch;
 
       final toMark = <String>[];
       for (final id in ids) {
@@ -385,74 +393,67 @@ class ChatRepository extends ChangeNotifier {
 
     if (type == 'new_message' && event['message'] != null) {
       final msgJson = event['message'] as Map<String, dynamic>;
-      final clientMsgId =
-          msgJson['clientMessageId'] ?? msgJson['client_message_id'];
-      final incomingId = msgJson['id'] as String?;
+      final incoming = ChatMessageModel.fromJson(msgJson);
+      final clientMsgId = incoming.clientMessageId;
 
+      // Case 1: our own optimistic upload echo.
       if (clientMsgId != null) {
-        final existingIndex =
-            _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
-        if (existingIndex != -1) {
-          final existing = _messages[existingIndex];
-          final syncedMessage = existing.copyWith(
-            id: incomingId ?? existing.id,
-            telegramMessageId: msgJson['telegramMessageId'] as int? ??
-                msgJson['tg_msg_id'] as int?,
-            status: MessageStatus.synced,
+        final idx = _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
+        if (idx != -1) {
+          final existing = _messages[idx];
+          final mergedAtts = _mergeAttachmentsByIndex(
+            existing.attachments, incoming.attachments,
           );
-
-          await _localDao.saveMessage(syncedMessage.toDbMap());
+          final merged = existing.copyWith(
+            id: incoming.id,
+            telegramMessageId: incoming.telegramMessageId,
+            status: MessageStatus.synced,
+            isUploading: false,
+            uploadProgress: 1.0,
+            attachments: mergedAtts,
+            updatedAt: incoming.updatedAt,
+          );
+          await _localDao.saveMessage(merged.toDbMap());
+          for (final a in merged.attachments) {
+            try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
+          }
           await _localDao.removePendingAction(existing.id);
-
-          _messages[existingIndex] = syncedMessage;
+          _messages[idx] = merged;
           notifyListeners();
           return;
         }
       }
 
-      ChatMessageModel incoming = ChatMessageModel.fromJson(msgJson);
-
-      if (incomingId != null) {
-        final existingIndex =
-            _messages.indexWhere((m) => m.id == incomingId);
-        if (existingIndex != -1) {
-          final existing = _messages[existingIndex];
-          final existingAttachment = existing.attachment;
-
-          if (existingAttachment != null &&
-              existingAttachment.localPath != null &&
-              incoming.attachment != null) {
-            final mergedAttachment = incoming.attachment!.copyWith(
-              localPath: existingAttachment.localPath,
-              isDownloaded: true,
-            );
-            incoming = incoming.copyWith(attachment: mergedAttachment);
-          } else if (existingAttachment != null &&
-              incoming.attachment == null) {
-            incoming = incoming.copyWith(attachment: existingAttachment);
-          }
-
-          if (existing.readAt != null && incoming.readAt == null) {
-            incoming = incoming.copyWith(readAt: existing.readAt);
-          }
+      // Case 2: already-processed echo (by id).
+      final idxById = _messages.indexWhere((m) => m.id == incoming.id);
+      if (idxById != -1) {
+        final existing = _messages[idxById];
+        final mergedAtts = _mergeAttachmentsByIndex(
+          existing.attachments, incoming.attachments,
+        );
+        final merged = existing.copyWith(
+          clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
+          attachments: mergedAtts,
+        );
+        await _localDao.saveMessage(merged.toDbMap());
+        for (final a in merged.attachments) {
+          try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
         }
+        _messages[idxById] = merged;
+        notifyListeners();
+        return;
       }
 
+      // Case 3: truly new message.
       await _localDao.saveMessage(incoming.toDbMap());
-
-      if (incoming.attachment != null) {
-        try {
-          await _localDao.saveAttachment(incoming.attachment!.toDbMap());
-        } catch (_) {}
+      for (final a in incoming.attachments) {
+        try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
       }
-
-      _messages.removeWhere((m) => m.id == incoming.id);
       _messages.insert(0, incoming);
       notifyListeners();
       return;
     }
 
-    // ✅ مدیریت ACK پیام ارسالی
     if (type == 'message_ack' && event['clientMessageId'] != null) {
       final clientMsgId = event['clientMessageId'] as String;
       final realMessageId = event['messageId'] as String?;
@@ -475,8 +476,7 @@ class ChatRepository extends ChangeNotifier {
 
       final index = _messages.indexWhere((m) => m.id == mId);
       if (index != -1) {
-        _messages[index] =
-            _messages[index].copyWith(text: newText, isEdited: true);
+        _messages[index] = _messages[index].copyWith(text: newText, isEdited: true);
         notifyListeners();
       }
       return;
@@ -488,7 +488,6 @@ class ChatRepository extends ChangeNotifier {
       await _localDao.setPinnedMessage(pinned.id, true);
 
       _pinnedMessage = pinned;
-      // ✅ پاک کردن وضعیت پین پیام‌های قبلی
       for (int i = 0; i < _messages.length; i++) {
         if (_messages[i].id != pinned.id && _messages[i].isPinned) {
           _messages[i] = _messages[i].copyWith(isPinned: false);
@@ -526,6 +525,28 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
+  /// ادغام پیوست‌ها بر اساس ترتیب (برای optimistic → server).
+  /// حفظ `localPath` از سمت موجود.
+  List<MediaAttachmentModel> _mergeAttachmentsByIndex(
+    List<MediaAttachmentModel> existing,
+    List<MediaAttachmentModel> incoming,
+  ) {
+    final result = <MediaAttachmentModel>[];
+    for (int i = 0; i < incoming.length; i++) {
+      final inc = incoming[i];
+      if (i < existing.length) {
+        final ex = existing[i];
+        result.add(inc.copyWith(
+          localPath: inc.localPath ?? ex.localPath,
+          isDownloaded: inc.isDownloaded || ex.isDownloaded,
+        ));
+      } else {
+        result.add(inc);
+      }
+    }
+    return result;
+  }
+
   void _updateMessageStatusInMemory(String id, MessageStatus newStatus) {
     final index = _messages.indexWhere((m) => m.id == id);
     if (index != -1) {
@@ -540,8 +561,7 @@ class ChatRepository extends ChangeNotifier {
 
     final index = _messages.indexWhere((m) => m.id == messageId);
     if (index != -1) {
-      _messages[index] =
-          _messages[index].copyWith(text: newText, isEdited: true);
+      _messages[index] = _messages[index].copyWith(text: newText, isEdited: true);
       notifyListeners();
     }
   }

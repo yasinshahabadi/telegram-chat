@@ -4,7 +4,6 @@ import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_mo
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/user_avatar.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/widgets/media_bubble_content.dart';
 
-/// ویجت بالون نمایش پیام با آواتار، تیک خوانده‌شدن، و نوار پیشرفت آپلود
 class MessageBubble extends StatelessWidget {
   final ChatMessageModel message;
   final bool isMe;
@@ -41,7 +40,6 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // پیام‌های دیگران: آواتار + بالون
     if (!isMe) {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -62,7 +60,6 @@ class MessageBubble extends StatelessWidget {
       );
     }
 
-    // پیام‌های خودم
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Align(
@@ -77,7 +74,7 @@ class MessageBubble extends StatelessWidget {
 
     return ConstrainedBox(
       constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * 0.72,
+        maxWidth: MediaQuery.of(context).size.width * 0.78,
       ),
       child: Container(
         decoration: BoxDecoration(
@@ -102,7 +99,6 @@ class MessageBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // نام فرستنده
                   if (!isMe) ...[
                     Text(
                       message.senderName,
@@ -115,7 +111,6 @@ class MessageBubble extends StatelessWidget {
                     const SizedBox(height: 4),
                   ],
 
-                  // ریپلای
                   if (message.replyToName != null) ...[
                     Container(
                       margin: const EdgeInsets.only(bottom: 6),
@@ -156,21 +151,21 @@ class MessageBubble extends StatelessWidget {
                     ),
                   ],
 
-                  // مدیا
-                  if (message.attachment != null) ...[
+                  if (message.hasAttachments) ...[
                     if (message.isUploading) ...[
                       _buildUploadProgress(theme),
-                    ] else ...[
+                    ] else if (message.attachments.length == 1) ...[
                       MediaBubbleContent(
-                        attachment: message.attachment!,
+                        attachment: message.attachments.first,
                         isMe: isMe,
                         baseUrl: AppConfig.baseUrl,
                       ),
+                    ] else ...[
+                      _buildMultiAttachments(theme, isMe),
                     ],
                     if (message.text.isNotEmpty) const SizedBox(height: 6),
                   ],
 
-                  // متن
                   if (message.text.isNotEmpty) ...[
                     Text(
                       message.text,
@@ -186,7 +181,6 @@ class MessageBubble extends StatelessWidget {
 
                   const SizedBox(height: 4),
 
-                  // پایین: ویرایش + زمان + تیک
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.end,
@@ -197,8 +191,7 @@ class MessageBubble extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 10,
                             fontStyle: FontStyle.italic,
-                            color:
-                                theme.colorScheme.onSurfaceVariant.withAlpha(160),
+                            color: theme.colorScheme.onSurfaceVariant.withAlpha(160),
                           ),
                         ),
                       ],
@@ -206,8 +199,7 @@ class MessageBubble extends StatelessWidget {
                         message.formattedTime,
                         style: TextStyle(
                           fontSize: 11,
-                          color:
-                              theme.colorScheme.onSurfaceVariant.withAlpha(180),
+                          color: theme.colorScheme.onSurfaceVariant.withAlpha(180),
                         ),
                       ),
                       if (isMe) ...[
@@ -225,8 +217,62 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  /// نوار پیشرفت آپلود مدیا
+  /// نمایش چند پیوست: گرید دو ستونه ساده.
+  Widget _buildMultiAttachments(ThemeData theme, bool isMe) {
+    final atts = message.attachments;
+    final rows = <Widget>[];
+
+    for (int i = 0; i < atts.length; i += 2) {
+      final left = atts[i];
+      final right = (i + 1 < atts.length) ? atts[i + 1] : null;
+
+      rows.add(
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _buildAttachmentCell(left, isMe),
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: right != null
+                  ? _buildAttachmentCell(right, isMe)
+                  : const SizedBox(),
+            ),
+          ],
+        ),
+      );
+      if (i + 2 < atts.length) rows.add(const SizedBox(height: 4));
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: rows,
+    );
+  }
+
+  Widget _buildAttachmentCell(dynamic att, bool isMe) {
+    return AspectRatio(
+      aspectRatio: 1,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: MediaBubbleContent(
+          attachment: att,
+          isMe: isMe,
+          baseUrl: AppConfig.baseUrl,
+        ),
+      ),
+    );
+  }
+
   Widget _buildUploadProgress(ThemeData theme) {
+    final count = message.attachments.length;
+    final firstAtt = message.attachments.first;
+    final label = count > 1
+        ? 'در حال ارسال $count فایل…'
+        : firstAtt.fileName;
+
     return Container(
       width: 220,
       padding: const EdgeInsets.all(12),
@@ -240,11 +286,11 @@ class MessageBubble extends StatelessWidget {
           Row(
             children: [
               Icon(
-                message.attachment!.isPhoto
+                firstAtt.isPhoto
                     ? Icons.image_rounded
-                    : message.attachment!.isVideo
+                    : firstAtt.isVideo
                         ? Icons.videocam_rounded
-                        : message.attachment!.isVoice
+                        : firstAtt.isVoice
                             ? Icons.mic_rounded
                             : Icons.insert_drive_file_rounded,
                 size: 20,
@@ -253,7 +299,7 @@ class MessageBubble extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  message.attachment!.fileName,
+                  label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -295,7 +341,6 @@ class MessageBubble extends StatelessWidget {
       );
     }
 
-    // تیک دوم: خوانده‌شده
     if (message.isSynced && message.isRead) {
       return Icon(
         Icons.done_all_rounded,
@@ -304,7 +349,6 @@ class MessageBubble extends StatelessWidget {
       );
     }
 
-    // تیک اول: ارسال شده اما خوانده‌نشده
     if (message.isSynced) {
       return Icon(
         Icons.done_rounded,

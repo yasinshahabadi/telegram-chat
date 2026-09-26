@@ -46,6 +46,16 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
   }
 
   @override
+  void didUpdateWidget(MediaBubbleContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // وقتی مدل به‌روز می‌شود (مثلاً localPath اضافه می‌شود)، دوباره چک کن.
+    if (oldWidget.attachment.id != widget.attachment.id ||
+        oldWidget.attachment.localPath != widget.attachment.localPath) {
+      _checkLocal();
+    }
+  }
+
+  @override
   void dispose() {
     MediaDownloadManager.instance.removeListener(_onManagerUpdate);
     _audioPlayer?.dispose();
@@ -54,9 +64,9 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
 
   void _onManagerUpdate() {
     if (!mounted) return;
-    final msgId = widget.attachment.messageId;
-    final downloading = MediaDownloadManager.instance.isDownloading(msgId);
-    final progress = MediaDownloadManager.instance.progressFor(msgId) ?? 0.0;
+    final attId = widget.attachment.id;
+    final downloading = MediaDownloadManager.instance.isDownloading(attId);
+    final progress = MediaDownloadManager.instance.progressFor(attId) ?? 0.0;
     if (downloading != _isDownloading || (progress - _progress).abs() > 0.01) {
       setState(() {
         _isDownloading = downloading;
@@ -65,11 +75,13 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
     }
   }
 
-  void _checkLocal() {
-    final path = widget.attachment.localPath;
-    if (path != null && File(path).existsSync()) {
-      _localFile = File(path);
-    }
+  Future<void> _checkLocal() async {
+    final f = await MediaDownloadManager.instance.resolveLocalFile(widget.attachment);
+    if (!mounted) return;
+    setState(() {
+      _localFile = f;
+      if (f != null) _downloadFailed = false;
+    });
   }
 
   bool get _hasLocal => _localFile != null;
@@ -81,10 +93,7 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
       _downloadFailed = false;
     });
 
-    final file = await MediaDownloadManager.instance.downloadAndCache(
-      messageId: widget.attachment.messageId,
-      attachment: widget.attachment,
-    );
+    final file = await MediaDownloadManager.instance.downloadAndCache(widget.attachment);
 
     if (!mounted) return;
     setState(() {
@@ -287,11 +296,10 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
 
   @override
   Widget build(BuildContext context) {
-    super.build(context); // برای AutomaticKeepAliveClientMixin
+    super.build(context);
     final att = widget.attachment;
     final theme = Theme.of(context);
 
-    // ─── عکس ───
     if (att.isPhoto) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
@@ -314,7 +322,6 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
       );
     }
 
-    // ─── ویدیو ───
     if (att.isVideo) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
@@ -358,7 +365,6 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
       );
     }
 
-    // ─── ویس / صوت ───
     if (att.isVoice || att.isAudio) {
       final currentSeconds = _position.inSeconds;
       final totalSeconds = att.duration > 0 ? att.duration : 1;
@@ -433,7 +439,6 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
       );
     }
 
-    // ─── سند ───
     if (!_hasLocal && !_isDownloading) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),

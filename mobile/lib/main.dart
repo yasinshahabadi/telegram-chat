@@ -19,6 +19,7 @@ import 'features/chat/data/chat_repository.dart';
 import 'features/chat/data/chat_websocket_client.dart';
 import 'features/chat/data/sync_engine.dart';
 import 'features/chat/presentation/screens/chat_screen.dart';
+import 'features/media/data/media_download_manager.dart';
 import 'features/notifications/data/firebase_messaging_service.dart';
 import 'features/notifications/data/notification_service.dart';
 
@@ -42,6 +43,13 @@ void main() async {
     localDao: localDao,
     socketClient: socketClient,
   );
+
+  // ✅ سیم‌کشی callback دانلود مدیا → ریپازیتوری چت
+  //    (تا پس از دانلود، localPath روی مدل به‌روز شود)
+  MediaDownloadManager.instance.onDownloadCompleted =
+      (attachmentId, messageId, localPath) {
+    chatRepository.setLocalPathForAttachment(messageId, attachmentId, localPath);
+  };
 
   final notifService = NotificationService.instance;
   await notifService.initialize();
@@ -156,7 +164,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    // ✅ گوش دادن به رویداد کلیک روی اعلان
     _notificationClickSubscription =
         notificationClickStream.listen(_onNotificationClicked);
   }
@@ -168,7 +175,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     super.dispose();
   }
 
-  /// ✅ مدیریت کلیک روی اعلان: sync + mark_read
   Future<void> _onNotificationClicked(RemoteMessage message) async {
     debugPrint('[Main] Notification clicked, syncing messages...');
     final token = widget.authStorage.getSessionToken();
@@ -185,7 +191,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
       onSyncCompleted: () {
         widget.chatRepository.loadLocalMessages();
         widget.chatRepository.processPendingQueue();
-        // ✅ mark_read پس از sync
         _markAllUnreadAsRead();
       },
     );
@@ -220,7 +225,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     }
   }
 
-  /// ✅ فقط یک بار در زمان احراز هویت فراخوانی می‌شود
   void _ensureConnectedAndSynced() {
     if (_hasInitialized) return;
     _hasInitialized = true;
@@ -329,7 +333,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
           }
 
           if (widget.authRepository.isAuthenticated) {
-            // ✅ فقط یک بار فراخوانی می‌شود (نه در هر rebuild)
             WidgetsBinding.instance.addPostFrameCallback((_) {
               _ensureConnectedAndSynced();
             });

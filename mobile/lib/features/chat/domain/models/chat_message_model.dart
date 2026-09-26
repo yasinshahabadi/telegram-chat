@@ -37,9 +37,9 @@ class ChatMessageModel {
   final int createdAt;
   final int updatedAt;
   final Map<String, int> reactions;
-  final MediaAttachmentModel? attachment;
-  final double uploadProgress;   // ✅ 0.0 تا 1.0 برای نمایش نوار پیشرفت
-  final bool isUploading;        // ✅ وضعیت آپلود
+  final List<MediaAttachmentModel> attachments;
+  final double uploadProgress;
+  final bool isUploading;
 
   const ChatMessageModel({
     required this.id,
@@ -59,15 +59,21 @@ class ChatMessageModel {
     required this.createdAt,
     required this.updatedAt,
     this.reactions = const {},
-    this.attachment,
+    this.attachments = const [],
     this.uploadProgress = 1.0,
     this.isUploading = false,
   });
 
+  /// Backward-compatible getter: first attachment, or null.
+  MediaAttachmentModel? get attachment =>
+      attachments.isEmpty ? null : attachments.first;
+
+  bool get hasAttachments => attachments.isNotEmpty;
+
   factory ChatMessageModel.fromDbMap(
     Map<String, dynamic> map, {
     Map<String, int> reactions = const {},
-    MediaAttachmentModel? attachment,
+    List<MediaAttachmentModel> attachments = const [],
   }) {
     return ChatMessageModel(
       id: map['id'] as String? ?? '',
@@ -87,7 +93,7 @@ class ChatMessageModel {
       createdAt: map['created_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: map['updated_at'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       reactions: reactions,
-      attachment: attachment,
+      attachments: attachments,
     );
   }
 
@@ -113,9 +119,15 @@ class ChatMessageModel {
   }
 
   factory ChatMessageModel.fromJson(Map<String, dynamic> json) {
-    MediaAttachmentModel? att;
-    if (json['attachment'] != null && json['attachment'] is Map<String, dynamic>) {
-      att = MediaAttachmentModel.fromJson(json['attachment'] as Map<String, dynamic>);
+    final List<MediaAttachmentModel> atts = [];
+    if (json['attachments'] is List) {
+      for (final a in (json['attachments'] as List)) {
+        if (a is Map<String, dynamic>) {
+          atts.add(MediaAttachmentModel.fromJson(a));
+        }
+      }
+    } else if (json['attachment'] is Map<String, dynamic>) {
+      atts.add(MediaAttachmentModel.fromJson(json['attachment'] as Map<String, dynamic>));
     }
 
     return ChatMessageModel(
@@ -135,7 +147,7 @@ class ChatMessageModel {
       readAt: json['readAt'] as int? ?? json['read_at'] as int?,
       createdAt: json['createdAt'] as int? ?? json['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       updatedAt: json['updatedAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
-      attachment: att,
+      attachments: atts,
     );
   }
 
@@ -157,7 +169,7 @@ class ChatMessageModel {
     int? createdAt,
     int? updatedAt,
     Map<String, int>? reactions,
-    MediaAttachmentModel? attachment,
+    List<MediaAttachmentModel>? attachments,
     double? uploadProgress,
     bool? isUploading,
   }) {
@@ -179,7 +191,7 @@ class ChatMessageModel {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       reactions: reactions ?? this.reactions,
-      attachment: attachment ?? this.attachment,
+      attachments: attachments ?? this.attachments,
       uploadProgress: uploadProgress ?? this.uploadProgress,
       isUploading: isUploading ?? this.isUploading,
     );
