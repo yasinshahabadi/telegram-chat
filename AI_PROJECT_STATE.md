@@ -1,6 +1,6 @@
 # AI_PROJECT_STATE.md
 
-آخرین به‌روزرسانی: 1405/07/05 (2026-09-27)
+آخرین به‌روزرسانی: 1405/07/06 (2026-09-28)
 
 ---
 
@@ -8,12 +8,13 @@
 
 - نام: **Guysgram**
 - پکیج اندروید: `com.yasinshahabadi.guysgram`
-- نسخهٔ فعلی: **1.0.8+8** (منتشرشده)
+- نسخهٔ فعلی در توسعه: **1.0.8+8** (منتشرشده روی GitHub)
 - نسخهٔ بعدی برنامه‌ریزی‌شده: **1.0.9+9**
 - پلتفرم هدف: **فقط اندروید**
 - نوع پروژه: چت گروهی متصل به سوپرگروه تلگرام
 - **ریپوی GitHub:** `yasinshahabadi/telegram-chat`
-- **آخرین Release:** `v1.0.8` (تاریخ: 1405/07/05)
+- **آخرین Release:** `v1.0.8`
+- **محیط استقرار فعلی:** `staging` (تصمیم کاربر: production فعلاً استفاده نمی‌شود)
 
 ## ۲. هدف پروژه
 
@@ -24,8 +25,8 @@
 ## ۳. مرحلهٔ فعلی
 
 - **توسعهٔ فعال** روی محیط **staging**.
-- ماژول مدیا، ریپلای، ری‌اکشن و حذف پیام: **تأیید شده**.
-- آماده برای فاز بعدی.
+- ماژول مدیا، ریپلای، ری‌اکشن، حذف، read receipt، و اتصال پایدار: **تأیید شده**.
+- آماده برای فاز بعدی (Divider نخوانده‌ها).
 
 ## ۴. معماری فعلی
 
@@ -33,14 +34,16 @@
 - تفکیک فیچر-محور: `auth`, `chat`, `media`, `notifications`, `core`, `update`
 - مدیریت وضعیت: `ChangeNotifier` + `ListenableBuilder`
 - دیتابیس محلی: `sqflite` نسخهٔ **۳**
-- همگام‌سازی: نشانگر ترتیبی + pending_actions
-- بلادرنگ: WebSocket → Durable Object
+- همگام‌سازی: نشانگر ترتیبی + pending_actions + sync_events
+- بلادرنگ: WebSocket + heartbeat (25s ping / 60s silence timeout)
+- مکانیزم catch-up: debounced sync روی reconnect + FCM foreground + app resume + timer هر ۹۰ ثانیه
 - مدیا: بر پایهٔ `file_id` تلگرام (بدون R2)
 
 **سرور (Cloudflare Workers):**
 - JavaScript ESM
 - D1 + Durable Object `ChatRoom`
 - Zero-Trust Session
+- WebSocket heartbeat responder
 
 ## ۵. محدودیت‌های مهم
 
@@ -52,15 +55,16 @@
 ## ۶. حالت کاری فعلی
 
 - **Last verified build:** ✅ سرور staging + کلاینت روی دستگاه واقعی
-- **Last verified release:** ✅ GitHub Release `v1.0.8` با APK ضمیمه
-- **Last verified update flow:** ✅ از `v1.0.7+7` → `v1.0.8+8` روی دستگاه واقعی
+- **Last verified release:** ✅ GitHub Release `v1.0.8`
 - **Last verified tests:**
   - ماژول مدیا: ۷ سناریو
   - ماژول ریپلای: ۵ سناریو
   - ماژول ری‌اکشن + حذف: ۷ سناریو
   - تست بهینگی retry: ۳ سناریو
   - انتشار و به‌روزرسانی خودکار: ✅
-- **Known blocking bug:** ندارد.
+  - **session-1 (این جلسه): ۸ سناریو**
+  - **read receipt visibility fix: ۳ سناریو**
+  - **media upload persistence fix: ۵ سناریو**
 - **Known blocking bug:** ندارد.
 
 ## ۷. دیتابیس محلی — تاریخچهٔ schema
@@ -71,133 +75,114 @@
 | v2 | افزودن `messages.read_at` |
 | v3 | افزودن ۵ ستون ریپلای مدیا به `messages` |
 
-**نکته:** برای ری‌اکشن‌ها و حذف پیام، migration لازم نبود — جدول `reactions` از ابتدا وجود داشت؛ فیلدهای حذف روی خود پیام پیاده‌سازی شدند (بدون ستون جدید در کلاینت).
+**نکته:** برای تغییرات این جلسه، migration لازم نبود. read receipt از جدول `message_reads` سرور می‌آید و به `read_at` محلی map می‌شود.
 
-## ۸. باگ‌های رفع‌شده این جلسه
+## ۸. باگ‌های رفع‌شده (تاریخی)
 
-### ماژول مدیا
-| باگ | ریشه |
-|---|---|
-| همه پیوست‌ها یک فایل نشان می‌دادند | نام‌گذاری بر اساس fileName |
-| دکمهٔ دانلود پس از خروج برمی‌گشت | cache-hit مسیر را در DB ذخیره نمی‌کرد |
-| پست تکراری هنگام آپلود | نبود idempotency |
-| نوار پیشرفت پرش می‌کرد | ByteStream بدون گزارش |
+### ماژول مدیا (جلسات پیشین)
+- نام‌گذاری یکسان فایل‌ها → کلید بر اساس `attachment.id`
+- دکمهٔ دانلود پس از خروج → تضمین ذخیره در DB
+- پست تکراری هنگام آپلود → idempotency با `client_message_id`
+- نوار پیشرفت پرش → progress stream واقعی
 
 ### ماژول ریپلای
-| باگ | ریشه |
-|---|---|
-| پیش‌نمایش بعد از restart می‌پرید | sync جایگزین کورکورانه |
-| Tap روی پیش‌نمایش کار نمی‌کرد | پیاده‌سازی نشده بود |
-| Thumbnail مدیا نبود | پیاده‌سازی نشده بود |
-| Overflow در picker ردیف ایموجی | Row ثابت بدون اسکرول |
+- پیش‌نمایش بعد از restart می‌پرید → merge در sync
+- Tap روی پیش‌نمایش کار نمی‌کرد → `Scrollable.ensureVisible`
+- Thumbnail نبود → JOIN در سرور + widget جدید
+- Overflow در picker ایموجی → SingleChildScrollView
 
-### ماژول حذف + retry
-| باگ | ریشه |
-|---|---|
-| حذف آفلاین گم می‌شد | enqueue بعد از send ناموفق انجام می‌شد؛ اما WebSocket تا ۳۰s آفلاین را تشخیص نمی‌دهد |
-| retry بعد از Force Stop نمی‌ماند | pending action گم می‌شد یا اصلاً ثبت نمی‌شد |
-| sync پیام حذف‌شده را دوباره اضافه می‌کرد | DAO گارد نداشت |
+### ماژول ری‌اکشن + حذف
+- delete آفلاین گم می‌شد → enqueue قبل از send
+- retry بعد از Force Stop نمی‌ماند → ذخیره در pending_actions
+- sync پیام حذف‌شده را برمی‌گرداند → DAO guard
 
-## ۹. فیچرهای افزوده‌شده این جلسه
+### جلسهٔ جاری (session-1)
+- **appVersion hardcoded** → خواندن از PackageInfo
+- **کد مردهٔ `/api/messages`** → حذف کامل
+- **Auto-scroll آزاردهنده** → فقط وقتی نزدیک پایین + پیام جدید
+- **WebSocket گیر می‌کرد بدون اطلاع** → heartbeat با ۲۵s ping / ۶۰s silence
+- **پیام‌ها بعد از قطعی کوتاه نمی‌آمدند** → sync روی reconnect/FCM/resume/timer
+- **تیک خوانده‌شدن قبل از دیدن** → mark-read فقط وقتی `_isNearBottom`
+- **پیام مدیا ناپدید می‌شد** → ذخیرهٔ optimistic در DB قبل از HTTP + حفظ در `loadLocalMessages`
 
-### مدیا
-- پشتیبانی چند پیوست در یک پیام (گرید ۲ ستونه)
-- نوار پیشرفت واقعی از stream
+## ۹. فیچرهای افزوده‌شده (تاریخی)
 
-### ریپلای
-- Swipe-to-Reply با فیدبک لمسی
-- Jump-to-Parent با هایلایت کهربایی
-- Thumbnail مدیا در پیش‌نمایش (کش → شبکه → آیکون)
-- برچسب فارسی نوع مدیا
-
-### ری‌اکشن
-- چیپ‌های واکنش زیر پیام با toggle
-- منوی picker با ۸ ایموجی رایج (قابل اسکرول افقی)
-- همگام‌سازی دوطرفه با تلگرام
-- نمایش "من واکنش داده‌ام" با هایلایت
-
-### حذف پیام
-- تأییدیهٔ modal قبل از حذف
-- Optimistic removal (فوری از UI)
-- Idempotent (تلاش‌های تکراری آسیب نمی‌زنند)
-- همگام‌سازی با تلگرام (deleteMessage API)
-- آفلاین-safe: pending action قبل از send ثبت می‌شود
-- Garbage collection خودکار پس از تأیید سرور
-- Admin می‌تواند پیام هر کسی را حذف کند؛ کاربر عادی فقط پیام خودش
+- **مدیا:** پشتیبانی چند پیوست، نوار پیشرفت واقعی، کش LRU 200MB
+- **ریپلای:** Swipe-to-Reply، Jump-to-Parent، Thumbnail مدیا، برچسب فارسی
+- **ری‌اکشن:** چیپ + picker قابل اسکرول + همگام با تلگرام
+- **حذف:** تأییدیه، optimistic، idempotent، آفلاین-safe
+- **Update:** بررسی خودکار از GitHub Releases
 
 ## ۱۰. تصمیمات معماری اخیر
 
-**تصمیم:** نام‌گذاری فایل محلی بر اساس `attachment.id` (نه fileName)
-- **دلیل:** جلوگیری از تصادم بین پیوست‌های مختلف
-
-**تصمیم:** دیتابیس محلی، آرایهٔ `attachments` جایگزین `attachment` شد
-- **سازگاری عقب‌رو:** getter `attachment` (first) باقی ماند
-
-**تصمیم:** R2 کنار گذاشته شد (محدودیت کارت اعتباری)
-
-**تصمیم:** اطلاعات ریپلای مدیا denormalize شد
-- **دلیل:** اجتناب از JOIN در render
-- **هزینه:** ۵ ستون اضافی
-
-**تصمیم:** retry هوشمند و آگاهی از connection
-- **قبلی:** timer ثابت هر ۱۲s، حتی آفلاین
-- **جدید:** آفلاین = صفر کوئری DB؛ اتصال مجدد = retry فوری؛ queue خالی = توقف خودکار
-- **جایگزین‌های رد شده:** exponential backoff (پیچیدگی اضافی برای سود ناچیز)
-
-**تصمیم:** delete به‌صورت idempotent در سرور
-- **دلیل:** retry-safe و آفلاین-safe
-
-**تصمیم:** aggregate reactions با userIds برای نمایش "من واکنش دادم"
-- **جایگزین رد شده:** کوئری جداگانه برای هر کاربر (کندی + N+1)
+**تصمیم:** نام فایل محلی بر اساس `attachment.id` (نه fileName)
+**تصمیم:** `attachments` آرایه‌ای، با getter سازگار `attachment`
+**تصمیم:** R2 کنار گذاشته شد
+**تصمیم:** اطلاعات ریپلای مدیا denormalize شده روی `messages` (۵ ستون)
+**تصمیم:** retry هوشمند و آگاه از connection (نه exponential backoff)
+**تصمیم:** delete idempotent در سرور
+**تصمیم:** read receipt از طریق `sync_events` برای کاربران آفلاین
+**تصمیم:** heartbeat دوطرفه (ping/pong) برای تشخیص قطعی پنهان
+**تصمیم:** optimistic media writes قبل از HTTP (نه بعد)
+**تصمیم:** mark-as-read فقط وقتی کاربر نزدیک پایین است
 
 ## ۱۱. بدهی فنی
 
 - **بدون تست خودکار** (فقط placeholder).
-- **آلبوم تلگرام (Media Group):** هر عکس در آلبوم → یک پیام جدا.
+- **آلبوم تلگرام (Media Group):** هر عکس در آلبوم → پیام جدا.
 - `_ensureConnectedAndSynced()` در `build()` — الگوی کارآمد ولی زیبا نیست.
-- **`sync_engine.dart` merge پیچیده شده:** هر ستون جدید نیاز به تکرار در merge دارد. می‌توان به متد `mergeFrom` روی مدل منتقل کرد.
-- **`AI_PROJECT_STATE.md` هنوز در گیت نباشد؟** — بررسی شود.
-- ~~`messagesController.js` ناقص است~~ — **حذف شد** (1405/07/06). endpoint `/api/messages` استفاده نمی‌شد.
+- **Divider نخوانده‌ها:** هنوز پیاده‌سازی نشده (جلسهٔ بعدی).
+- `/api/test-push` بدون احراز هویت (کاندید حذف یا محافظت).
+- `_showNotificationDebugMenu` در build production نمایش داده می‌شود.
+- `messagesController.js` حذف شد (تأییدشده).
 
-## ۱۲. فایل‌های اخیراً تغییر یافته
+## ۱۲. فایل‌های اخیراً تغییر یافته (این جلسه)
 
-### فاز ۱ — رفع باگ‌های مدیا + چند پیوست
-### فاز ۲ — ریپلای کامل
-### فاز ۳ — ری‌اکشن + حذف + retry آفلاین
+**سرور:**
+- `src/realtime/ChatRoom.js` (ping/pong + messages_read_batch)
+- `src/index.js` (حذف route `/api/messages`)
+- `src/chat/messagesController.js` (حذف شد)
 
-**سرور (۳):** `ChatRoom.js`, `normalizer.js`, `telegramClient.js`, `mediaController.js`
-**کلاینت (۱۲):** فایل‌های `mobile/lib/**` مرتبط
-
-### پاک‌سازی‌ها
-- `schema.sql` حذف شد
-- `.gitignore` اصلاح شد
-- `Guides/TARGET_ARCHITECTURE.md` هم‌راستا شد
-- `src/chat/messagesController.js` (حذف شد — کد مرده)
-- `src/index.js` (حذف import و route مربوطه)
+**کلاینت:**
+- `mobile/lib/features/auth/data/auth_remote_service.dart`
+- `mobile/lib/features/chat/data/chat_websocket_client.dart`
+- `mobile/lib/features/chat/data/chat_repository.dart`
+- `mobile/lib/features/chat/data/sync_engine.dart`
+- `mobile/lib/core/database/local_chat_dao.dart`
+- `mobile/lib/features/chat/presentation/screens/chat_screen.dart`
+- `mobile/lib/features/notifications/data/firebase_messaging_service.dart`
+- `mobile/lib/main.dart`
 
 ## ۱۳. گام بعدی برنامه‌ریزی‌شده
 
+**جلسهٔ ۲ (فوری):**
+- [ ] **Divider پیام‌های نخوانده** (دستگاه-محور) با انیمیشن محو پس از ۳ ثانیه در viewport
+- [ ] اسکرول به اولین نخوانده هنگام باز شدن اپ (مورد ۶-الف)
+
+**جلسه‌های بعدی (اولویت‌دار):**
+- [ ] بررسی و بستن `/api/test-push`
+- [ ] پنهان‌سازی پنل دیباگ در build production
+- [ ] افزودن migrations به `[env.staging]` در wrangler.toml
 - [ ] تعیین نسخهٔ Flutter/Dart دقیق
-- [ ] افزودن تست واحد برای `LocalChatDao` (merge، pending_delete guard)
 - [ ] بررسی FCM در پس‌زمینه روی OEMهای مختلف
-- [ ] گروه‌بندی آلبوم تلگرام
-- [ ] بهبود `_ensureConnectedAndSynced`
-- [ ] حذف endpoint دیباگ `/api/test-push` از production
-- [ ] بررسی security: `X-Telegram-Bot-Api-Secret-Token`
-- [ ] ساخت keystore واقعی release (به‌جای debug) — قبل از انتشار روی Google Play
-- [ ] آماده‌سازی برای Google Play (اگر مد نظر باشد)
+- [ ] گروه‌بندی آلبوم تلگرام (Media Group)
+- [ ] تست واحد برای بخش‌های حساس
+
+**کنسل‌شده (تصمیم کاربر):**
+- ~~گروه‌بندی اعلان‌ها + preview پیشرفته~~ (در جلسهٔ فعلی لغو شد)
 
 ## ۱۴. فرضیات فعال
 
 - یک ادمین (Telegram ID `122623127`) در `wrangler.toml`.
 - تعداد کاربران: محدود.
-- جهت رابط: RTL.
+- جهت رابط: RTL (فارسی).
+- محیط استقرار: `staging` تا اطلاع ثانوی.
 
 ## ۱۵. قواعد کاری این پروژه
 
 - فقط تغییرات کوچک و قابل بازگشت.
 - `flutter analyze` باید پاک باشد.
-- استقرار: اول staging، سپس production.
+- استقرار: سرور اول، کلاینت بعد (برای تغییرات protocol).
 - R2 استفاده نمی‌شود.
 - تست روی دستگاه واقعی.
 - پس از هر فاز، `AI_PROJECT_STATE.md` به‌روز می‌شود.
