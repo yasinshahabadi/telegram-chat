@@ -55,16 +55,14 @@
 ## ۶. حالت کاری فعلی
 
 - **Last verified build:** ✅ سرور staging + کلاینت روی دستگاه واقعی
-- **Last verified release:** ✅ GitHub Release `v1.0.8`
-- **Last verified tests:**
-  - ماژول مدیا: ۷ سناریو
-  - ماژول ریپلای: ۵ سناریو
-  - ماژول ری‌اکشن + حذف: ۷ سناریو
-  - تست بهینگی retry: ۳ سناریو
-  - انتشار و به‌روزرسانی خودکار: ✅
-  - **session-1 (این جلسه): ۸ سناریو**
-  - **read receipt visibility fix: ۳ سناریو**
-  - **media upload persistence fix: ۵ سناریو**
+- **Last verified tests (session-1 + divider):**
+  - heartbeat + reconnect sync: ✅
+  - read receipt visibility: ✅
+  - media upload persistence: ✅
+  - unread divider (force stop + resume): ✅
+  - mark-read only when near bottom: ✅
+  - divider never repeats within session: ✅
+  - fast startup (0.55s min): ✅
 - **Known blocking bug:** ندارد.
 
 ## ۷. دیتابیس محلی — تاریخچهٔ schema
@@ -105,6 +103,16 @@
 - **تیک خوانده‌شدن قبل از دیدن** → mark-read فقط وقتی `_isNearBottom`
 - **پیام مدیا ناپدید می‌شد** → ذخیرهٔ optimistic در DB قبل از HTTP + حفظ در `loadLocalMessages`
 
+### جلسه ۲ (این session)
+| باگ | ریشه | راه‌حل |
+|---|---|---|
+| Divider فقط یک بار نمایش داده می‌شد | snapshot در حین session بازنشانی می‌شد | snapshot فقط در open/resume گرفته می‌شود |
+| اسکرول به پایین قبل از Divider | ScrollController با offset=0 ساخته می‌شد | scrollController nullable + initialScrollOffset محاسبه‌شده |
+| شمارش پیام‌های قدیمی | `_lastReadAt` زودتر از `_computeFirstUnread` به‌روز می‌شد | snapshot قبل از `markAsRead` |
+| تیک خوانده‌نشدن تا لمس کاربر | `_maybeScheduleReadForVisibleMessages` فقط در اسکرول صدا زده می‌شد | شرط `_isNearBottom` در `_onChatUpdate` |
+| تیک ناخواسته در حین session | Divider دوباره در `_onChatUpdate` فعال می‌شد | Divider فقط در open/resume |
+| Spinner کند | 1.3s حداقل انتظار | 0.55s (settleDelay 400ms + reveal 150ms) |
+
 ## ۹. فیچرهای افزوده‌شده (تاریخی)
 
 - **مدیا:** پشتیبانی چند پیوست، نوار پیشرفت واقعی، کش LRU 200MB
@@ -112,6 +120,17 @@
 - **ری‌اکشن:** چیپ + picker قابل اسکرول + همگام با تلگرام
 - **حذف:** تأییدیه، optimistic، idempotent، آفلاین-safe
 - **Update:** بررسی خودکار از GitHub Releases
+
+### Divider پیام‌های نخوانده
+- Widget `UnreadDivider` با گرادیان افقی + برچسب فارسی + تعداد
+- Snapshot لحظهٔ باز شدن/Resume
+- پنجرهٔ داینامیک initial load: ۴۰۰ms + ۱.۲s تمدید + سقف ۴s
+- ورود اول: `ScrollController` با `initialScrollOffset` (بدون flash پایین)
+- Resume: اسکرول انیمیت‌شده با `ensureVisible` به snapshot
+- تأخیر ۱۵۰ms بعد از بسته شدن پنجره، سپس نمایش
+- Fade خودکار بعد از ۵ ثانیه
+- Divider در همان session هرگز تکرار نمی‌شود
+- Mark-read فقط وقتی کاربر نزدیک پایین است
 
 ## ۱۰. تصمیمات معماری اخیر
 
@@ -125,6 +144,13 @@
 **تصمیم:** heartbeat دوطرفه (ping/pong) برای تشخیص قطعی پنهان
 **تصمیم:** optimistic media writes قبل از HTTP (نه بعد)
 **تصمیم:** mark-as-read فقط وقتی کاربر نزدیک پایین است
+**تصمیم:** Divider نخوانده‌ها به‌جای `ListView` offset، با `ScrollController` تازه
+- **دلیل:** جلوگیری از نمایش لحظه‌ای پایین لیست قبل از اسکرول به Divider
+- **جایگزین‌های رد شده:** `jumpTo` بعد از اولین فریم (flash دیده می‌شد)
+
+**تصمیم:** Snapshot ثابت per open/resume (نه پویا در حین session)
+- **دلیل:** پیام‌های جدید در حین خواندن، Divider را جابه‌جا نکنند
+- **الگو:** مطابق `noma_chat` / `stream_chat_flutter`
 
 ## ۱۱. بدهی فنی
 
@@ -157,9 +183,15 @@
 
 ## ۱۳. گام بعدی برنامه‌ریزی‌شده
 
-**جلسهٔ ۲ (فوری):**
-- [ ] **Divider پیام‌های نخوانده** (دستگاه-محور) با انیمیشن محو پس از ۳ ثانیه در viewport
-- [ ] اسکرول به اولین نخوانده هنگام باز شدن اپ (مورد ۶-الف)
+**جلسه بعدی — پیشنهاد:**
+- [ ] تست FCM در پس‌زمینه روی OEMهای مختلف (Xiaomi، Huawei)
+- [ ] بستن `/api/test-push` (بدون احراز هویت)
+- [ ] پنهان‌سازی پنل دیباگ در release build
+- [ ] افزودن migrations به `[env.staging]` در wrangler.toml
+- [ ] تعیین نسخهٔ Flutter/Dart دقیق
+- [ ] گروه‌بندی آلبوم تلگرام (Media Group)
+- [ ] تست واحد برای `LocalChatDao` و `SyncEngine`
+- [ ] انتشار v1.0.9 با همه تغییرات این دو جلسه
 
 **جلسه‌های بعدی (اولویت‌دار):**
 - [ ] بررسی و بستن `/api/test-push`
