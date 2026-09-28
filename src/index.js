@@ -3,7 +3,6 @@
 import { Router } from "./core/router.js";
 import { jsonResponse, errorResponse } from "./core/response.js";
 import { handleVerifyDevice, handleGetMe, handleLogout } from "./auth/authController.js";
-import { handleGetMessages } from "./chat/messagesController.js";
 import { handleSyncEvents, handleGetLatestCursor } from "./sync/syncController.js";
 import { handleMediaUpload, handleMediaDownload } from "./media/mediaController.js";
 import { handleRegisterFcmToken, handleUnregisterFcmToken } from "./notifications/notificationController.js";
@@ -21,8 +20,7 @@ router.post("/api/auth/verify-device", (req, env) => handleVerifyDevice(req, env
 router.get("/api/auth/me", (req, env) => handleGetMe(req, env));
 router.post("/api/auth/logout", (req, env) => handleLogout(req, env));
 
-// اندپوینت‌های چت و سینک
-router.get("/api/messages", (req, env) => handleGetMessages(req, env));
+// اندپوینت‌های سینک (تاریخچه از طریق cursor-based sync انجام می‌شود)
 router.get("/api/sync", (req, env) => handleSyncEvents(req, env));
 router.get("/api/sync/latest-cursor", (req, env) => handleGetLatestCursor(req, env));
 
