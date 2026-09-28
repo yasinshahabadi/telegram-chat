@@ -157,6 +157,7 @@
 - `_ensureConnectedAndSynced()` در `build()` — الگوی کارآمد ولی زیبا نیست.
 - **`sync_engine.dart` merge پیچیده شده:** هر ستون جدید نیاز به تکرار در merge دارد. می‌توان به متد `mergeFrom` روی مدل منتقل کرد.
 - **`AI_PROJECT_STATE.md` هنوز در گیت نباشد؟** — بررسی شود.
+- ~~`messagesController.js` ناقص است~~ — **حذف شد** (1405/07/06). endpoint `/api/messages` استفاده نمی‌شد.
 
 ## ۱۲. فایل‌های اخیراً تغییر یافته
 
@@ -171,6 +172,8 @@
 - `schema.sql` حذف شد
 - `.gitignore` اصلاح شد
 - `Guides/TARGET_ARCHITECTURE.md` هم‌راستا شد
+- `src/chat/messagesController.js` (حذف شد — کد مرده)
+- `src/index.js` (حذف import و route مربوطه)
 
 ## ۱۳. گام بعدی برنامه‌ریزی‌شده
 
