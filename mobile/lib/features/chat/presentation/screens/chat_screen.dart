@@ -50,13 +50,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final Set<String> _pendingMarkReadIds = {};
 
   /// برای تشخیص «پیام جدید اضافه شد» در `_onChatUpdate`.
-  /// هر بار id جدیدترین پیام عوض شود، یعنی پیام جدیدی وارد شد.
-  /// فقط در آن صورت auto-scroll را در نظر می‌گیریم.
   String? _lastKnownNewestId;
 
   /// در حالت ListView(reverse: true)، offset = 0 یعنی پایین (جدیدترین).
   /// اگر کاربر بیش از ۱۲۰ پیکسل به بالا اسکرول کرده باشد، «دور از پایین» محسوب می‌شود.
-  /// در آن حالت اگر پیام جدید بیاید، اسکرول نمی‌کنیم تا خواندن کاربر قطع نشود.
   static const double _nearBottomThreshold = 120.0;
 
   bool get _isNearBottom {
@@ -71,6 +68,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // ✅ به تغییرات اسکرول گوش می‌دهیم تا وقتی کاربر به پایین برگشت،
+    //    پیام‌های نخوانده را خوانده‌شده علامت بزنیم.
+    _scrollController.addListener(_onScrollChanged);
     _initializeChat();
     widget.chatRepository.addListener(_onChatUpdate);
   }
@@ -79,7 +79,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final currentUser = widget.authRepository.currentUser;
     if (currentUser != null) {
       await widget.chatRepository.initialize(currentUser);
-      // مقدار اولیه — از auto-scroll روی لود اول جلوگیری می‌کند.
       final messages = widget.chatRepository.messages;
       if (messages.isNotEmpty) {
         _lastKnownNewestId = messages.first.id;
@@ -92,6 +91,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.chatRepository.removeListener(_onChatUpdate);
+    _scrollController.removeListener(_onScrollChanged);
     _markReadDebounce?.cancel();
     _highlightClearTimer?.cancel();
     _inputController.dispose();
@@ -110,40 +110,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (_isAppVisible) {
         _markReadDebounce?.cancel();
         _flushMarkRead();
+        // ✅ هنگام بازگشت به foreground، اگر کاربر نزدیک پایین است،
+        //    پیام‌های نخوانده را علامت بزن. (sync جدید خودش trigger می‌شود.)
+        _maybeScheduleReadForVisibleMessages();
       } else {
         _markReadDebounce?.cancel();
       }
     }
   }
 
-  void _onChatUpdate() {
+  /// ✅ وقتی کاربر اسکرول می‌کند، اگر به پایین نزدیک شد، پیام‌های نخوانده را
+  ///    علامت بزن. اگر دور از پایین است، هیچ کاری نکن.
+  void _onScrollChanged() {
     if (!_isAppVisible) return;
+    if (!_isNearBottom) return;
+    _maybeScheduleReadForVisibleMessages();
+  }
+
+  /// ✅ پیام‌های نخواندهٔ **قابل مشاهده** را جمع کرده و debounce می‌کند.
+  ///
+  /// شرط اصلی: کاربر باید نزدیک پایین لیست باشد (`_isNearBottom`).
+  /// اگر کاربر در حال خواندن پیام‌های قدیمی (بالای لیست) است، پیام‌های جدید
+  /// نخوانده علامت زده نمی‌شوند تا زمانی که به پایین برگردد.
+  void _maybeScheduleReadForVisibleMessages() {
+    if (!_isAppVisible) return;
+    if (!_isNearBottom) return;
 
     final user = widget.authRepository.currentUser;
     if (user == null) return;
 
     final messages = widget.chatRepository.messages;
-
-    // ✅ تشخیص پیام جدید:
-    //    اگر id جدیدترین پیام عوض شده باشد، یعنی پیام تازه‌ای وارد شده است.
-    //    در غیر این صورت (typing، online_users، download progress، reaction، ...)
-    //    اصلاً به فکر auto-scroll نمی‌افتیم.
-    final newestId = messages.isNotEmpty ? messages.first.id : null;
-    final previousNewestId = _lastKnownNewestId;
-    _lastKnownNewestId = newestId;
-
-    final hasNewMessage =
-        previousNewestId != null && newestId != null && newestId != previousNewestId;
-
-    if (hasNewMessage &&
-        _isNearBottom &&
-        _highlightedMessageId == null) {
-      _scrollToBottom();
-    }
-    // در غیر این صورت، اگر کاربر وسط پیام‌های قدیمی باشد، اسکرول نمی‌کنیم.
-    // (نمایش نشانگر «پیام جدید» در جلسه‌ای جداگانه اضافه خواهد شد.)
-
-    // ── ثبت پیام‌های نخوانده (بدون تغییر) ──
     final unreadIds = messages
         .where((m) => m.senderId != user.id && m.readAt == null)
         .map((m) => m.id)
@@ -157,6 +153,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _markReadDebounce = Timer(const Duration(milliseconds: 800), () {
       _flushMarkRead();
     });
+  }
+
+  void _onChatUpdate() {
+    if (!_isAppVisible) return;
+
+    final user = widget.authRepository.currentUser;
+    if (user == null) return;
+
+    final messages = widget.chatRepository.messages;
+
+    // ── تشخیص پیام جدید ──
+    final newestId = messages.isNotEmpty ? messages.first.id : null;
+    final previousNewestId = _lastKnownNewestId;
+    _lastKnownNewestId = newestId;
+
+    final hasNewMessage =
+        previousNewestId != null && newestId != null && newestId != previousNewestId;
+
+    // Auto-scroll فقط اگر پیام جدید آمد و کاربر نزدیک پایین است.
+    if (hasNewMessage && _isNearBottom && _highlightedMessageId == null) {
+      _scrollToBottom();
+    }
+
+    // ✅ علامت‌زدن نخوانده‌ها هم فقط اگر کاربر نزدیک پایین باشد.
+    //    این رفع باگ «تیک دو تا برای فرستنده بدون اینکه گیرنده پیام را ببیند» است.
+    _maybeScheduleReadForVisibleMessages();
   }
 
   Future<void> _flushMarkRead() async {
@@ -175,6 +197,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// در ابتدای ورود به چت: همهٔ پیام‌های نخوانده را علامت بزن.
+  ///
+  /// چون لیست با offset=0 (پایین/جدیدترین) باز می‌شود، فرض می‌کنیم کاربر
+  /// پیام‌های پایین را می‌بیند. در جلسهٔ بعدی (divider نخوانده)، این رفتار
+  /// اصلاح خواهد شد.
   Future<void> _markUnreadMessagesAsRead() async {
     if (!_isAppVisible) return;
     if (_isMarkingRead) return;
