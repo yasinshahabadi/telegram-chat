@@ -135,6 +135,8 @@
 - `/api/test-push` بدون احراز هویت (کاندید حذف یا محافظت).
 - `_showNotificationDebugMenu` در build production نمایش داده می‌شود.
 - `messagesController.js` حذف شد (تأییدشده).
+- `chat_repository.dart` در حال رشد است (~۳۵KB). در جلسه‌ای جداگانه می‌توان
+  به فایل‌های کوچک‌تر تقسیم کرد (`read_receipts.dart`, `reactions.dart`, ...).
 
 ## ۱۲. فایل‌های اخیراً تغییر یافته (این جلسه)
 
