@@ -23,6 +23,11 @@ class ChatRepository extends ChangeNotifier {
   bool _isLoading = false;
   bool isAppInBackground = false;
 
+  /// ✅ وقتی WebSocket به سرور وصل (یا دوباره وصل) می‌شود، این callback صدا زده می‌شود.
+  ///    main.dart آن را به syncMissedEvents وصل می‌کند تا پیام‌های از دست رفته
+  ///    در پنجرهٔ قطعی، بلافاصله پس از اتصال جبران شوند.
+  VoidCallback? onSocketReconnected;
+
   final Map<String, Map<String, dynamic>> _onlineUsers = {};
 
   StreamSubscription? _socketSubscription;
@@ -57,20 +62,25 @@ class ChatRepository extends ChangeNotifier {
         if (state == SocketConnectionState.connected) {
           processPendingQueue();
           _socketClient.sendPresence(online: !isAppInBackground);
-          // ✅ به محض برقراری اتصال، pending queue را با تأخیر صفر پردازش کن.
           _schedulePendingRetry(immediate: true);
+          // ✅ اطلاع به main.dart تا syncMissedEvents اجرا شود.
+          try {
+            onSocketReconnected?.call();
+          } catch (e) {
+            debugPrint('[ChatRepo] onSocketReconnected error: $e');
+          }
         }
         notifyListeners();
       });
 
       _socketSubscription?.cancel();
       _socketSubscription = _socketClient.messageStream.listen((event) {
-        _handleIncomingSocketEvent(event, currentUser);
+        // ✅ خطاها را در یک نقطه لاگ می‌کنیم تا هیچ پیامی بی‌سروصدا گم نشود.
+        _handleIncomingSocketEvent(event, currentUser).catchError((e, st) {
+          debugPrint('[ChatRepo] Failed to handle socket event: $e\n$st');
+        });
       });
 
-      // ✅ اگر در لحظهٔ initialize آنلاین هستیم، timer را استارت کن.
-      //    اگر آفلاین هستیم، این متد no-op می‌شود و retry
-      //    از طریق stateStream در زمان اتصال فعال خواهد شد.
       _schedulePendingRetry();
     } catch (_) {
     } finally {
@@ -255,8 +265,6 @@ class ChatRepository extends ChangeNotifier {
               jsonDecode(action['payload_json'] as String);
           final mId = payload['messageId'] as String?;
           if (mId != null) {
-            // ✅ فقط send می‌کنیم. pending action را حذف نمی‌کنیم.
-            // منتظر broadcast `message_deleted` از سرور می‌مانیم.
             _socketClient.sendDeleteMessage(mId);
           }
         } catch (_) {}
@@ -264,17 +272,9 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ✅ Retry دوره‌ای pending actions.
-  ///
-  /// - اگر آفلاین باشیم: هیچ کوئری DB و هیچ تایمری اجرا نمی‌شود.
-  ///   Retry صرفاً با تغییر connection state فعال می‌شود.
-  /// - اگر آنلاین باشیم: هر ۱۲ ثانیه چک می‌کند.
-  /// - اگر صف خالی باشد: خودش را دوباره زمان‌بندی نمی‌کند.
-  /// - پارامتر `immediate` برای اجرای فوری پس از reconnect استفاده می‌شود.
   void _schedulePendingRetry({bool immediate = false}) {
     _pendingRetryTimer?.cancel();
 
-    // ✅ آفلاین → هیچ کاری نکن. retry از طریق stateStream فعال خواهد شد.
     if (!_socketClient.isConnected) return;
 
     final delay = immediate ? Duration.zero : const Duration(seconds: 12);
@@ -346,15 +346,9 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
-  /// ✅ حذف پیام:
-  /// 1) pending action را همیشه enqueue می‌کنیم (قبل از هر تلاشی)
-  /// 2) از حافظه و DB پاک می‌کنیم
-  /// 3) تلاش برای send فوری
-  /// 4) منتظر broadcast سرور می‌مانیم تا pending action را برداریم
   Future<void> deleteMessage(String messageId) async {
     final actionId = 'delete_$messageId';
 
-    // ✅ گام ۱: همیشه enqueue کن، قبل از هر چیز.
     try {
       await _localDao.enqueuePendingAction(
         actionId,
@@ -363,7 +357,6 @@ class ChatRepository extends ChangeNotifier {
       );
     } catch (_) {}
 
-    // ✅ گام ۲: از حافظه و DB حذف کن.
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx != -1) {
       _messages.removeAt(idx);
@@ -375,12 +368,10 @@ class ChatRepository extends ChangeNotifier {
       await _localDao.deleteMessage(messageId);
     } catch (_) {}
 
-    // ✅ گام ۳: تلاش برای send فوری.
     if (_socketClient.isConnected) {
       _socketClient.sendDeleteMessage(messageId);
     }
 
-    // ✅ گام ۴: retry دوره‌ای فعال.
     _schedulePendingRetry();
   }
 
@@ -515,6 +506,11 @@ class ChatRepository extends ChangeNotifier {
       Map<String, dynamic> event, AuthUser currentUser) async {
     final type = event['type'] as String?;
     if (type == null) return;
+
+    // پاسخ heartbeat — نباید خطا بدهد حتی اگر مصرف نشود.
+    if (type == 'pong') {
+      return;
+    }
 
     if (type == 'online_users' && event['users'] != null) {
       final usersList = (event['users'] as List).cast<Map<String, dynamic>>();
@@ -651,7 +647,6 @@ class ChatRepository extends ChangeNotifier {
       return;
     }
 
-    // ✅ message_deleted: حذف محلی + پاک‌سازی pending action.
     if (type == 'message_deleted' && event['messageId'] != null) {
       final mId = event['messageId'] as String;
       _messages.removeWhere((m) => m.id == mId);

@@ -44,8 +44,6 @@ void main() async {
     socketClient: socketClient,
   );
 
-  // ✅ سیم‌کشی callback دانلود مدیا → ریپازیتوری چت
-  //    (تا پس از دانلود، localPath روی مدل به‌روز شود)
   MediaDownloadManager.instance.onDownloadCompleted =
       (attachmentId, messageId, localPath) {
     chatRepository.setLocalPathForAttachment(messageId, attachmentId, localPath);
@@ -159,6 +157,14 @@ class _TelegramChatAppState extends State<TelegramChatApp>
   StreamSubscription<RemoteMessage>? _notificationClickSubscription;
   bool _hasInitialized = false;
 
+  /// Debounce برای trigger sync از FCM در foreground.
+  /// اگر ۵ پیام در ۲ ثانیه برسد، فقط یک sync اجرا می‌شود.
+  Timer? _foregroundSyncDebounce;
+
+  /// تور اطمینان: هر ۹۰ ثانیه یک sync سبک در foreground.
+  /// پوشش‌دهی برای حالتی که WebSocket گیر کرده ولی خودش نمی‌فهمد.
+  Timer? _catchUpTimer;
+
   @override
   void initState() {
     super.initState();
@@ -166,13 +172,61 @@ class _TelegramChatAppState extends State<TelegramChatApp>
 
     _notificationClickSubscription =
         notificationClickStream.listen(_onNotificationClicked);
+
+    // ✅ wire کردن triggerهای sync:
+    //  1) reconnect WebSocket → ChatRepository callback
+    //  2) FCM در foreground → FirebaseMessagingService callback
+    widget.chatRepository.onSocketReconnected = _debouncedSync;
+    FirebaseMessagingService.instance.onForegroundMessage = _debouncedSync;
   }
 
   @override
   void dispose() {
     _notificationClickSubscription?.cancel();
+    _foregroundSyncDebounce?.cancel();
+    _catchUpTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// ✅ اجرای debounce‌شده‌ی sync. هر ۲ ثانیه یک‌بار حداکثر.
+  void _debouncedSync() {
+    _foregroundSyncDebounce?.cancel();
+    _foregroundSyncDebounce = Timer(const Duration(seconds: 2), () {
+      _performSync();
+    });
+  }
+
+  /// ✅ هستهٔ sync که در چند جای مختلف استفاده می‌شود.
+  Future<void> _performSync() async {
+    final token = widget.authStorage.getSessionToken();
+    if (token == null || token.isEmpty) return;
+
+    final currentUser = widget.authRepository.currentUser;
+    await widget.syncEngine.syncMissedEvents(
+      token,
+      currentUserId: currentUser?.id,
+      onSyncCompleted: () {
+        widget.chatRepository.loadLocalMessages();
+        widget.chatRepository.processPendingQueue();
+      },
+    );
+  }
+
+  /// ✅ شروع تور اطمینان (هر ۹۰ ثانیه) — فقط وقتی کاربر احراز هویت‌شده است.
+  void _startCatchUpTimer() {
+    _catchUpTimer?.cancel();
+    _catchUpTimer = Timer.periodic(const Duration(seconds: 90), (_) async {
+      // فقط در foreground و وقتی کاربر احراز هویت‌شده است.
+      if (widget.chatRepository.isAppInBackground) return;
+      if (!widget.authRepository.isAuthenticated) return;
+      await _performSync();
+    });
+  }
+
+  void _stopCatchUpTimer() {
+    _catchUpTimer?.cancel();
+    _catchUpTimer = null;
   }
 
   Future<void> _onNotificationClicked(RemoteMessage message) async {
@@ -222,6 +276,8 @@ class _TelegramChatAppState extends State<TelegramChatApp>
 
     if (state == AppLifecycleState.resumed) {
       widget.notifService.cancelAllNotifications();
+      // ✅ بازگشت به foreground: احتمال از دست رفتن پیام در زمان background.
+      _debouncedSync();
     }
   }
 
@@ -266,6 +322,9 @@ class _TelegramChatAppState extends State<TelegramChatApp>
         deviceId: deviceId,
       );
     });
+
+    // ✅ شروع تور اطمینان دوره‌ای.
+    _startCatchUpTimer();
   }
 
   @override
@@ -342,6 +401,7 @@ class _TelegramChatAppState extends State<TelegramChatApp>
               chatRepository: widget.chatRepository,
               onLogout: () async {
                 _hasInitialized = false;
+                _stopCatchUpTimer();
                 widget.socketClient.sendPresence(online: false);
                 await Future.delayed(const Duration(milliseconds: 200));
                 widget.socketClient.disconnect();

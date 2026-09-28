@@ -17,8 +17,6 @@ class LocalChatDao {
   // پیام‌ها
   // ==========================================
 
-  /// ✅ اگر پیام در صف حذف است، ذخیره نمی‌شود.
-  /// این جلوگیری می‌کند از re-insert پیام حذف‌شده توسط sync.
   Future<bool> _isPendingDelete(Database db, String messageId) async {
     try {
       final rows = await db.query(
@@ -44,7 +42,6 @@ class LocalChatDao {
     final messageId = messageData['id'] as String?;
     if (messageId == null || messageId.isEmpty) return;
 
-    // ✅ رد کردن پیام‌هایی که در صف حذف هستند.
     if (await _isPendingDelete(db, messageId)) {
       return;
     }
@@ -152,6 +149,29 @@ class LocalChatDao {
     await db.rawUpdate(
       'UPDATE messages SET read_at = ? WHERE id IN ($placeholders) AND read_at IS NULL',
       [readAt, ...messageIds],
+    );
+  }
+
+  /// ✅ اعمال رسید خوانده‌شدن از راه دور (از طریق sync).
+  ///
+  /// فقط پیام‌هایی را به‌روزرسانی می‌کند که:
+  ///   - ارسال‌کننده‌شان کاربر فعلی است (sender_id = myUserId)
+  ///   - هنوز خوانده نشده‌اند (read_at IS NULL)
+  ///
+  /// این معادل منطق WebSocket `messages_read` در ChatRepository است،
+  /// ولی برای مسیر sync (کات‌آپ بعد از آفلاین).
+  Future<void> applyRemoteReadReceipt(
+    List<String> messageIds,
+    int readAt,
+    String myUserId,
+  ) async {
+    if (messageIds.isEmpty) return;
+    final db = await _db;
+    final placeholders = List.filled(messageIds.length, '?').join(',');
+    await db.rawUpdate(
+      'UPDATE messages SET read_at = ? '
+      'WHERE id IN ($placeholders) AND read_at IS NULL AND sender_id = ?',
+      [readAt, ...messageIds, myUserId],
     );
   }
 

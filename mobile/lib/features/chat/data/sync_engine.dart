@@ -94,7 +94,7 @@ class SyncEngine {
             }
           }
 
-          await _applyEventToLocalDatabase(event);
+          await _applyEventToLocalDatabase(event, currentUserId);
         }
 
         final latestCursor = data['latestCursor'] as int? ?? currentCursor;
@@ -122,7 +122,10 @@ class SyncEngine {
     }
   }
 
-  Future<void> _applyEventToLocalDatabase(Map<String, dynamic> event) async {
+  Future<void> _applyEventToLocalDatabase(
+    Map<String, dynamic> event,
+    String? currentUserId,
+  ) async {
     final eventType =
         event['eventType'] as String? ?? event['event_type'] as String?;
     final payload = event['payload'] as Map<String, dynamic>?;
@@ -213,6 +216,32 @@ class SyncEngine {
             if (r is Map) aggregated.add(r.cast<String, dynamic>());
           }
           await _localDao.replaceReactionsForMessage(messageId, aggregated);
+        }
+        break;
+
+      // ✅ رسید خوانده‌شدن از راه دور: برای گیرنده‌ای که در لحظهٔ mark_read آفلاین بوده.
+      //    فقط پیام‌های خودِ ما را به‌روزرسانی می‌کند (sender_id = currentUserId).
+      case 'messages_read_batch':
+        if (currentUserId == null) break;
+        final rawIds = payload['messageIds'];
+        final readerUserId = payload['readerUserId'] as String?;
+        final readAt = payload['readAt'] as int? ??
+            DateTime.now().millisecondsSinceEpoch;
+
+        if (readerUserId == null || readerUserId == currentUserId) {
+          // خواننده خودمان هستیم → این رسید برای ما معنی ندارد.
+          break;
+        }
+
+        final ids = <String>[];
+        if (rawIds is List) {
+          for (final id in rawIds) {
+            if (id is String && id.isNotEmpty) ids.add(id);
+          }
+        }
+
+        if (ids.isNotEmpty) {
+          await _localDao.applyRemoteReadReceipt(ids, readAt, currentUserId);
         }
         break;
 

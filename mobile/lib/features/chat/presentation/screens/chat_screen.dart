@@ -49,6 +49,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _markReadDebounce;
   final Set<String> _pendingMarkReadIds = {};
 
+  /// برای تشخیص «پیام جدید اضافه شد» در `_onChatUpdate`.
+  /// هر بار id جدیدترین پیام عوض شود، یعنی پیام جدیدی وارد شد.
+  /// فقط در آن صورت auto-scroll را در نظر می‌گیریم.
+  String? _lastKnownNewestId;
+
+  /// در حالت ListView(reverse: true)، offset = 0 یعنی پایین (جدیدترین).
+  /// اگر کاربر بیش از ۱۲۰ پیکسل به بالا اسکرول کرده باشد، «دور از پایین» محسوب می‌شود.
+  /// در آن حالت اگر پیام جدید بیاید، اسکرول نمی‌کنیم تا خواندن کاربر قطع نشود.
+  static const double _nearBottomThreshold = 120.0;
+
+  bool get _isNearBottom {
+    if (!_scrollController.hasClients) return true;
+    return _scrollController.offset < _nearBottomThreshold;
+  }
+
   GlobalKey _keyForMessage(String id) =>
       _messageKeys.putIfAbsent(id, () => GlobalKey());
 
@@ -64,6 +79,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final currentUser = widget.authRepository.currentUser;
     if (currentUser != null) {
       await widget.chatRepository.initialize(currentUser);
+      // مقدار اولیه — از auto-scroll روی لود اول جلوگیری می‌کند.
+      final messages = widget.chatRepository.messages;
+      if (messages.isNotEmpty) {
+        _lastKnownNewestId = messages.first.id;
+      }
       await _markUnreadMessagesAsRead();
     }
   }
@@ -103,14 +123,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (user == null) return;
 
     final messages = widget.chatRepository.messages;
-    if (messages.isNotEmpty && _scrollController.hasClients) {
-      if (!_scrollController.position.isScrollingNotifier.value) {
-        if (_highlightedMessageId == null) {
-          _scrollToBottom();
-        }
-      }
-    }
 
+    // ✅ تشخیص پیام جدید:
+    //    اگر id جدیدترین پیام عوض شده باشد، یعنی پیام تازه‌ای وارد شده است.
+    //    در غیر این صورت (typing، online_users، download progress، reaction، ...)
+    //    اصلاً به فکر auto-scroll نمی‌افتیم.
+    final newestId = messages.isNotEmpty ? messages.first.id : null;
+    final previousNewestId = _lastKnownNewestId;
+    _lastKnownNewestId = newestId;
+
+    final hasNewMessage =
+        previousNewestId != null && newestId != null && newestId != previousNewestId;
+
+    if (hasNewMessage &&
+        _isNearBottom &&
+        _highlightedMessageId == null) {
+      _scrollToBottom();
+    }
+    // در غیر این صورت، اگر کاربر وسط پیام‌های قدیمی باشد، اسکرول نمی‌کنیم.
+    // (نمایش نشانگر «پیام جدید» در جلسه‌ای جداگانه اضافه خواهد شد.)
+
+    // ── ثبت پیام‌های نخوانده (بدون تغییر) ──
     final unreadIds = messages
         .where((m) => m.senderId != user.id && m.readAt == null)
         .map((m) => m.id)

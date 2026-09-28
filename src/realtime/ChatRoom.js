@@ -86,6 +86,17 @@ export class ChatRoom extends DurableObject {
       const data = JSON.parse(message);
       const now = Date.now();
 
+      // ═══════════════ Heartbeat (ping/pong) ═══════════════
+      // کلاینت هر ۲۵ ثانیه ping می‌فرستد؛ ما pong برمی‌گردانیم.
+      // این مکانیسم اجازه می‌دهد کلاینت متوجه قطعی اتصال شود حتی اگر
+      // هیچ پیامی در جریان نباشد (مثلاً سوییچ WiFi → موبایل).
+      if (data.type === "ping") {
+        try {
+          ws.send(JSON.stringify({ type: "pong", t: now }));
+        } catch (_) {}
+        return;
+      }
+
       if (data.type === "presence") {
         const isOnline = data.status === "online";
         if (user.isOnline !== isOnline) {
@@ -267,7 +278,6 @@ export class ChatRoom extends DurableObject {
           deletedAt: now,
         };
 
-        // ✅ Idempotent: اگر پیام وجود ندارد یا قبلاً حذف شده، تأیید بفرست.
         if (!msgRow || msgRow.deleted_at) {
           this.broadcast({
             type: "message_deleted",
@@ -276,7 +286,6 @@ export class ChatRoom extends DurableObject {
           return;
         }
 
-        // فقط فرستنده یا ادمین اجازهٔ حذف دارد.
         if (msgRow.sender_id !== user.userId && !user.isAdmin) {
           try {
             ws.send(JSON.stringify({
@@ -471,12 +480,23 @@ export class ChatRoom extends DurableObject {
       );
       await this.env.DB.batch(batch);
 
+      // Broadcast زنده به کاربران متصل
       this.broadcast({
         type: "messages_read",
         messageIds: validIds,
         userId: user.userId,
         readAt: now
       });
+
+      // ✅ ثبت در sync_events برای کاربرانی که در این لحظه آفلاین هستند.
+      //    بدون این، تیک خوانده‌شدن برای گیرنده‌ای که موقتاً قطع بوده گم می‌شود.
+      try {
+        await emitSyncEvent(this.env.DB, "messages_read_batch", user.userId, {
+          messageIds: validIds,
+          readerUserId: user.userId,
+          readAt: now,
+        });
+      } catch (_) {}
     } catch (e) {
       console.error("[ChatRoom] mark_read failed:", e);
     }

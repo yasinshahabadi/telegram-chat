@@ -19,7 +19,7 @@ const List<String> _legacyChannelIds = [
   'telegram_chat',
 ];
 
-/// ✅ Stream سراسری برای اطلاع‌رسانی به ChatRepository در مورد کلیک روی اعلان
+/// Stream سراسری برای اطلاع‌رسانی به ChatRepository در مورد کلیک روی اعلان
 final StreamController<RemoteMessage> _notificationClickController =
     StreamController<RemoteMessage>.broadcast();
 Stream<RemoteMessage> get notificationClickStream =>
@@ -43,6 +43,13 @@ class FirebaseMessagingService {
       FlutterLocalNotificationsPlugin();
 
   bool _isInitialized = false;
+
+  /// ✅ callback وقتی اپ در foreground است و FCM پیام می‌گیرد.
+  ///
+  /// main.dart این را به syncMissedEvents وصل می‌کند تا اگر WebSocket
+  /// به‌دلیل مشکل شبکه (سوییچ WiFi → موبایل، NAT timeout...) پیام را
+  /// از دست داد، FCM نقش «زنگ خطر» را بازی کند و بلافاصله catch-up اجرا شود.
+  VoidCallback? onForegroundMessage;
 
   Future<void> initialize() async {
     if (_isInitialized) return;
@@ -142,11 +149,18 @@ class FirebaseMessagingService {
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
     debugPrint('[FCM] Foreground message: ${message.messageId}');
     debugPrint('[FCM] Data: ${message.data}');
+
+    // ✅ مهم: پیام FCM در foreground می‌تواند نشانهٔ از دست رفتن پیام در WebSocket باشد.
+    //    این callback باعث می‌شود main.dart یک sync سریع اجرا کند.
+    try {
+      onForegroundMessage?.call();
+    } catch (e) {
+      debugPrint('[FCM ERROR] onForegroundMessage callback failed: $e');
+    }
   }
 
   void _handleMessageOpenedApp(RemoteMessage message) {
     debugPrint('[FCM] Notification opened app: ${message.data}');
-    // ✅ انتشار رویداد کلیک روی اعلان
     if (!_notificationClickController.isClosed) {
       _notificationClickController.add(message);
     }
