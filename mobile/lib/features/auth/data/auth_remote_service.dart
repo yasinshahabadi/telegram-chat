@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 import '../../../config.dart';
 import '../domain/models/auth_user.dart';
 
@@ -40,6 +41,20 @@ class AuthRemoteService {
         'Accept': 'application/json',
       };
 
+  /// خواندن نسخهٔ واقعی اپ از سیستم‌عامل.
+  ///
+  /// مقدار برگشتی مثل "1.0.8" است (بدون build number).
+  /// در صورت خطا، به "1.0.0" به‌عنوان fallback برمی‌گردد تا هرگز کرش نکنیم.
+  Future<String> _resolveAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final v = info.version;
+      return v.isNotEmpty ? v : '1.0.0';
+    } catch (_) {
+      return '1.0.0';
+    }
+  }
+
   /// تایید دستگاه و دریافت نشست
   /// POST /api/auth/verify-device
   Future<VerifyDeviceResult> verifyDevice({
@@ -50,6 +65,8 @@ class AuthRemoteService {
     final url = Uri.parse('$_baseUrl/api/auth/verify-device');
 
     try {
+      final appVersion = await _resolveAppVersion();
+
       final response = await _client
           .post(
             url,
@@ -59,7 +76,7 @@ class AuthRemoteService {
               'deviceIdentifier': deviceIdentifier,
               'deviceName': deviceName,
               'platform': 'android',
-              'appVersion': '1.0.0',
+              'appVersion': appVersion,
             }),
           )
           .timeout(_timeout);
