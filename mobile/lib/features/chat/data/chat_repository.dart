@@ -24,8 +24,6 @@ class ChatRepository extends ChangeNotifier {
   bool isAppInBackground = false;
 
   /// ✅ وقتی WebSocket به سرور وصل (یا دوباره وصل) می‌شود، این callback صدا زده می‌شود.
-  ///    main.dart آن را به syncMissedEvents وصل می‌کند تا پیام‌های از دست رفته
-  ///    در پنجرهٔ قطعی، بلافاصله پس از اتصال جبران شوند.
   VoidCallback? onSocketReconnected;
 
   final Map<String, Map<String, dynamic>> _onlineUsers = {};
@@ -63,7 +61,6 @@ class ChatRepository extends ChangeNotifier {
           processPendingQueue();
           _socketClient.sendPresence(online: !isAppInBackground);
           _schedulePendingRetry(immediate: true);
-          // ✅ اطلاع به main.dart تا syncMissedEvents اجرا شود.
           try {
             onSocketReconnected?.call();
           } catch (e) {
@@ -75,7 +72,6 @@ class ChatRepository extends ChangeNotifier {
 
       _socketSubscription?.cancel();
       _socketSubscription = _socketClient.messageStream.listen((event) {
-        // ✅ خطاها را در یک نقطه لاگ می‌کنیم تا هیچ پیامی بی‌سروصدا گم نشود.
         _handleIncomingSocketEvent(event, currentUser).catchError((e, st) {
           debugPrint('[ChatRepo] Failed to handle socket event: $e\n$st');
         });
@@ -127,6 +123,25 @@ class ChatRepository extends ChangeNotifier {
           reactions: reactionsMap,
           myReactions: myReactions,
         ));
+      }
+
+      // ✅ حفظ وضعیت in-flight برای پیام‌هایی که الان در حال آپلود هستند.
+      //    بدون این، اگر `loadLocalMessages` در میانهٔ آپلود اجرا شود،
+      //    نوار پیشرفت کاربر ناگهان پاک می‌شود.
+      final Map<String, ChatMessageModel> inFlight = {};
+      for (final m in _messages) {
+        if (m.isUploading) inFlight[m.id] = m;
+      }
+      if (inFlight.isNotEmpty) {
+        for (int i = 0; i < loaded.length; i++) {
+          final inf = inFlight[loaded[i].id];
+          if (inf != null) {
+            loaded[i] = loaded[i].copyWith(
+              isUploading: true,
+              uploadProgress: inf.uploadProgress,
+            );
+          }
+        }
       }
 
       _messages = loaded;
@@ -375,12 +390,20 @@ class ChatRepository extends ChangeNotifier {
     _schedulePendingRetry();
   }
 
-  ChatMessageModel addOptimisticMultiUpload({
+  /// ✅ نسخهٔ async که پیام optimistic را قبل از بازگشت در DB ذخیره می‌کند.
+  ///
+  /// این مهم است چون:
+  /// - بعد از این تابع، کد فراخوانی‌کننده HTTP آپلود را شروع می‌کند.
+  /// - در این پنجره، هر sync (reconnect/FCM/catch-up) که `loadLocalMessages`
+  ///   را صدا بزند، باید پیام را در DB پیدا کند وگرنه از UI محو می‌شود.
+  ///
+  /// با ذخیرهٔ synchronous قبل از شروع HTTP، این race کاملاً حذف می‌شود.
+  Future<ChatMessageModel> addOptimisticMultiUpload({
     required List<File> files,
     required List<String> mediaTypes,
     required AuthUser currentUser,
     ChatMessageModel? replyTo,
-  }) {
+  }) async {
     final tempId = 'temp_upload_${const Uuid().v4()}';
     final clientMessageId = const Uuid().v4();
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -423,6 +446,19 @@ class ChatRepository extends ChangeNotifier {
       attachments: optimisticAtts,
     );
 
+    // ✅ DB اول، سپس حافظه.
+    //    اگر DB رایت fail شود، حافظه هم نمی‌گیرد تا inconsistency پیش نیاید.
+    try {
+      await _localDao.saveMessage(optimistic.toDbMap());
+      for (final a in optimisticAtts) {
+        try {
+          await _localDao.saveAttachment(a.toDbMap());
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('[ChatRepo] Failed to persist optimistic upload: $e');
+    }
+
     _messages.insert(0, optimistic);
     notifyListeners();
     return optimistic;
@@ -431,7 +467,12 @@ class ChatRepository extends ChangeNotifier {
   void updateUploadProgress(String tempId, double progress) {
     final idx = _messages.indexWhere((m) => m.id == tempId);
     if (idx != -1) {
-      _messages[idx] = _messages[idx].copyWith(uploadProgress: progress.clamp(0.0, 1.0));
+      _messages[idx] = _messages[idx].copyWith(
+        uploadProgress: progress.clamp(0.0, 1.0),
+        // اگر مدتی طول کشید و loadLocalMessages اجرا شد، این خط
+        // دوباره نوار پیشرفت را فعال می‌کند.
+        isUploading: true,
+      );
       notifyListeners();
     }
   }
@@ -479,11 +520,20 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
+  /// ✅ حتی اگر پیام در حافظه پیدا نشد، DB را به‌روز می‌کند.
+  ///
+  /// این fix برای این سناریو است: sync در میانهٔ آپلود رخ دهد و پیام از
+  /// حافظه موقتاً حذف شود. بدون این، `setLocalPathForAttachment` early-return
+  /// می‌کند و localPath در DB ذخیره نمی‌شود → عکس بعد از reload نمایش داده نمی‌شود.
   void setLocalPathForAttachment(
     String messageId,
     String attachmentId,
     String localPath,
   ) {
+    // ✅ اول DB — بدون قید و شرط.
+    _localDao.updateAttachmentLocalPath(attachmentId, localPath).catchError((_) {});
+
+    // سپس حافظه (اگر پیدا شد).
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
 
@@ -498,8 +548,6 @@ class ChatRepository extends ChangeNotifier {
     );
     _messages[idx] = msg.copyWith(attachments: atts);
     notifyListeners();
-
-    _localDao.updateAttachmentLocalPath(attachmentId, localPath).catchError((_) {});
   }
 
   Future<void> _handleIncomingSocketEvent(
@@ -507,7 +555,6 @@ class ChatRepository extends ChangeNotifier {
     final type = event['type'] as String?;
     if (type == null) return;
 
-    // پاسخ heartbeat — نباید خطا بدهد حتی اگر مصرف نشود.
     if (type == 'pong') {
       return;
     }

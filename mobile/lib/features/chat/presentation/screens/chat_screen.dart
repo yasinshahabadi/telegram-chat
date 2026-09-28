@@ -49,11 +49,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _markReadDebounce;
   final Set<String> _pendingMarkReadIds = {};
 
-  /// برای تشخیص «پیام جدید اضافه شد» در `_onChatUpdate`.
   String? _lastKnownNewestId;
 
-  /// در حالت ListView(reverse: true)، offset = 0 یعنی پایین (جدیدترین).
-  /// اگر کاربر بیش از ۱۲۰ پیکسل به بالا اسکرول کرده باشد، «دور از پایین» محسوب می‌شود.
   static const double _nearBottomThreshold = 120.0;
 
   bool get _isNearBottom {
@@ -68,8 +65,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // ✅ به تغییرات اسکرول گوش می‌دهیم تا وقتی کاربر به پایین برگشت،
-    //    پیام‌های نخوانده را خوانده‌شده علامت بزنیم.
     _scrollController.addListener(_onScrollChanged);
     _initializeChat();
     widget.chatRepository.addListener(_onChatUpdate);
@@ -110,8 +105,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (_isAppVisible) {
         _markReadDebounce?.cancel();
         _flushMarkRead();
-        // ✅ هنگام بازگشت به foreground، اگر کاربر نزدیک پایین است،
-        //    پیام‌های نخوانده را علامت بزن. (sync جدید خودش trigger می‌شود.)
         _maybeScheduleReadForVisibleMessages();
       } else {
         _markReadDebounce?.cancel();
@@ -119,19 +112,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// ✅ وقتی کاربر اسکرول می‌کند، اگر به پایین نزدیک شد، پیام‌های نخوانده را
-  ///    علامت بزن. اگر دور از پایین است، هیچ کاری نکن.
   void _onScrollChanged() {
     if (!_isAppVisible) return;
     if (!_isNearBottom) return;
     _maybeScheduleReadForVisibleMessages();
   }
 
-  /// ✅ پیام‌های نخواندهٔ **قابل مشاهده** را جمع کرده و debounce می‌کند.
-  ///
-  /// شرط اصلی: کاربر باید نزدیک پایین لیست باشد (`_isNearBottom`).
-  /// اگر کاربر در حال خواندن پیام‌های قدیمی (بالای لیست) است، پیام‌های جدید
-  /// نخوانده علامت زده نمی‌شوند تا زمانی که به پایین برگردد.
   void _maybeScheduleReadForVisibleMessages() {
     if (!_isAppVisible) return;
     if (!_isNearBottom) return;
@@ -163,7 +149,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final messages = widget.chatRepository.messages;
 
-    // ── تشخیص پیام جدید ──
     final newestId = messages.isNotEmpty ? messages.first.id : null;
     final previousNewestId = _lastKnownNewestId;
     _lastKnownNewestId = newestId;
@@ -171,13 +156,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final hasNewMessage =
         previousNewestId != null && newestId != null && newestId != previousNewestId;
 
-    // Auto-scroll فقط اگر پیام جدید آمد و کاربر نزدیک پایین است.
     if (hasNewMessage && _isNearBottom && _highlightedMessageId == null) {
       _scrollToBottom();
     }
 
-    // ✅ علامت‌زدن نخوانده‌ها هم فقط اگر کاربر نزدیک پایین باشد.
-    //    این رفع باگ «تیک دو تا برای فرستنده بدون اینکه گیرنده پیام را ببیند» است.
     _maybeScheduleReadForVisibleMessages();
   }
 
@@ -197,11 +179,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// در ابتدای ورود به چت: همهٔ پیام‌های نخوانده را علامت بزن.
-  ///
-  /// چون لیست با offset=0 (پایین/جدیدترین) باز می‌شود، فرض می‌کنیم کاربر
-  /// پیام‌های پایین را می‌بیند. در جلسهٔ بعدی (divider نخوانده)، این رفتار
-  /// اصلاح خواهد شد.
   Future<void> _markUnreadMessagesAsRead() async {
     if (!_isAppVisible) return;
     if (_isMarkingRead) return;
@@ -527,7 +504,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }) async {
     final replyTarget = _replyingMessage;
 
-    final optimistic = widget.chatRepository.addOptimisticMultiUpload(
+    // ✅ await — چرا؟ چون `addOptimisticMultiUpload` الان پیام را در DB
+    //    ذخیره می‌کند قبل از اینکه HTTP شروع شود. این تضمین می‌کند که اگر
+    //    sync همزمان اجرا شد، پیام از UI محو نشود.
+    final optimistic = await widget.chatRepository.addOptimisticMultiUpload(
       files: files,
       mediaTypes: mediaTypes,
       currentUser: user,
@@ -535,6 +515,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
     final tempId = optimistic.id;
     final clientMessageId = optimistic.clientMessageId;
+
+    if (!mounted) return;
 
     setState(() => _replyingMessage = null);
     _scrollToBottom();
