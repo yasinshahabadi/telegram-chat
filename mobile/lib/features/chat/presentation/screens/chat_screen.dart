@@ -2,6 +2,7 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:telegram_chat_mobile/features/notifications/data/firebase_messaging_service.dart';
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
 import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
@@ -10,6 +11,7 @@ import 'package:telegram_chat_mobile/features/chat/data/chat_websocket_client.da
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_input_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_bubble.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/unread_divider.dart';
 import 'package:telegram_chat_mobile/features/media/data/media_download_manager.dart';
 import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
@@ -32,11 +34,18 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+/// State machine برای Divider
+enum _DividerPhase { idle, visible, fading, done }
+
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
+  static const String _prefsKeyLastReadAt = 'chat_last_read_at';
+
   final TextEditingController _inputController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
   final VoiceRecordService _voiceRecordService = VoiceRecordService();
   final MediaRemoteService _mediaRemoteService = MediaRemoteService();
+
+  /// nullable چون بعد از محاسبهٔ unread ساخته می‌شود.
+  ScrollController? _scrollController;
 
   ChatMessageModel? _replyingMessage;
   bool _isMarkingRead = false;
@@ -51,49 +60,312 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   String? _lastKnownNewestId;
 
+  // ── Chat ready (خالی = spinner، آماده = ListView) ─────
+  bool _chatReady = false;
+
+  // ── Initial load window (dynamic) ─────
+  bool _inInitialLoad = true;
+  DateTime? _initialLoadStart;
+  Timer? _initialLoadSettleTimer;
+
+  static const Duration _settleDelay = Duration(milliseconds: 400);
+  static const Duration _settleExtension = Duration(milliseconds: 1200);
+  static const Duration _hardCap = Duration(seconds: 4);
+  static const Duration _dividerRevealDelay = Duration(milliseconds: 150);
+  static const Duration _dividerFadeDelay = Duration(seconds: 5);
+  static const Duration _dividerFadeAnim = Duration(milliseconds: 900);
+
+  // ── Unread divider state (snapshot-based) ─────
+  int? _lastReadAt;
+  String? _snapshotFirstUnreadId;
+  int _snapshotUnreadCount = 0;
+  final GlobalKey _firstUnreadKey = GlobalKey();
+  _DividerPhase _dividerPhase = _DividerPhase.idle;
+  Timer? _dividerFadeTimer;
+  bool _autoScrollInProgress = false;
+
   static const double _nearBottomThreshold = 120.0;
+  static const double _messageEstimate = 90.0;
 
   bool get _isNearBottom {
-    if (!_scrollController.hasClients) return true;
-    return _scrollController.offset < _nearBottomThreshold;
+    final c = _scrollController;
+    if (c == null || !c.hasClients) return true;
+    return c.offset < _nearBottomThreshold;
   }
-
-  GlobalKey _keyForMessage(String id) =>
-      _messageKeys.putIfAbsent(id, () => GlobalKey());
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _scrollController.addListener(_onScrollChanged);
     _initializeChat();
     widget.chatRepository.addListener(_onChatUpdate);
   }
 
   Future<void> _initializeChat() async {
     final currentUser = widget.authRepository.currentUser;
-    if (currentUser != null) {
-      await widget.chatRepository.initialize(currentUser);
-      final messages = widget.chatRepository.messages;
-      if (messages.isNotEmpty) {
-        _lastKnownNewestId = messages.first.id;
-      }
-      await _markUnreadMessagesAsRead();
+    if (currentUser == null) return;
+
+    await _loadLastReadAt();
+
+    await widget.chatRepository.initialize(currentUser);
+    final messages = widget.chatRepository.messages;
+    if (messages.isNotEmpty) {
+      _lastKnownNewestId = messages.first.id;
     }
+
+    _beginInitialLoad();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.chatRepository.removeListener(_onChatUpdate);
-    _scrollController.removeListener(_onScrollChanged);
+    _scrollController?.removeListener(_onScrollChanged);
     _markReadDebounce?.cancel();
     _highlightClearTimer?.cancel();
+    _dividerFadeTimer?.cancel();
+    _initialLoadSettleTimer?.cancel();
     _inputController.dispose();
-    _scrollController.dispose();
+    _scrollController?.dispose();
     _voiceRecordService.dispose();
     super.dispose();
   }
+
+  // ═════════════════════════════════════════════
+  //  SharedPreferences
+  // ═════════════════════════════════════════════
+
+  Future<void> _loadLastReadAt() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _lastReadAt = prefs.getInt(_prefsKeyLastReadAt);
+    } catch (_) {}
+  }
+
+  Future<void> _saveLastReadAt(int timestamp) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_prefsKeyLastReadAt, timestamp);
+      _lastReadAt = timestamp;
+    } catch (_) {}
+  }
+
+  // ═════════════════════════════════════════════
+  //  Initial load window (dynamic)
+  // ═════════════════════════════════════════════
+
+  void _beginInitialLoad() {
+    _inInitialLoad = true;
+    _initialLoadStart = DateTime.now();
+    _resetSettleTimer(_settleDelay);
+  }
+
+  void _resetSettleTimer(Duration delay) {
+    _initialLoadSettleTimer?.cancel();
+    _initialLoadSettleTimer = Timer(delay, _onInitialLoadSettled);
+  }
+
+  void _extendSettleTimer() {
+    final start = _initialLoadStart;
+    if (start == null) return;
+    if (DateTime.now().difference(start) >= _hardCap) return;
+    _resetSettleTimer(_settleExtension);
+  }
+
+  void _onInitialLoadSettled() {
+    _initialLoadSettleTimer?.cancel();
+    _initialLoadSettleTimer = null;
+    _inInitialLoad = false;
+    _initialLoadStart = null;
+
+    _takeUnreadSnapshot();
+
+    if (_snapshotFirstUnreadId != null) {
+      // ✅ ۳۰۰ms سپس نمایش divider
+      Future.delayed(_dividerRevealDelay, () {
+        if (!mounted) return;
+        if (_chatReady) {
+          _revealDividerOnResume();
+        } else {
+          _revealDividerOnFirstOpen();
+        }
+      });
+    } else {
+      if (!_chatReady) {
+        _revealChatWithoutDivider();
+      } else {
+        _maybeScheduleReadForVisibleMessages();
+      }
+    }
+  }
+
+  // ═════════════════════════════════════════════
+  //  Snapshot
+  // ═════════════════════════════════════════════
+
+  void _takeUnreadSnapshot() {
+    _snapshotFirstUnreadId = null;
+    _snapshotUnreadCount = 0;
+
+    final user = widget.authRepository.currentUser;
+    if (user == null) return;
+
+    final messages = widget.chatRepository.messages;
+    if (messages.isEmpty) return;
+
+    final lastReadAt = _lastReadAt;
+
+    // اولین نخوانده از قدیمی به جدید
+    for (int i = messages.length - 1; i >= 0; i--) {
+      final m = messages[i];
+      if (m.senderId == user.id) continue;
+      if (lastReadAt == null || m.createdAt > lastReadAt) {
+        _snapshotFirstUnreadId = m.id;
+        break;
+      }
+    }
+
+    if (_snapshotFirstUnreadId != null) {
+      for (final m in messages) {
+        if (m.senderId == user.id) continue;
+        if (lastReadAt == null || m.createdAt > lastReadAt) {
+          _snapshotUnreadCount++;
+        }
+      }
+    }
+  }
+
+  // ═════════════════════════════════════════════
+  //  Reveal helpers
+  // ═════════════════════════════════════════════
+
+  /// حالت اول: هیچ Divider‌ای نیست — ListView از پایین شروع می‌شود.
+  void _revealChatWithoutDivider() {
+    _scrollController?.removeListener(_onScrollChanged);
+    _scrollController?.dispose();
+    final c = ScrollController();
+    c.addListener(_onScrollChanged);
+    _scrollController = c;
+
+    setState(() {
+      _chatReady = true;
+      _dividerPhase = _DividerPhase.idle;
+    });
+
+    _maybeScheduleReadForVisibleMessages();
+  }
+
+  /// حالت اول بار که Divider داریم.
+  /// — controller جدید با initialScrollOffset ساخته می‌شود تا کاربر **هرگز**
+  ///   پایین لیست را نبیند.
+  void _revealDividerOnFirstOpen() {
+    final messages = widget.chatRepository.messages;
+    double initialOffset = 0.0;
+
+    if (_snapshotFirstUnreadId != null) {
+      final idx = messages.indexWhere((m) => m.id == _snapshotFirstUnreadId);
+      if (idx > 0) {
+        initialOffset = idx * _messageEstimate;
+      }
+    }
+
+    _scrollController?.removeListener(_onScrollChanged);
+    _scrollController?.dispose();
+    final c = ScrollController(initialScrollOffset: initialOffset);
+    c.addListener(_onScrollChanged);
+    _scrollController = c;
+
+    setState(() {
+      _chatReady = true;
+      _dividerPhase = _DividerPhase.visible;
+    });
+
+    _startDividerFadeTimer();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _refineScrollToSnapshot();
+      _markAllUnreadAsReadAndUpdateTimestamp();
+    });
+  }
+
+  /// حالت resume: کاربر قبلاً چت را می‌بیند، فقط Divider + scroll نرم.
+  void _revealDividerOnResume() {
+    setState(() => _dividerPhase = _DividerPhase.visible);
+    _startDividerFadeTimer();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await _refineScrollToSnapshot();
+      if (mounted) _markAllUnreadAsReadAndUpdateTimestamp();
+    });
+  }
+
+  /// تنظیم دقیق موقعیت با `ensureVisible` روی کلید واقعی Divider.
+  Future<void> _refineScrollToSnapshot() async {
+    if (_snapshotFirstUnreadId == null) return;
+    final ctx = _firstUnreadKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+
+    _autoScrollInProgress = true;
+    try {
+      await Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        alignment: 0.75,
+      );
+    } catch (_) {
+    } finally {
+      _autoScrollInProgress = false;
+    }
+  }
+
+  void _startDividerFadeTimer() {
+    _dividerFadeTimer?.cancel();
+    _dividerFadeTimer = Timer(_dividerFadeDelay, () {
+      if (!mounted) return;
+      setState(() => _dividerPhase = _DividerPhase.fading);
+
+      Timer(_dividerFadeAnim, () {
+        if (!mounted) return;
+        setState(() {
+          _dividerPhase = _DividerPhase.done;
+          _snapshotFirstUnreadId = null;
+          _snapshotUnreadCount = 0;
+        });
+      });
+    });
+  }
+
+  Future<void> _markAllUnreadAsReadAndUpdateTimestamp() async {
+    if (!_isAppVisible) return;
+
+    final user = widget.authRepository.currentUser;
+    if (user == null) return;
+
+    final messages = widget.chatRepository.messages;
+    final unreadIds = messages
+        .where((m) => m.senderId != user.id && m.readAt == null)
+        .map((m) => m.id)
+        .toList();
+
+    if (unreadIds.isEmpty) return;
+
+    _isMarkingRead = true;
+    try {
+      await widget.chatRepository.markMessagesAsRead(unreadIds);
+      if (messages.isNotEmpty) {
+        await _saveLastReadAt(messages.first.createdAt);
+      }
+    } finally {
+      _isMarkingRead = false;
+    }
+  }
+
+  // ═════════════════════════════════════════════
+  //  Lifecycle
+  // ═════════════════════════════════════════════
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -104,22 +376,35 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       if (_isAppVisible) {
         _markReadDebounce?.cancel();
-        _flushMarkRead();
-        _maybeScheduleReadForVisibleMessages();
+        _resetDividerState();
+        _beginInitialLoad();
       } else {
         _markReadDebounce?.cancel();
       }
     }
   }
 
+  void _resetDividerState() {
+    _dividerPhase = _DividerPhase.idle;
+    _snapshotFirstUnreadId = null;
+    _snapshotUnreadCount = 0;
+    _dividerFadeTimer?.cancel();
+    _dividerFadeTimer = null;
+    _inInitialLoad = true;
+  }
+
   void _onScrollChanged() {
     if (!_isAppVisible) return;
+    if (_autoScrollInProgress) return;
+    if (_inInitialLoad) return;
     if (!_isNearBottom) return;
     _maybeScheduleReadForVisibleMessages();
   }
 
   void _maybeScheduleReadForVisibleMessages() {
     if (!_isAppVisible) return;
+    if (_autoScrollInProgress) return;
+    if (_inInitialLoad) return;
     if (!_isNearBottom) return;
 
     final user = widget.authRepository.currentUser;
@@ -153,10 +438,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final previousNewestId = _lastKnownNewestId;
     _lastKnownNewestId = newestId;
 
-    final hasNewMessage =
-        previousNewestId != null && newestId != null && newestId != previousNewestId;
+    final hasNewMessage = previousNewestId != null &&
+        newestId != null &&
+        newestId != previousNewestId;
 
-    if (hasNewMessage && _isNearBottom && _highlightedMessageId == null) {
+    final newestIsFromOther = hasNewMessage &&
+        messages.isNotEmpty &&
+        messages.first.senderId != user.id;
+
+    // ── داخل پنجرهٔ initial load ──
+    if (_inInitialLoad) {
+      if (newestIsFromOther) {
+        _extendSettleTimer();
+      }
+      return;
+    }
+
+    // ── بعد از پنجره: Divider هرگز دوباره در این session ظاهر نمی‌شود.
+    //
+    //    رفتار عادی:
+    //    • اگر کاربر نزدیک پایین است → auto-scroll + mark-read
+    //    • اگر کاربر اسکرول کرده (دور از پایین) → هیچ کاری (نه Divider،
+    //      نه auto-scroll، نه mark-read). پیام جدید در DB ذخیره می‌شود
+    //      و وقتی کاربر به پایین برگشت، `_onScrollChanged` آن را علامت می‌زند.
+    if (hasNewMessage &&
+        _isNearBottom &&
+        !_autoScrollInProgress &&
+        _highlightedMessageId == null) {
       _scrollToBottom();
     }
 
@@ -166,6 +474,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _flushMarkRead() async {
     if (!_isAppVisible) return;
     if (_isMarkingRead) return;
+    if (_inInitialLoad) return;
     if (_pendingMarkReadIds.isEmpty) return;
 
     final idsToMark = _pendingMarkReadIds.toList();
@@ -174,28 +483,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _isMarkingRead = true;
     try {
       await widget.chatRepository.markMessagesAsRead(idsToMark);
-    } finally {
-      _isMarkingRead = false;
-    }
-  }
 
-  Future<void> _markUnreadMessagesAsRead() async {
-    if (!_isAppVisible) return;
-    if (_isMarkingRead) return;
-
-    final user = widget.authRepository.currentUser;
-    if (user == null) return;
-
-    final unreadIds = widget.chatRepository.messages
-        .where((m) => m.senderId != user.id && m.readAt == null)
-        .map((m) => m.id)
-        .toList();
-
-    if (unreadIds.isEmpty) return;
-
-    _isMarkingRead = true;
-    try {
-      await widget.chatRepository.markMessagesAsRead(unreadIds);
+      final messages = widget.chatRepository.messages;
+      int newestMarked = 0;
+      for (final m in messages) {
+        if (idsToMark.contains(m.id) && m.createdAt > newestMarked) {
+          newestMarked = m.createdAt;
+        }
+      }
+      if (newestMarked > 0) {
+        await _saveLastReadAt(newestMarked);
+      }
     } finally {
       _isMarkingRead = false;
     }
@@ -221,23 +519,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final key = _messageKeys[parentMessageId];
     final ctx = key?.currentContext;
 
-    if (ctx != null) {
+    if (ctx != null && ctx.mounted) {
       await Scrollable.ensureVisible(
         ctx,
         duration: const Duration(milliseconds: 350),
         curve: Curves.easeInOut,
         alignment: 0.5,
       );
-    } else if (_scrollController.hasClients) {
-      final approx = (index * 90.0).clamp(
-        0.0,
-        _scrollController.position.maxScrollExtent,
-      );
-      await _scrollController.animateTo(
-        approx,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOut,
-      );
+    } else {
+      final c = _scrollController;
+      if (c != null && c.hasClients) {
+        final approx = (index * _messageEstimate).clamp(
+          0.0,
+          c.position.maxScrollExtent,
+        );
+        await c.animateTo(
+          approx,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeInOut,
+        );
+      }
     }
   }
 
@@ -287,8 +588,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _scrollToBottom() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
+    final c = _scrollController;
+    if (c != null && c.hasClients) {
+      c.animateTo(
         0.0,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
@@ -504,9 +806,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }) async {
     final replyTarget = _replyingMessage;
 
-    // ✅ await — چرا؟ چون `addOptimisticMultiUpload` الان پیام را در DB
-    //    ذخیره می‌کند قبل از اینکه HTTP شروع شود. این تضمین می‌کند که اگر
-    //    sync همزمان اجرا شد، پیام از UI محو نشود.
     final optimistic = await widget.chatRepository.addOptimisticMultiUpload(
       files: files,
       mediaTypes: mediaTypes,
@@ -697,6 +996,60 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ═════════════════════════════════════════════
+  //  Build
+  // ═════════════════════════════════════════════
+
+  Widget _buildMessageItem({
+    required ChatMessageModel message,
+    required AuthUser? currentUser,
+  }) {
+    final isMe = currentUser != null &&
+        (message.senderId == currentUser.id ||
+            message.senderName == currentUser.fullName);
+    final canDelete = isMe || (currentUser?.isAdmin == true);
+
+    final isFirstUnread = message.id == _snapshotFirstUnreadId;
+    final showDivider = isFirstUnread &&
+        _dividerPhase != _DividerPhase.done &&
+        _dividerPhase != _DividerPhase.idle;
+
+    final bubble = MessageBubble(
+      message: message,
+      isMe: isMe,
+      isSenderOnline: widget.chatRepository.isUserOnline(message.senderId),
+      isHighlighted: _highlightedMessageId == message.id,
+      canDelete: canDelete,
+      onReply: () => setState(() => _replyingMessage = message),
+      onEdit: isMe ? () => _showEditDialog(message) : null,
+      onDelete: canDelete ? () => _confirmDeleteMessage(message) : null,
+      onPin: () => widget.chatRepository.pinMessage(message.id),
+      onTapReplyMessage: message.replyToMessageId != null
+          ? () => _handleTapReplyMessage(message.replyToMessageId!)
+          : null,
+      onToggleReaction: (emoji) =>
+          widget.chatRepository.toggleReaction(message.id, emoji),
+    );
+
+    if (showDivider) {
+      return KeyedSubtree(
+        key: _firstUnreadKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            UnreadDivider(
+              visible: _dividerPhase != _DividerPhase.fading,
+              count: _snapshotUnreadCount,
+            ),
+            bubble,
+          ],
+        ),
+      );
+    }
+
+    return bubble;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -819,6 +1172,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 builder: (_, __) {
                   final messages = widget.chatRepository.messages;
 
+                  if (!_chatReady || _scrollController == null) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
                   if (messages.isEmpty && widget.chatRepository.isLoading) {
                     return const Center(child: CircularProgressIndicator());
                   }
@@ -842,41 +1199,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       final message = messages[index];
-                      final isMe = currentUser != null &&
-                          (message.senderId == currentUser.id ||
-                              message.senderName == currentUser.fullName);
-
-                      final canDelete = isMe ||
-                          (currentUser?.isAdmin == true);
-
-                      return KeyedSubtree(
-                        key: _keyForMessage(message.id),
-                        child: RepaintBoundary(
-                          child: MessageBubble(
-                            message: message,
-                            isMe: isMe,
-                            isSenderOnline: widget.chatRepository
-                                .isUserOnline(message.senderId),
-                            isHighlighted:
-                                _highlightedMessageId == message.id,
-                            canDelete: canDelete,
-                            onReply: () =>
-                                setState(() => _replyingMessage = message),
-                            onEdit: isMe
-                                ? () => _showEditDialog(message)
-                                : null,
-                            onDelete: canDelete
-                                ? () => _confirmDeleteMessage(message)
-                                : null,
-                            onPin: () =>
-                                widget.chatRepository.pinMessage(message.id),
-                            onTapReplyMessage: message.replyToMessageId != null
-                                ? () => _handleTapReplyMessage(
-                                    message.replyToMessageId!)
-                                : null,
-                            onToggleReaction: (emoji) => widget.chatRepository
-                                .toggleReaction(message.id, emoji),
-                          ),
+                      return RepaintBoundary(
+                        key: ValueKey(message.id),
+                        child: _buildMessageItem(
+                          message: message,
+                          currentUser: currentUser,
                         ),
                       );
                     },
