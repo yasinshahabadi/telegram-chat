@@ -88,6 +88,8 @@ class ChatRepository extends ChangeNotifier {
   Future<void> loadLocalMessages({int limit = 50}) async {
     try {
       final rawList = await _localDao.getMessagesList(limit: limit);
+      // ✅ پاک‌سازی پیام‌های موقت قدیمی که با نسخهٔ سرور جایگزین شده‌اند
+      try { await _localDao.deleteOrphanTempMessages(); } catch (_) {}
       final me = _currentUserId;
 
       final loaded = <ChatMessageModel>[];
@@ -791,6 +793,12 @@ class ChatRepository extends ChangeNotifier {
     List<MediaAttachmentModel> existing,
     List<MediaAttachmentModel> incoming,
   ) {
+    // ✅ اگر سرور هیچ پیوستی نفرستاده ولی ما در حافظه داریم، آن‌ها را حفظ کن.
+    //    این جلوگیری می‌کند از پاک شدن عکس آپلودشده وقتی WS با آرایهٔ خالی می‌آید.
+    if (incoming.isEmpty) {
+      return existing;
+    }
+
     final result = <MediaAttachmentModel>[];
     for (int i = 0; i < incoming.length; i++) {
       final inc = incoming[i];

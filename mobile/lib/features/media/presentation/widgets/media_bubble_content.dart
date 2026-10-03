@@ -314,6 +314,11 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
                       _localFile!,
                       fit: BoxFit.cover,
                       cacheWidth: 600,
+                      // ✅ اگر فایل گم شده باشد، به‌جای حباب خالی، placeholder نشان بده
+                      errorBuilder: (_, __, ___) {
+                        _localFile = null;  // تا در rebuild بعدی placeholder ببیند
+                        return _buildPlaceholder(icon: Icons.broken_image_rounded, height: 200);
+                      },
                     ),
                   ),
                 )
