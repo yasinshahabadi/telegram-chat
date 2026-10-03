@@ -17,6 +17,7 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onPin;
   final VoidCallback? onDelete;
+  final VoidCallback? onRetry;
   final VoidCallback? onTapReplyMessage;
   final ValueChanged<String>? onToggleReaction;
 
@@ -31,6 +32,7 @@ class MessageBubble extends StatelessWidget {
     this.onEdit,
     this.onPin,
     this.onDelete,
+    this.onRetry,
     this.onTapReplyMessage,
     this.onToggleReaction,
   });
@@ -192,6 +194,62 @@ class MessageBubble extends StatelessWidget {
                       ],
                     ],
                   ),
+
+                  // ✅ نشانگر خطا + دکمهٔ تلاش دوباره
+                  if (message.isFailed) ...[
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade700.withAlpha(40),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.error_outline_rounded,
+                              size: 14, color: Colors.redAccent),
+                          const SizedBox(width: 4),
+                          const Text(
+                            'ارسال نشد',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.redAccent,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          if (onRetry != null) ...[
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: onRetry,
+                              behavior: HitTestBehavior.opaque,
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 4, vertical: 2),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.refresh_rounded,
+                                        size: 14, color: Colors.redAccent),
+                                    SizedBox(width: 2),
+                                    Text(
+                                      'تلاش دوباره',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.redAccent,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
 
                   if (message.reactions.isNotEmpty) ...[
                     ReactionBar(
@@ -478,7 +536,18 @@ class MessageBubble extends StatelessWidget {
                   onReply?.call();
                 },
               ),
-              if (isMe && message.text.isNotEmpty)
+              if (message.isFailed && onRetry != null)
+                ListTile(
+                  leading: const Icon(Icons.refresh_rounded,
+                      color: Colors.orange),
+                  title: const Text('تلاش دوباره برای ارسال',
+                      style: TextStyle(color: Colors.orange)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    onRetry?.call();
+                  },
+                ),
+              if (isMe && message.text.isNotEmpty && !message.isFailed)
                 ListTile(
                   leading: const Icon(Icons.edit_rounded),
                   title: const Text('ویرایش متن'),

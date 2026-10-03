@@ -7,12 +7,14 @@ import 'package:uuid/uuid.dart';
 import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
 import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/media/data/media_local_storage.dart';
 import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 import 'chat_websocket_client.dart';
 
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
+  final MediaLocalStorage _mediaStorage = MediaLocalStorage();
 
   List<ChatMessageModel> _messages = [];
   ChatMessageModel? _pinnedMessage;
@@ -23,7 +25,6 @@ class ChatRepository extends ChangeNotifier {
   bool _isLoading = false;
   bool isAppInBackground = false;
 
-  /// ✅ وقتی WebSocket به سرور وصل (یا دوباره وصل) می‌شود، این callback صدا زده می‌شود.
   VoidCallback? onSocketReconnected;
 
   final Map<String, Map<String, dynamic>> _onlineUsers = {};
@@ -87,9 +88,10 @@ class ChatRepository extends ChangeNotifier {
 
   Future<void> loadLocalMessages({int limit = 50}) async {
     try {
-      final rawList = await _localDao.getMessagesList(limit: limit);
-      // ✅ پاک‌سازی پیام‌های موقت قدیمی که با نسخهٔ سرور جایگزین شده‌اند
+      // ✅ پاک‌سازی پیام‌های temp orphan قبل از خواندن
       try { await _localDao.deleteOrphanTempMessages(); } catch (_) {}
+
+      final rawList = await _localDao.getMessagesList(limit: limit);
       final me = _currentUserId;
 
       final loaded = <ChatMessageModel>[];
@@ -127,19 +129,18 @@ class ChatRepository extends ChangeNotifier {
         ));
       }
 
-      // ✅ حفظ وضعیت in-flight برای پیام‌هایی که الان در حال آپلود هستند.
-      //    بدون این، اگر `loadLocalMessages` در میانهٔ آپلود اجرا شود،
-      //    نوار پیشرفت کاربر ناگهان پاک می‌شود.
+      // حفظ وضعیت in-flight برای پیام‌هایی که در حال آپلود هستند
       final Map<String, ChatMessageModel> inFlight = {};
       for (final m in _messages) {
-        if (m.isUploading) inFlight[m.id] = m;
+        if (m.isUploading || m.isFailed) inFlight[m.id] = m;
       }
       if (inFlight.isNotEmpty) {
         for (int i = 0; i < loaded.length; i++) {
           final inf = inFlight[loaded[i].id];
           if (inf != null) {
             loaded[i] = loaded[i].copyWith(
-              isUploading: true,
+              status: inf.status,
+              isUploading: inf.isUploading,
               uploadProgress: inf.uploadProgress,
             );
           }
@@ -392,14 +393,12 @@ class ChatRepository extends ChangeNotifier {
     _schedulePendingRetry();
   }
 
-  /// ✅ نسخهٔ async که پیام optimistic را قبل از بازگشت در DB ذخیره می‌کند.
+  /// ✅ کپی فایل‌های انتخاب‌شده به storage داخلی اپ + ثبت رکورد optimistic.
   ///
-  /// این مهم است چون:
-  /// - بعد از این تابع، کد فراخوانی‌کننده HTTP آپلود را شروع می‌کند.
-  /// - در این پنجره، هر sync (reconnect/FCM/catch-up) که `loadLocalMessages`
-  ///   را صدا بزند، باید پیام را در DB پیدا کند وگرنه از UI محو می‌شود.
-  ///
-  /// با ذخیرهٔ synchronous قبل از شروع HTTP، این race کاملاً حذف می‌شود.
+  /// مزایای کپی قبل از آپلود:
+  ///   - فایل اصلی (از file_picker cache) هرگز توسط سیستم پاک نمی‌شود.
+  ///   - پس از قطعی اینترنت، retry با همان فایل انجام می‌شود.
+  ///   - تصویر در حباب همیشه نمایش داده می‌شود.
   Future<ChatMessageModel> addOptimisticMultiUpload({
     required List<File> files,
     required List<String> mediaTypes,
@@ -413,13 +412,29 @@ class ChatRepository extends ChangeNotifier {
 
     final optimisticAtts = <MediaAttachmentModel>[];
     for (int i = 0; i < files.length; i++) {
-      final f = files[i];
+      final original = files[i];
+      final attId = 'att_${tempId}_$i';
+      final originalName = p.basename(original.path);
+
+      // ✅ کپی به storage داخلی
+      File durable = original;
+      try {
+        final copied = await _mediaStorage.saveFileFromPathForAttachment(
+          original.path,
+          attId,
+          originalName,
+        );
+        if (copied != null) durable = copied;
+      } catch (e) {
+        debugPrint('[ChatRepo] Copy to storage failed: $e');
+      }
+
       optimisticAtts.add(MediaAttachmentModel(
-        id: 'att_${tempId}_$i',
+        id: attId,
         messageId: tempId,
         mediaType: mediaTypes[i],
-        localPath: f.path,
-        fileName: p.basename(f.path),
+        localPath: durable.path,
+        fileName: originalName,
         isDownloaded: true,
         createdAt: now,
       ));
@@ -448,8 +463,6 @@ class ChatRepository extends ChangeNotifier {
       attachments: optimisticAtts,
     );
 
-    // ✅ DB اول، سپس حافظه.
-    //    اگر DB رایت fail شود، حافظه هم نمی‌گیرد تا inconsistency پیش نیاید.
     try {
       await _localDao.saveMessage(optimistic.toDbMap());
       for (final a in optimisticAtts) {
@@ -471,9 +484,8 @@ class ChatRepository extends ChangeNotifier {
     if (idx != -1) {
       _messages[idx] = _messages[idx].copyWith(
         uploadProgress: progress.clamp(0.0, 1.0),
-        // اگر مدتی طول کشید و loadLocalMessages اجرا شد، این خط
-        // دوباره نوار پیشرفت را فعال می‌کند.
         isUploading: true,
+        status: MessageStatus.sending,
       );
       notifyListeners();
     }
@@ -505,13 +517,21 @@ class ChatRepository extends ChangeNotifier {
     );
     notifyListeners();
 
-    _localDao.saveMessage(_messages[idx].toDbMap()).catchError((_) {});
-    for (final a in mergedAtts) {
-      _localDao.saveAttachment(a.toDbMap()).catchError((_) {});
-    }
+    // ✅ ابتدا پیام ذخیره می‌شود، سپس پیوست‌ها.
+    //    این ترتیب تضمین می‌کند وقتی saveMessage ردیف temp را rename می‌کند،
+    //    پیوست‌ها در جای درست قرار می‌گیرند.
+    _localDao.saveMessage(_messages[idx].toDbMap()).then((_) {
+      for (final a in mergedAtts) {
+        _localDao.saveAttachment(a.toDbMap()).catchError((_) {});
+      }
+    }).catchError((_) {});
   }
 
-  void failUpload(String tempId, String error) {
+  /// ✅ تغییر وضعیت به «ناموفق» + ذخیره در DB.
+  ///
+  /// قبلاً فقط حافظه تغییر می‌کرد و DB همچنان 'sending' می‌ماند؛
+  /// نتیجه این بود که بعد از هر sync، icon ساعت برمی‌گشت.
+  Future<void> failUpload(String tempId, String error) async {
     final idx = _messages.indexWhere((m) => m.id == tempId);
     if (idx != -1) {
       _messages[idx] = _messages[idx].copyWith(
@@ -520,22 +540,34 @@ class ChatRepository extends ChangeNotifier {
       );
       notifyListeners();
     }
+    try {
+      await _localDao.updateMessageStatus(tempId, 'failed');
+    } catch (_) {}
   }
 
-  /// ✅ حتی اگر پیام در حافظه پیدا نشد، DB را به‌روز می‌کند.
-  ///
-  /// این fix برای این سناریو است: sync در میانهٔ آپلود رخ دهد و پیام از
-  /// حافظه موقتاً حذف شود. بدون این، `setLocalPathForAttachment` early-return
-  /// می‌کند و localPath در DB ذخیره نمی‌شود → عکس بعد از reload نمایش داده نمی‌شود.
+  /// ✅ آماده‌سازی پیام برای تلاش دوباره: تغییر وضعیت به sending + متن اختیاری.
+  void prepareForRetry(String messageId, {String? newText}) {
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx == -1) return;
+    final old = _messages[idx];
+    _messages[idx] = old.copyWith(
+      status: MessageStatus.sending,
+      isUploading: true,
+      uploadProgress: 0.0,
+      text: newText ?? old.text,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    notifyListeners();
+    _localDao.saveMessage(_messages[idx].toDbMap()).catchError((_) {});
+  }
+
   void setLocalPathForAttachment(
     String messageId,
     String attachmentId,
     String localPath,
   ) {
-    // ✅ اول DB — بدون قید و شرط.
     _localDao.updateAttachmentLocalPath(attachmentId, localPath).catchError((_) {});
 
-    // سپس حافظه (اگر پیدا شد).
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
 
@@ -557,9 +589,7 @@ class ChatRepository extends ChangeNotifier {
     final type = event['type'] as String?;
     if (type == null) return;
 
-    if (type == 'pong') {
-      return;
-    }
+    if (type == 'pong') return;
 
     if (type == 'online_users' && event['users'] != null) {
       final usersList = (event['users'] as List).cast<Map<String, dynamic>>();
@@ -789,15 +819,15 @@ class ChatRepository extends ChangeNotifier {
     }
   }
 
+  /// ✅ ادغام پیوست‌ها با حفظ مقادیر محلی.
+  ///
+  /// اگر incoming خالی باشد (مثلاً پیام فقط متن است)، آرایهٔ موجود حفظ می‌شود
+  /// تا پیوست‌های آپلودشده پاک نشوند.
   List<MediaAttachmentModel> _mergeAttachmentsByIndex(
     List<MediaAttachmentModel> existing,
     List<MediaAttachmentModel> incoming,
   ) {
-    // ✅ اگر سرور هیچ پیوستی نفرستاده ولی ما در حافظه داریم، آن‌ها را حفظ کن.
-    //    این جلوگیری می‌کند از پاک شدن عکس آپلودشده وقتی WS با آرایهٔ خالی می‌آید.
-    if (incoming.isEmpty) {
-      return existing;
-    }
+    if (incoming.isEmpty) return existing;
 
     final result = <MediaAttachmentModel>[];
     for (int i = 0; i < incoming.length; i++) {

@@ -48,7 +48,6 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
   @override
   void didUpdateWidget(MediaBubbleContent oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // وقتی مدل به‌روز می‌شود (مثلاً localPath اضافه می‌شود)، دوباره چک کن.
     if (oldWidget.attachment.id != widget.attachment.id ||
         oldWidget.attachment.localPath != widget.attachment.localPath) {
       _checkLocal();
@@ -304,7 +303,8 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 280, maxWidth: 280, minWidth: 200),
+          constraints: const BoxConstraints(
+              maxHeight: 280, maxWidth: 280, minWidth: 200),
           child: _hasLocal
               ? GestureDetector(
                   onTap: _openImageViewer,
@@ -314,10 +314,15 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
                       _localFile!,
                       fit: BoxFit.cover,
                       cacheWidth: 600,
-                      // ✅ اگر فایل گم شده باشد، به‌جای حباب خالی، placeholder نشان بده
                       errorBuilder: (_, __, ___) {
-                        _localFile = null;  // تا در rebuild بعدی placeholder ببیند
-                        return _buildPlaceholder(icon: Icons.broken_image_rounded, height: 200);
+                        // ✅ فایل روی دیسک گم شده — placeholder نمایش بده
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted && _localFile != null) {
+                            setState(() => _localFile = null);
+                          }
+                        });
+                        return _buildPlaceholder(
+                            icon: Icons.broken_image_rounded, height: 200);
                       },
                     ),
                   ),
@@ -331,7 +336,8 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 280, maxWidth: 280, minWidth: 220),
+          constraints: const BoxConstraints(
+              maxHeight: 280, maxWidth: 280, minWidth: 220),
           child: _hasLocal
               ? GestureDetector(
                   onTap: _openVideoPlayer,
@@ -340,7 +346,8 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
                     children: [
                       Container(color: Colors.black87, height: 180),
                       Container(
-                        width: 60, height: 60,
+                        width: 60,
+                        height: 60,
                         decoration: BoxDecoration(
                           color: Colors.black54,
                           shape: BoxShape.circle,
@@ -351,21 +358,25 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
                       ),
                       if (att.duration > 0)
                         Positioned(
-                          bottom: 8, right: 8,
+                          bottom: 8,
+                          right: 8,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
                             decoration: BoxDecoration(
                               color: Colors.black87,
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Text(att.formattedDuration,
-                                style: const TextStyle(color: Colors.white, fontSize: 12)),
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 12)),
                           ),
                         ),
                     ],
                   ),
                 )
-              : _buildPlaceholder(icon: Icons.videocam_rounded, height: 180),
+              : _buildPlaceholder(
+                  icon: Icons.videocam_rounded, height: 180),
         ),
       );
     }
@@ -393,15 +404,20 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
                 padding: EdgeInsets.zero,
                 icon: _isDownloading
                     ? SizedBox(
-                        width: 18, height: 18,
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(
                           value: _progress > 0 ? _progress : null,
-                          strokeWidth: 2, color: Colors.white,
+                          strokeWidth: 2,
+                          color: Colors.white,
                         ),
                       )
                     : Icon(
-                        _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                        color: Colors.white, size: 22,
+                        _isPlaying
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                        color: Colors.white,
+                        size: 22,
                       ),
                 onPressed: _toggleAudio,
               ),
@@ -415,7 +431,8 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
                   width: 140,
                   child: LinearProgressIndicator(
                     value: _isPlaying ? progress : 0.0,
-                    backgroundColor: theme.colorScheme.onSurface.withAlpha(30),
+                    backgroundColor:
+                        theme.colorScheme.onSurface.withAlpha(30),
                     color: theme.colorScheme.primary,
                   ),
                 ),
@@ -426,14 +443,20 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
                       _isPlaying
                           ? '${(currentSeconds ~/ 60).toString().padLeft(2, '0')}:${(currentSeconds % 60).toString().padLeft(2, '0')}'
                           : att.formattedDuration,
-                      style: TextStyle(fontSize: 11,
+                      style: TextStyle(
+                          fontSize: 11,
                           color: theme.colorScheme.onSurfaceVariant),
                     ),
                     if (att.formattedSize.isNotEmpty) ...[
                       const SizedBox(width: 8),
-                      Text(att.formattedSize,
-                          style: TextStyle(fontSize: 10,
-                              color: theme.colorScheme.onSurfaceVariant.withAlpha(160))),
+                      Text(
+                        att.formattedSize,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: theme.colorScheme.onSurfaceVariant
+                              .withAlpha(160),
+                        ),
+                      ),
                     ],
                   ],
                 ),
@@ -449,7 +472,8 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
         borderRadius: BorderRadius.circular(12),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 280, minWidth: 220),
-          child: _buildPlaceholder(icon: Icons.insert_drive_file_rounded, height: 90),
+          child: _buildPlaceholder(
+              icon: Icons.insert_drive_file_rounded, height: 90),
         ),
       );
     }
@@ -465,20 +489,29 @@ class _MediaBubbleContentState extends State<MediaBubbleContent>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.insert_drive_file_rounded, size: 32, color: theme.colorScheme.primary),
+          Icon(Icons.insert_drive_file_rounded,
+              size: 32, color: theme.colorScheme.primary),
           const SizedBox(width: 8),
           Flexible(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(att.fileName,
-                    maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                Text(
+                  att.fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.bold),
+                ),
                 if (att.formattedSize.isNotEmpty)
-                  Text(att.formattedSize,
-                      style: TextStyle(fontSize: 11,
-                          color: theme.colorScheme.onSurfaceVariant)),
+                  Text(
+                    att.formattedSize,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
               ],
             ),
           ),

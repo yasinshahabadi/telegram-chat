@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:telegram_chat_mobile/core/network/network_monitor.dart';
 import 'package:telegram_chat_mobile/features/notifications/data/firebase_messaging_service.dart';
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
 import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
@@ -44,7 +45,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final VoiceRecordService _voiceRecordService = VoiceRecordService();
   final MediaRemoteService _mediaRemoteService = MediaRemoteService();
 
-  /// nullable چون بعد از محاسبهٔ unread ساخته می‌شود.
   ScrollController? _scrollController;
 
   ChatMessageModel? _replyingMessage;
@@ -60,7 +60,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   String? _lastKnownNewestId;
 
-  // ── Chat ready (خالی = spinner، آماده = ListView) ─────
   bool _chatReady = false;
 
   // ── Initial load window (dynamic) ─────
@@ -75,7 +74,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   static const Duration _dividerFadeDelay = Duration(seconds: 5);
   static const Duration _dividerFadeAnim = Duration(milliseconds: 900);
 
-  // ── Unread divider state (snapshot-based) ─────
+  // ── Unread divider state ─────
   int? _lastReadAt;
   String? _snapshotFirstUnreadId;
   int _snapshotUnreadCount = 0;
@@ -181,7 +180,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _takeUnreadSnapshot();
 
     if (_snapshotFirstUnreadId != null) {
-      // ✅ ۳۰۰ms سپس نمایش divider
       Future.delayed(_dividerRevealDelay, () {
         if (!mounted) return;
         if (_chatReady) {
@@ -215,7 +213,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final lastReadAt = _lastReadAt;
 
-    // اولین نخوانده از قدیمی به جدید
     for (int i = messages.length - 1; i >= 0; i--) {
       final m = messages[i];
       if (m.senderId == user.id) continue;
@@ -239,7 +236,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   //  Reveal helpers
   // ═════════════════════════════════════════════
 
-  /// حالت اول: هیچ Divider‌ای نیست — ListView از پایین شروع می‌شود.
   void _revealChatWithoutDivider() {
     _scrollController?.removeListener(_onScrollChanged);
     _scrollController?.dispose();
@@ -255,9 +251,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _maybeScheduleReadForVisibleMessages();
   }
 
-  /// حالت اول بار که Divider داریم.
-  /// — controller جدید با initialScrollOffset ساخته می‌شود تا کاربر **هرگز**
-  ///   پایین لیست را نبیند.
   void _revealDividerOnFirstOpen() {
     final messages = widget.chatRepository.messages;
     double initialOffset = 0.0;
@@ -289,7 +282,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  /// حالت resume: کاربر قبلاً چت را می‌بیند، فقط Divider + scroll نرم.
   void _revealDividerOnResume() {
     setState(() => _dividerPhase = _DividerPhase.visible);
     _startDividerFadeTimer();
@@ -301,7 +293,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  /// تنظیم دقیق موقعیت با `ensureVisible` روی کلید واقعی Divider.
   Future<void> _refineScrollToSnapshot() async {
     if (_snapshotFirstUnreadId == null) return;
     final ctx = _firstUnreadKey.currentContext;
@@ -446,7 +437,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         messages.isNotEmpty &&
         messages.first.senderId != user.id;
 
-    // ── داخل پنجرهٔ initial load ──
     if (_inInitialLoad) {
       if (newestIsFromOther) {
         _extendSettleTimer();
@@ -454,13 +444,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
 
-    // ── بعد از پنجره: Divider هرگز دوباره در این session ظاهر نمی‌شود.
-    //
-    //    رفتار عادی:
-    //    • اگر کاربر نزدیک پایین است → auto-scroll + mark-read
-    //    • اگر کاربر اسکرول کرده (دور از پایین) → هیچ کاری (نه Divider،
-    //      نه auto-scroll، نه mark-read). پیام جدید در DB ذخیره می‌شود
-    //      و وقتی کاربر به پایین برگشت، `_onScrollChanged` آن را علامت می‌زند.
     if (hasNewMessage &&
         _isNearBottom &&
         !_autoScrollInProgress &&
@@ -572,6 +555,144 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       await widget.chatRepository.deleteMessage(message.id);
     }
   }
+
+  // ═════════════════════════════════════════════
+  //  Retry flow
+  // ═════════════════════════════════════════════
+
+  /// ✅ نمایش دیالوگ ویرایش متن + تلاش دوباره برای پیام‌های ناموفق.
+  Future<void> _showRetryDialog(ChatMessageModel message) async {
+    final textController = TextEditingController(text: message.text);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('تلاش دوباره برای ارسال'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'پیام قبلی ارسال نشد. می‌توانید متن همراه فایل را ویرایش کنید و دوباره بفرستید.',
+                style: TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: textController,
+                autofocus: true,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'متن همراه (اختیاری)',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('انصراف'),
+            ),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('ارسال دوباره'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    await _retryUpload(message, textController.text.trim());
+  }
+
+  /// ✅ تلاش مجدد برای ارسال با فایل‌های ذخیره‌شده در storage داخلی.
+  Future<void> _retryUpload(ChatMessageModel message, String newText) async {
+    final user = widget.authRepository.currentUser;
+    final token = widget.authRepository.sessionToken;
+    if (user == null || token == null) {
+      _showError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
+      return;
+    }
+
+    if (!NetworkMonitor.instance.isOnline) {
+      _showError('اتصال اینترنت برقرار نیست.');
+      return;
+    }
+
+    final files = <File>[];
+    final originalNames = <String>[];
+    final mediaTypes = <String>[];
+
+    for (final att in message.attachments) {
+      final path = att.localPath;
+      if (path == null) continue;
+      final f = File(path);
+      if (!await f.exists()) continue;
+      files.add(f);
+      originalNames.add(att.fileName);
+      mediaTypes.add(att.mediaType);
+    }
+
+    if (files.isEmpty) {
+      _showError('فایل اصلی یافت نشد. لطفاً دوباره ارسال کنید.');
+      return;
+    }
+
+    widget.chatRepository.prepareForRetry(message.id, newText: newText);
+
+    try {
+      final result = await _mediaRemoteService.uploadFiles(
+        files: files,
+        mediaTypes: mediaTypes,
+        originalNames: originalNames,
+        sessionToken: token,
+        caption: newText,
+        clientMessageId: message.clientMessageId,
+        replyTo: message.replyToMessageId != null
+            ? {
+                'id': message.replyToMessageId,
+                'name': message.replyToName,
+                'text': message.replyToText,
+                'tgMsgId': null,
+              }
+            : null,
+        onProgress: (p) {
+          widget.chatRepository.updateUploadProgress(message.id, p);
+        },
+      );
+
+      if (!mounted) return;
+
+      if (!result.isSuccess || result.messageId == null) {
+        await widget.chatRepository.failUpload(
+            message.id, result.error ?? 'خطا');
+        _showError(result.error ?? 'خطا در آپلود فایل');
+        return;
+      }
+
+      widget.chatRepository.finalizeMultiUpload(
+        tempId: message.id,
+        clientMessageId: message.clientMessageId,
+        realMessageId: result.messageId!,
+        attachments: result.attachments,
+      );
+
+      _scrollToBottom();
+    } catch (e) {
+      if (!mounted) return;
+      await widget.chatRepository.failUpload(message.id, e.toString());
+      _showError('خطا در ارسال فایل: $e');
+    }
+  }
+
+  // ═════════════════════════════════════════════
+  //  Send / upload
+  // ═════════════════════════════════════════════
 
   void _handleSendMessage(String text) {
     final user = widget.authRepository.currentUser;
@@ -820,6 +941,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() => _replyingMessage = null);
     _scrollToBottom();
 
+    // ✅ بررسی سریع اتصال قبل از شروع
+    if (!NetworkMonitor.instance.isOnline) {
+      await widget.chatRepository.failUpload(tempId, 'offline');
+      _showError('اتصال اینترنت برقرار نیست.');
+      return;
+    }
+
     try {
       final result = await _mediaRemoteService.uploadFiles(
         files: files,
@@ -843,7 +971,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!mounted) return;
 
       if (!result.isSuccess || result.messageId == null) {
-        widget.chatRepository.failUpload(tempId, result.error ?? 'خطا');
+        await widget.chatRepository.failUpload(tempId, result.error ?? 'خطا');
         _showError(result.error ?? 'خطا در آپلود فایل');
         return;
       }
@@ -879,7 +1007,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _scrollToBottom();
     } catch (e) {
       if (!mounted) return;
-      widget.chatRepository.failUpload(tempId, e.toString());
+      await widget.chatRepository.failUpload(tempId, e.toString());
       _showError('خطا در ارسال فایل: $e');
     }
   }
@@ -997,7 +1125,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   // ═════════════════════════════════════════════
-  //  Build
+  //  Build helpers
   // ═════════════════════════════════════════════
 
   Widget _buildMessageItem({
@@ -1024,6 +1152,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       onEdit: isMe ? () => _showEditDialog(message) : null,
       onDelete: canDelete ? () => _confirmDeleteMessage(message) : null,
       onPin: () => widget.chatRepository.pinMessage(message.id),
+      onRetry: message.isFailed ? () => _showRetryDialog(message) : null,
       onTapReplyMessage: message.replyToMessageId != null
           ? () => _handleTapReplyMessage(message.replyToMessageId!)
           : null,

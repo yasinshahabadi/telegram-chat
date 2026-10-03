@@ -37,45 +37,137 @@ class LocalChatDao {
     return false;
   }
 
+  /// ✅ ذخیره پیام با گارد در برابر cascade-delete ناخواسته.
+  ///
+  /// مشکل قبلی: `INSERT OR REPLACE` روی primary key موجود، ابتدا ردیف قدیم را
+  /// DELETE می‌کرد. با `ON DELETE CASCADE` روی attachments، تمام پیوست‌های آن
+  /// پیام (شامل `local_path`) پاک می‌شدند. این باعث می‌شد عکس آپلودشده پس از
+  /// sync بعدی، دکمهٔ دانلود بدهد.
+  ///
+  /// راه‌حل:
+  ///   ۱) اگر ردیفی با همین id هست → UPDATE (بدون cascade).
+  ///   ۲) اگر ردیفی با همین client_message_id هست ولی id متفاوت → ابتدا
+  ///      attachments و reactions را به id جدید منتقل کن، سپس ردیف قدیم را
+  ///      حذف کن (که دیگر attachments ندارد و cascade بی‌اثر است)، سپس INSERT.
+  ///   ۳) در نهایت، INSERT ساده.
   Future<void> saveMessage(Map<String, dynamic> messageData) async {
     final db = await _db;
     final messageId = messageData['id'] as String?;
     if (messageId == null || messageId.isEmpty) return;
 
-    if (await _isPendingDelete(db, messageId)) {
-      return;
-    }
+    if (await _isPendingDelete(db, messageId)) return;
 
-    await db.insert(
-      'messages',
-      {
-        'id': messageId,
-        'client_message_id': messageData['client_message_id'] ?? messageData['clientMessageId'],
-        'sender_id': messageData['sender_id'] ?? messageData['senderId'],
-        'sender_name': messageData['sender_name'] ?? messageData['senderName'] ?? 'کاربر',
-        'text': messageData['text'] ?? '',
-        'is_from_telegram': (messageData['is_from_telegram'] == 1 || messageData['isFromTelegram'] == true) ? 1 : 0,
-        'telegram_message_id': messageData['telegram_message_id'] ?? messageData['telegramMessageId'],
-        'reply_to_message_id': messageData['reply_to_message_id'] ?? messageData['replyToId'],
-        'reply_to_name': messageData['reply_to_name'] ?? messageData['replyToName'],
-        'reply_to_text': messageData['reply_to_text'] ?? messageData['replyToText'],
-        'reply_to_media_type': messageData['reply_to_media_type'] ?? messageData['replyToMediaType'],
-        'reply_to_attachment_id': messageData['reply_to_attachment_id'] ?? messageData['replyToAttachmentId'],
-        'reply_to_telegram_file_id': messageData['reply_to_telegram_file_id'] ?? messageData['replyToTelegramFileId'],
-        'reply_to_file_name': messageData['reply_to_file_name'] ?? messageData['replyToFileName'],
-        'reply_to_duration': messageData['reply_to_duration'] ?? messageData['replyToDuration'],
-        'is_pinned': (messageData['is_pinned'] == 1 || messageData['isPinned'] == true) ? 1 : 0,
-        'is_edited': (messageData['is_edited'] == 1 || messageData['isEdited'] == true) ? 1 : 0,
-        'status': messageData['status'] ?? 'synced',
-        'read_at': messageData['read_at'] ?? messageData['readAt'],
-        'created_at': messageData['created_at'] ?? messageData['createdAt'] ?? DateTime.now().millisecondsSinceEpoch,
-        'updated_at': messageData['updated_at'] ?? messageData['updatedAt'] ?? DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    final cmId = messageData['client_message_id'] ??
+        messageData['clientMessageId'];
+
+    final values = <String, dynamic>{
+      'id': messageId,
+      'client_message_id': cmId,
+      'sender_id': messageData['sender_id'] ?? messageData['senderId'],
+      'sender_name': messageData['sender_name'] ??
+          messageData['senderName'] ??
+          'کاربر',
+      'text': messageData['text'] ?? '',
+      'is_from_telegram': (messageData['is_from_telegram'] == 1 ||
+              messageData['isFromTelegram'] == true)
+          ? 1
+          : 0,
+      'telegram_message_id': messageData['telegram_message_id'] ??
+          messageData['telegramMessageId'],
+      'reply_to_message_id': messageData['reply_to_message_id'] ??
+          messageData['replyToId'],
+      'reply_to_name':
+          messageData['reply_to_name'] ?? messageData['replyToName'],
+      'reply_to_text':
+          messageData['reply_to_text'] ?? messageData['replyToText'],
+      'reply_to_media_type': messageData['reply_to_media_type'] ??
+          messageData['replyToMediaType'],
+      'reply_to_attachment_id': messageData['reply_to_attachment_id'] ??
+          messageData['replyToAttachmentId'],
+      'reply_to_telegram_file_id':
+          messageData['reply_to_telegram_file_id'] ??
+              messageData['replyToTelegramFileId'],
+      'reply_to_file_name': messageData['reply_to_file_name'] ??
+          messageData['replyToFileName'],
+      'reply_to_duration': messageData['reply_to_duration'] ??
+          messageData['replyToDuration'],
+      'is_pinned': (messageData['is_pinned'] == 1 ||
+              messageData['isPinned'] == true)
+          ? 1
+          : 0,
+      'is_edited': (messageData['is_edited'] == 1 ||
+              messageData['isEdited'] == true)
+          ? 1
+          : 0,
+      'status': messageData['status'] ?? 'synced',
+      'read_at': messageData['read_at'] ?? messageData['readAt'],
+      'created_at': messageData['created_at'] ??
+          messageData['createdAt'] ??
+          DateTime.now().millisecondsSinceEpoch,
+      'updated_at': messageData['updated_at'] ??
+          messageData['updatedAt'] ??
+          DateTime.now().millisecondsSinceEpoch,
+    };
+
+    await db.transaction((txn) async {
+      // ۱) اگر ردیفی با همین id هست → UPDATE (بدون cascade)
+      final byId = await txn.query(
+        'messages',
+        columns: ['id'],
+        where: 'id = ?',
+        whereArgs: [messageId],
+        limit: 1,
+      );
+
+      if (byId.isNotEmpty) {
+        await txn.update(
+          'messages',
+          values,
+          where: 'id = ?',
+          whereArgs: [messageId],
+        );
+        return;
+      }
+
+      // ۲) اگر ردیفی با همین client_message_id ولی id متفاوت هست → rename
+      if (cmId != null) {
+        final byCm = await txn.query(
+          'messages',
+          columns: ['id'],
+          where: 'client_message_id = ?',
+          whereArgs: [cmId],
+          limit: 1,
+        );
+
+        if (byCm.isNotEmpty) {
+          final oldId = byCm.first['id'] as String?;
+          if (oldId != null && oldId != messageId) {
+            // انتقال attachments و reactions به id جدید تا cascade به آن‌ها آسیب نزند
+            await txn.update(
+              'attachments',
+              {'message_id': messageId},
+              where: 'message_id = ?',
+              whereArgs: [oldId],
+            );
+            await txn.update(
+              'reactions',
+              {'message_id': messageId},
+              where: 'message_id = ?',
+              whereArgs: [oldId],
+            );
+            // حذف ردیف قدیمی پیام (attachments دیگر به آن ارجاع ندارند)
+            await txn.delete('messages', where: 'id = ?', whereArgs: [oldId]);
+          }
+        }
+      }
+
+      // ۳) درج ردیف جدید
+      await txn.insert('messages', values);
+    });
   }
 
-  Future<List<Map<String, dynamic>>> getMessagesList({int limit = 40, int? beforeCreatedAt}) async {
+  Future<List<Map<String, dynamic>>> getMessagesList(
+      {int limit = 40, int? beforeCreatedAt}) async {
     final db = await _db;
     if (beforeCreatedAt != null) {
       return await db.query(
@@ -109,7 +201,10 @@ class LocalChatDao {
     final db = await _db;
     await db.update(
       'messages',
-      {'status': newStatus, 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      {
+        'status': newStatus,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
       where: 'id = ?',
       whereArgs: [messageId],
     );
@@ -136,7 +231,10 @@ class LocalChatDao {
     }
     await db.update(
       'messages',
-      {'is_pinned': isPinned ? 1 : 0, 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      {
+        'is_pinned': isPinned ? 1 : 0,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
       where: 'id = ?',
       whereArgs: [messageId],
     );
@@ -171,26 +269,51 @@ class LocalChatDao {
     final db = await _db;
     await db.transaction((txn) async {
       await txn.delete('messages', where: 'id = ?', whereArgs: [messageId]);
-      await txn.delete('attachments', where: 'message_id = ?', whereArgs: [messageId]);
-      await txn.delete('reactions', where: 'message_id = ?', whereArgs: [messageId]);
+      await txn.delete(
+          'attachments', where: 'message_id = ?', whereArgs: [messageId]);
+      await txn.delete(
+          'reactions', where: 'message_id = ?', whereArgs: [messageId]);
     });
+  }
+
+  /// ✅ پاک‌سازی پیام‌های موقت orphan (نسخهٔ قبل backup).
+  Future<void> deleteOrphanTempMessages() async {
+    final db = await _db;
+    try {
+      final orphans = await db.query(
+        'messages',
+        columns: ['id', 'client_message_id'],
+        where: "id LIKE 'temp_upload_%'",
+      );
+      for (final o in orphans) {
+        final mId = o['id'] as String?;
+        final cmId = o['client_message_id'] as String?;
+        if (mId == null || cmId == null) continue;
+        final linked = await db.query(
+          'messages',
+          columns: ['id'],
+          where: 'client_message_id = ? AND id != ?',
+          whereArgs: [cmId, mId],
+          limit: 1,
+        );
+        if (linked.isNotEmpty) {
+          await db.delete('messages', where: 'id = ?', whereArgs: [mId]);
+          await db.delete('attachments',
+              where: 'message_id = ?', whereArgs: [mId]);
+        }
+      }
+    } catch (_) {}
   }
 
   // ==========================================
   // پیوست‌ها
   // ==========================================
 
-  /// ✅ ذخیره یا به‌روزرسانی پیوست با حفظ داده‌های محلی.
-  ///
-  /// اگر داده‌ورودی `local_path` نداشته باشد (مثل پیام‌های آمده از سرور در sync)،
-  /// مقدار قبلی روی دیسک حفظ می‌شود. بدون این، هر sync مسیر کش را پاک می‌کرد
-  /// و عکس‌های آپلودشده ناپدید می‌شدند.
   Future<void> saveAttachment(Map<String, dynamic> data) async {
     final db = await _db;
     final id = data['id'] as String?;
     if (id == null || id.isEmpty) return;
 
-    // واکشی ردیف فعلی (اگر وجود دارد) برای حفظ فیلدهای محلی
     Map<String, dynamic>? existing;
     try {
       final rows = await db.query(
@@ -202,20 +325,18 @@ class LocalChatDao {
       existing = rows.isNotEmpty ? rows.first : null;
     } catch (_) {}
 
-    // مقدار ورودی
     final incomingLocalPath = data['local_path'] ?? data['localPath'];
-    final incomingIsDownloaded = data['is_downloaded'] ?? data['isDownloaded'];
+    final incomingIsDownloaded =
+        data['is_downloaded'] ?? data['isDownloaded'];
     final incomingMessageId = data['message_id'] ?? data['messageId'];
 
-    // ✅ حفظ مقادیر قبلی در صورت نبود مقدار جدید
     final localPath = incomingLocalPath ?? existing?['local_path'] as String?;
-    final isDownloaded = (incomingIsDownloaded == 1 || incomingIsDownloaded == true)
-        ? 1
-        : (existing?['is_downloaded'] as int? ?? 0);
+    final isDownloaded =
+        (incomingIsDownloaded == 1 || incomingIsDownloaded == true)
+            ? 1
+            : (existing?['is_downloaded'] as int? ?? 0);
     final messageId = incomingMessageId ?? existing?['message_id'];
 
-    // اگر پیام مقصد تغییر کرده ولی مسیر محلی موجود است، ردیف را حفظ می‌کنیم.
-    // اما اگر message_id جدید null باشد و قبلی هم null، ردیف را نادیده می‌گیریم.
     if (messageId == null) return;
 
     await db.insert(
@@ -223,24 +344,42 @@ class LocalChatDao {
       {
         'id': id,
         'message_id': messageId,
-        'media_type': data['media_type'] ?? data['mediaType'] ?? existing?['media_type'] ?? 'document',
+        'media_type': data['media_type'] ??
+            data['mediaType'] ??
+            existing?['media_type'] ??
+            'document',
         'local_path': localPath,
         'r2_key': data['r2_key'] ?? data['r2Key'] ?? existing?['r2_key'],
-        'telegram_file_id': data['telegram_file_id'] ?? data['telegramFileId'] ?? existing?['telegram_file_id'],
-        'file_name': data['file_name'] ?? data['fileName'] ?? existing?['file_name'] ?? 'file',
-        'file_size': data['file_size'] ?? data['fileSize'] ?? existing?['file_size'],
-        'mime_type': data['mime_type'] ?? data['mimeType'] ?? existing?['mime_type'],
+        'telegram_file_id': data['telegram_file_id'] ??
+            data['telegramFileId'] ??
+            existing?['telegram_file_id'],
+        'file_name': data['file_name'] ??
+            data['fileName'] ??
+            existing?['file_name'] ??
+            'file',
+        'file_size':
+            data['file_size'] ?? data['fileSize'] ?? existing?['file_size'],
+        'mime_type':
+            data['mime_type'] ?? data['mimeType'] ?? existing?['mime_type'],
         'duration': data['duration'] ?? existing?['duration'] ?? 0,
-        'upload_progress': data['upload_progress'] ?? existing?['upload_progress'] ?? 1.0,
-        'download_progress': data['download_progress'] ?? existing?['download_progress'] ?? 1.0,
+        'upload_progress': data['upload_progress'] ??
+            existing?['upload_progress'] ??
+            1.0,
+        'download_progress': data['download_progress'] ??
+            existing?['download_progress'] ??
+            1.0,
         'is_downloaded': isDownloaded,
-        'created_at': data['created_at'] ?? data['createdAt'] ?? existing?['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+        'created_at': data['created_at'] ??
+            data['createdAt'] ??
+            existing?['created_at'] ??
+            DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
-  Future<List<Map<String, dynamic>>> getAttachmentsForMessage(String messageId) async {
+  Future<List<Map<String, dynamic>>> getAttachmentsForMessage(
+      String messageId) async {
     final db = await _db;
     return await db.query(
       'attachments',
@@ -249,7 +388,8 @@ class LocalChatDao {
     );
   }
 
-  Future<void> updateAttachmentLocalPath(String attachmentId, String localPath) async {
+  Future<void> updateAttachmentLocalPath(
+      String attachmentId, String localPath) async {
     final db = await _db;
     await db.update(
       'attachments',
@@ -262,39 +402,12 @@ class LocalChatDao {
     );
   }
 
-  /// ✅ حذف پیام‌های موقت (optimistic) که با id نهایی سرور جایگزین شده‌اند.
-  Future<void> deleteOrphanTempMessages() async {
-    final db = await _db;
-    try {
-      final orphans = await db.query(
-        'messages',
-        columns: ['id'],
-        where: "id LIKE 'temp_upload_%'",
-      );
-      for (final o in orphans) {
-        final mId = o['id'] as String?;
-        if (mId == null) continue;
-        // اگر پیامی با همان client_message_id در سرور ثبت شده، temp orphan است.
-        final linked = await db.query(
-          'messages',
-          columns: ['id'],
-          where: 'client_message_id = (SELECT client_message_id FROM messages WHERE id = ?) AND id != ?',
-          whereArgs: [mId, mId],
-          limit: 1,
-        );
-        if (linked.isNotEmpty) {
-          await db.delete('messages', where: 'id = ?', whereArgs: [mId]);
-          await db.delete('attachments', where: 'message_id = ?', whereArgs: [mId]);
-        }
-      }
-    } catch (_) {}
-  }
-
   // ==========================================
   // واکنش‌ها
   // ==========================================
 
-  Future<List<Map<String, dynamic>>> getReactionsForMessage(String messageId) async {
+  Future<List<Map<String, dynamic>>> getReactionsForMessage(
+      String messageId) async {
     final db = await _db;
     return await db.query(
       'reactions',
@@ -311,16 +424,16 @@ class LocalChatDao {
     final now = DateTime.now().millisecondsSinceEpoch;
 
     await db.transaction((txn) async {
-      await txn.delete('reactions', where: 'message_id = ?', whereArgs: [messageId]);
+      await txn.delete('reactions',
+          where: 'message_id = ?', whereArgs: [messageId]);
 
       for (final r in aggregated) {
         final emoji = r['emoji'] as String?;
         if (emoji == null || emoji.isEmpty) continue;
         final count = (r['count'] as num?)?.toInt() ?? 0;
-        final userIds = (r['userIds'] as List?)
-                ?.whereType<String>()
-                .toList() ??
-            const <String>[];
+        final userIds =
+            (r['userIds'] as List?)?.whereType<String>().toList() ??
+                const <String>[];
 
         for (final uid in userIds) {
           await txn.insert(
@@ -359,7 +472,8 @@ class LocalChatDao {
   // صف اکشن‌های معلق
   // ==========================================
 
-  Future<void> enqueuePendingAction(String id, String actionType, String payloadJson) async {
+  Future<void> enqueuePendingAction(
+      String id, String actionType, String payloadJson) async {
     final db = await _db;
     await db.insert(
       'pending_actions',
