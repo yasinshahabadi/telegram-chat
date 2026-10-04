@@ -44,14 +44,9 @@ class LocalChatDao {
   ///   ۲) ردیفی با همین client_message_id ولی id متفاوت هست → rename.
   ///   ۳) هیچ‌کدام → INSERT ساده.
   ///
-  /// ⚠️ در حالت rename: ردیف‌های attachments و reactions قدیمی **حذف** می‌شوند
-  /// (نه rename). دلیل: هر caller بعد از rename ردیف‌های جدید را insert می‌کند
-  /// (با local_path حفظ‌شده در mergedAtts). اگر rename کنیم، ردیف‌های قدیمی با
-  /// id قدیمی رها می‌مانند و پس از insert ردیف‌های جدید، شاهد duplicate
-  /// (مثلاً دو تصویر در یک حباب) خواهیم بود.
-  ///
-  /// `PRAGMA defer_foreign_keys = ON` در ابتدای transaction تضمین می‌کند که
-  /// حذف ردیف قدیمی قبل از insert ردیف جدید، FK constraint را نمی‌شکند.
+  /// ⚠️ در حالت rename: ردیف‌های attachments و reactions قدیمی حذف می‌شوند
+  /// (نه rename). دلیل: caller ردیف‌های جدید را insert می‌کند و اگر rename
+  /// کنیم، duplicate می‌شود.
   Future<void> saveMessage(Map<String, dynamic> messageData) async {
     final db = await _db;
     final messageId = messageData['id'] as String?;
@@ -93,6 +88,18 @@ class LocalChatDao {
           messageData['replyToFileName'],
       'reply_to_duration': messageData['reply_to_duration'] ??
           messageData['replyToDuration'],
+      // ✅ Stage 11: forward fields
+      'forward_from_type': messageData['forward_from_type'] ??
+          messageData['forwardFromType'],
+      'forward_from_chat_id': messageData['forward_from_chat_id'] ??
+          messageData['forwardFromChatId'],
+      'forward_from_chat_username':
+          messageData['forward_from_chat_username'] ??
+              messageData['forwardFromChatUsername'],
+      'forward_from_chat_title': messageData['forward_from_chat_title'] ??
+          messageData['forwardFromChatTitle'],
+      'forward_from_message_id': messageData['forward_from_message_id'] ??
+          messageData['forwardFromMessageId'],
       'is_pinned': (messageData['is_pinned'] == 1 ||
               messageData['isPinned'] == true)
           ? 1
@@ -112,12 +119,11 @@ class LocalChatDao {
     };
 
     await db.transaction((txn) async {
-      // ✅ FK چک‌ها به commit موکول می‌شوند.
       try {
         await txn.execute('PRAGMA defer_foreign_keys = ON');
       } catch (_) {}
 
-      // ۱) اگر ردیفی با همین id هست → UPDATE (بدون cascade)
+      // ۱) اگر ردیفی با همین id هست → UPDATE
       final byId = await txn.query(
         'messages',
         columns: ['id'],
@@ -136,7 +142,7 @@ class LocalChatDao {
         return;
       }
 
-      // ۲) اگر ردیفی با همین client_message_id ولی id متفاوت هست → rename
+      // ۲) اگر ردیفی با همین client_message_id هست ولی id متفاوت → rename
       if (cmId != null) {
         final byCm = await txn.query(
           'messages',
@@ -149,23 +155,16 @@ class LocalChatDao {
         if (byCm.isNotEmpty) {
           final oldId = byCm.first['id'] as String?;
           if (oldId != null && oldId != messageId) {
-            // ✅ حذف attachments قدیمی. caller ردیف‌های جدید را insert می‌کند
-            // (با local_path حفظ‌شده). اگر فقط rename کنیم، duplicate می‌شود.
             await txn.delete(
               'attachments',
               where: 'message_id = ?',
               whereArgs: [oldId],
             );
-
-            // ✅ reactions قدیمی هم حذف می‌شوند — replaceReactionsForMessage
-            // در صورت وجود event جدید، از نو insert می‌کند.
             await txn.delete(
               'reactions',
               where: 'message_id = ?',
               whereArgs: [oldId],
             );
-
-            // حذف ردیف قدیمی پیام
             await txn.delete('messages', where: 'id = ?', whereArgs: [oldId]);
           }
         }
@@ -286,7 +285,6 @@ class LocalChatDao {
     });
   }
 
-  /// ✅ پاک‌سازی پیام‌های موقت orphan (نسخهٔ قبل backup).
   Future<void> deleteOrphanTempMessages() async {
     final db = await _db;
     try {

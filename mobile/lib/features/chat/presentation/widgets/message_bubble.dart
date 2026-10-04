@@ -1,6 +1,8 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/forward_header.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/linkified_text.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reaction_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reply_thumbnail.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/swipe_to_reply.dart';
@@ -57,29 +59,21 @@ class MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     // چیدمان پیام‌ها (مطابق تلگرام RTL):
     //   - پیام خودی (isMe): سمت راست فیزیکی، بدون آواتار.
-    //   - پیام دیگران (!isMe): سمت چپ فیزیکی، آواتار در چپ‌ترین جای گروه،
-    //     حباب بلافاصله بعد از آن (به سمت راستِ آواتار).
+    //   - پیام دیگران (!isMe): سمت چپ فیزیکی، آواتار در چپ‌ترین جای گروه.
     //
     // نکتهٔ RTL:
     //   اپ در `Directionality(textDirection: RTL)` قرار دارد. در RTL:
-    //     - `MainAxisAlignment.start` = راست فیزیکی
-    //     - `MainAxisAlignment.end`   = چپ فیزیکی
+    //     - `MainAxisAlignment.end` = چپ فیزیکی
     //     - فرزند اول در سمت راست گروه، فرزند آخر در سمت چپ گروه.
-    //   چون می‌خواهیم کل گروه در چپ صفحه باشد، `end` لازم است.
-    //   چون می‌خواهیم آواتار در چپ‌ترین جای گروه باشد، آواتار باید
-    //   آخرین فرزند باشد.
     final content = !isMe
         ? Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(
-              // ✅ RTL: `end` = سمت چپ فیزیکی → کل گروه در چپ.
               mainAxisAlignment: MainAxisAlignment.end,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ✅ فرزند اول در RTL = راست گروه → حباب در راست.
                 Flexible(child: _buildBubble(context, isMe: false)),
                 const SizedBox(width: 8),
-                // ✅ فرزند آخر در RTL = چپ گروه → آواتار در چپ.
                 UserAvatar(
                   userId: message.senderId,
                   fullName: message.senderName,
@@ -93,7 +87,6 @@ class MessageBubble extends StatelessWidget {
         : Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Align(
-              // ✅ `Alignment.centerRight` همیشه فیزیکی است (نه وابسته به RTL).
               alignment: Alignment.centerRight,
               child: _buildBubble(context, isMe: true),
             ),
@@ -136,7 +129,18 @@ class MessageBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!isMe) ...[
+                  // ✅ Stage 12: Forward header (بالای همه‌چیز).
+                  // وقتی پیام forward شده، نام فرستنده نمایش داده نمی‌شود
+                  // (چون header خودش هویت مبدأ را نشان می‌دهد — مطابق تلگرام).
+                  if (message.isForwarded) ...[
+                    ForwardHeader(
+                      message: message,
+                      isMe: isMe,
+                      nameColor: _colorFromName(
+                          message.forwardFromChatTitle ?? ''),
+                    ),
+                    const SizedBox(height: 4),
+                  ] else if (!isMe) ...[
                     Text(
                       message.senderName,
                       style: TextStyle(
@@ -168,15 +172,24 @@ class MessageBubble extends StatelessWidget {
                     if (message.text.isNotEmpty) const SizedBox(height: 6),
                   ],
 
+
                   if (message.text.isNotEmpty) ...[
-                    Text(
-                      message.text,
+                    LinkifiedText(
+                      text: message.text,
                       style: TextStyle(
                         fontSize: 15,
                         height: 1.35,
                         color: isMe
                             ? theme.colorScheme.onPrimaryContainer
                             : theme.colorScheme.onSurface,
+                      ),
+                      linkStyle: TextStyle(
+                        fontSize: 15,
+                        height: 1.35,
+                        color: isMe
+                            ? theme.colorScheme.onPrimaryContainer
+                            : theme.colorScheme.primary,
+                        decoration: TextDecoration.underline,
                       ),
                     ),
                   ],
@@ -213,7 +226,6 @@ class MessageBubble extends StatelessWidget {
                     ],
                   ),
 
-                  // ✅ نشانگر خطا + دکمهٔ تلاش دوباره
                   if (message.isFailed) ...[
                     const SizedBox(height: 6),
                     Container(

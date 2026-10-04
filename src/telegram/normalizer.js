@@ -37,6 +37,101 @@ export async function emitSyncEvent(db, eventType, entityId, payload) {
   }
 }
 
+/**
+ * استخراج اطلاعات forward از یک پیام تلگرام.
+ *
+ * از Bot API 7.0 به بعد، فیلد `forward_origin` جایگزین
+ * `forward_from`, `forward_from_chat` و ... شده است.
+ * این تابع هر دو حالت را پشتیبانی می‌کند.
+ *
+ * خروجی: null یا:
+ *   {
+ *     type: 'channel' | 'chat' | 'user' | 'hidden_user',
+ *     chatId: string | null,
+ *     chatUsername: string | null,
+ *     chatTitle: string | null,
+ *     messageId: number | null,
+ *   }
+ */
+export function extractForwardInfo(msg) {
+  // ─── Modern Bot API 7.0+ ───
+  if (msg.forward_origin) {
+    const origin = msg.forward_origin;
+    const type = origin.type || null;
+
+    if (type === 'channel' || type === 'chat') {
+      const chat = origin.chat || {};
+      return {
+        type,
+        chatId: chat.id != null ? chat.id.toString() : null,
+        chatUsername: chat.username || null,
+        chatTitle: chat.title || null,
+        messageId: origin.message_id != null ? origin.message_id : null,
+      };
+    }
+
+    if (type === 'user') {
+      const user = origin.sender_user || {};
+      const name =
+        `${user.first_name || ""} ${user.last_name || ""}`.trim() || 'کاربر';
+      return {
+        type: 'user',
+        chatId: user.id != null ? user.id.toString() : null,
+        chatUsername: user.username || null,
+        chatTitle: name,
+        messageId: null,
+      };
+    }
+
+    if (type === 'hidden_user') {
+      return {
+        type: 'hidden_user',
+        chatId: null,
+        chatUsername: null,
+        chatTitle: origin.sender_user_name || 'کاربر',
+        messageId: null,
+      };
+    }
+  }
+
+  // ─── Legacy fallback (pre Bot API 7.0) ───
+  if (msg.forward_from_chat) {
+    const chat = msg.forward_from_chat;
+    return {
+      type: chat.type === 'channel' ? 'channel' : 'chat',
+      chatId: chat.id != null ? chat.id.toString() : null,
+      chatUsername: chat.username || null,
+      chatTitle: chat.title || null,
+      messageId: msg.forward_from_message_id != null ? msg.forward_from_message_id : null,
+    };
+  }
+
+  if (msg.forward_from) {
+    const user = msg.forward_from;
+    const name =
+      `${user.first_name || ""} ${user.last_name || ""}`.trim() || 'کاربر';
+    return {
+      type: 'user',
+      chatId: user.id != null ? user.id.toString() : null,
+      chatUsername: user.username || null,
+      chatTitle: name,
+      messageId: null,
+    };
+  }
+
+  if (msg.forward_sender_name) {
+    return {
+      type: 'hidden_user',
+      chatId: null,
+      chatUsername: null,
+      chatTitle: msg.forward_sender_name,
+      messageId: null,
+    };
+  }
+
+  return null;
+}
+
 export async function normalizeIncomingTelegramMessage(db, msg) {
   const msgId = crypto.randomUUID();
   const senderId = await ensureTelegramUser(db, msg.from);
@@ -44,7 +139,22 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
   const timestamp = Date.now();
   const text = msg.text || msg.caption || "";
 
-  // ✅ اطلاعات کامل ریپلای شامل پیوست
+  // ─── Forward metadata (Stage 10) ───
+  const forward = extractForwardInfo(msg);
+  const forwardFromType = forward?.type ?? null;
+  const forwardFromChatId = forward?.chatId ?? null;
+  const forwardFromChatUsername = forward?.chatUsername ?? null;
+  const forwardFromChatTitle = forward?.chatTitle ?? null;
+  const forwardFromMessageId = forward?.messageId ?? null;
+
+  if (forward) {
+    console.log(
+      `[Normalizer] Forward detected: type=${forward.type} title="${forward.chatTitle}" ` +
+      `username=${forward.chatUsername} msgId=${forward.messageId}`,
+    );
+  }
+
+  // ─── Reply metadata ───
   let replyToId = null;
   let replyToName = null;
   let replyToText = null;
@@ -79,6 +189,7 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     }
   }
 
+  // ─── Media metadata ───
   let mediaType = null, fileId = null, fileName = null, fileSize = null, thumbId = null, duration = 0;
 
   if (msg.photo && msg.photo.length > 0) {
@@ -114,13 +225,23 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     fileName = msg.document.file_name || "file";
   }
 
+  // ─── INSERT message (شامل forward columns) ───
   await db.prepare(`
     INSERT INTO messages (
-      id, sender_id, text, is_from_telegram, created_at, updated_at, telegram_message_id, reply_to_message_id
+      id, sender_id, text, is_from_telegram, created_at, updated_at,
+      telegram_message_id, reply_to_message_id,
+      forward_from_type, forward_from_chat_id, forward_from_chat_username,
+      forward_from_chat_title, forward_from_message_id
     )
-    VALUES (?, ?, ?, 1, ?, ?, ?, ?)
-  `).bind(msgId, senderId, text, timestamp, timestamp, msg.message_id, replyToId).run();
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    msgId, senderId, text, timestamp, timestamp,
+    msg.message_id, replyToId,
+    forwardFromType, forwardFromChatId, forwardFromChatUsername,
+    forwardFromChatTitle, forwardFromMessageId,
+  ).run();
 
+  // ─── Attachment ───
   let attachmentRecord = null;
   if (fileId) {
     const attachmentId = crypto.randomUUID();
@@ -132,7 +253,7 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
       fileName,
       fileSize,
       duration,
-      thumbId
+      thumbId,
     };
 
     await db.prepare(`
@@ -143,6 +264,7 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     `).bind(attachmentId, msgId, mediaType, fileId, fileName, fileSize, duration, timestamp).run();
   }
 
+  // ─── Payload for sync + broadcast ───
   const normalizedMessage = {
     id: msgId,
     senderId,
@@ -159,14 +281,21 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     replyToTelegramFileId,
     replyToFileName,
     replyToDuration,
-    attachment: attachmentRecord
+    attachment: attachmentRecord,
+
+    // ✅ Stage 10: forward metadata
+    forwardFromType,
+    forwardFromChatId,
+    forwardFromChatUsername,
+    forwardFromChatTitle,
+    forwardFromMessageId,
   };
 
   const cursor = await emitSyncEvent(db, "message_created", msgId, normalizedMessage);
 
   return {
     message: normalizedMessage,
-    cursor
+    cursor,
   };
 }
 
@@ -181,8 +310,8 @@ export async function normalizeTelegramEdit(db, editMsg) {
   if (!msgRow) return null;
 
   await db.prepare(`
-    UPDATE messages 
-    SET text = ?, is_edited = 1, updated_at = ? 
+    UPDATE messages
+    SET text = ?, is_edited = 1, updated_at = ?
     WHERE id = ?
   `).bind(newText, now, msgRow.id).run();
 
@@ -190,7 +319,7 @@ export async function normalizeTelegramEdit(db, editMsg) {
     messageId: msgRow.id,
     telegramMessageId: editMsg.message_id,
     text: newText,
-    updatedAt: now
+    updatedAt: now,
   };
 
   const cursor = await emitSyncEvent(db, "message_edited", msgRow.id, payload);
@@ -227,16 +356,16 @@ export async function normalizeTelegramReaction(db, reactionUpdate) {
   }
 
   const { results: allReactions } = await db.prepare(`
-    SELECT emoji, COUNT(*) AS count 
-    FROM reactions 
-    WHERE message_id = ? 
+    SELECT emoji, COUNT(*) AS count
+    FROM reactions
+    WHERE message_id = ?
     GROUP BY emoji
   `).bind(msgRow.id).all();
 
   const payload = {
     messageId: msgRow.id,
     telegramMessageId: tgMsgId,
-    reactions: allReactions || []
+    reactions: allReactions || [],
   };
 
   const cursor = await emitSyncEvent(db, "reaction_updated", msgRow.id, payload);
@@ -260,7 +389,7 @@ export async function normalizeTelegramPin(db, pinnedTgId) {
     messageId: msgRow.id,
     telegramMessageId: pinnedTgId,
     isPinned: true,
-    pinnedAt: now
+    pinnedAt: now,
   };
 
   const cursor = await emitSyncEvent(db, "message_pinned", msgRow.id, payload);

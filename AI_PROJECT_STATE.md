@@ -22,26 +22,32 @@
 سوپراگروه تلگرام را در یک UI بومی نمایش می‌دهد، با پشتیبانی کامل آفلاین،
 اعلان‌های FCM و پاسخ مستقیم از اعلان.
 
-## ۳. وضعیت جاری: Refactor کامل شد ✅
+## ۳. وضعیت جاری
 
-### هدف
-تجزیهٔ `chat_screen.dart` (~1500 خط) و `chat_repository.dart` (~750 خط)
-به فایل‌های کوچک‌تر برای کاهش بدهی فنی و افزایش قابلیت نگهداری.
+### Refactor (Stages 1-9) — ✅ کامل
+تجزیهٔ `chat_screen.dart` (~1500 خط) و `chat_repository.dart` (~750 خط).
 
-### فازهای کامل‌شده (همه در یک جلسه)
-| Stage | محتوا | فایل‌های جدید |
-|---|---|---|
-| 1 | استخراج ۵ دیالوگ + debug sheet | 5 فایل در `presentation/dialogs/` |
-| 2 | استخراج AppBar/subtitle/pinned | 3 فایل در `presentation/widgets/` |
-| 3 | استخراج لیست پیام‌ها | `chat_message_list.dart` |
-| 4 | استخراج منطق آپلود | `state/chat_upload_coordinator.dart` |
-| 5 | استخراج unread flow | `state/unread_flow_controller.dart` |
-| 5.5 | رفع ۳ باگ جانبی | (تغییر در `sync_engine`, `main`, `local_chat_dao`) |
-| 6 | استخراج سوکت | `socket_event_dispatcher.dart` |
-| 6.5 | رفع باگ duplicate attachment | (تغییر در `local_chat_dao`) |
-| 7 | استخراج صف + آپلود + رفع باگ ack | `pending_action_queue.dart`, `upload_lifecycle.dart` |
-| 8 | پاک‌سازی کد مرده | (فقط `chat_screen.dart`) |
-| 9 | چیدمان پیام‌ها مثل تلگرام | (فقط `message_bubble.dart`) |
+### Forward + Links (Stages 10-13) — ✅ کامل
+نمایش forward header، deep link به تلگرام، و لینک‌های کلیک‌شدنی.
+
+### فازهای کامل‌شده (کل جلسه)
+| Stage | محتوا |
+|---|---|
+| 1 | استخراج ۵ دیالوگ + debug sheet |
+| 2 | استخراج AppBar/subtitle/pinned |
+| 3 | استخراج لیست پیام‌ها |
+| 4 | استخراج منطق آپلود |
+| 5 | استخراج unread flow |
+| 5.5 | رفع ۳ باگ جانبی (session, FK, unauthorized) |
+| 6 | استخراج سوکت dispatcher |
+| 6.5 | رفع باگ duplicate attachment |
+| 7 | استخراج صف + آپلود + رفع باگ ack |
+| 8 | پاک‌سازی کد مرده |
+| 9 | چیدمان پیام‌ها مثل تلگرام (خودی راست، دیگران چپ) |
+| **10** | **migration + normalizer سرور برای forward** |
+| **11** | **SQLite v4 + ChatMessageModel + DAO** |
+| **12** | **ForwardHeader widget + ادغام** |
+| **13** | **LinkifiedText + tg:// deep links** |
 
 ### نتیجهٔ metrics
 | فایل | قبل | بعد |
@@ -53,13 +59,14 @@
 | `pending_action_queue.dart` | — | ~۱۸۰ خط |
 | `unread_flow_controller.dart` | — | ~۳۲۰ خط |
 | `chat_upload_coordinator.dart` | — | ~۲۸۰ خط |
+| `forward_header.dart` | — | ~۹۰ خط |
+| `linkified_text.dart` | — | ~۱۳۰ خط |
 
-**فایل‌های جدید کل:** ۱۳ فایل جدید.
+**فایل‌های جدید کل:** ۱۵ فایل.
 
 ## ۴. معماری فعلی (کلاینت)
 
 ### Presentation Layer
-
 presentation/
 ├── screens/chat_screen.dart (root StatefulWidget, ~330 خط)
 ├── widgets/
@@ -67,7 +74,9 @@ presentation/
 │ ├── chat_status_subtitle.dart (subtitle خود AnimatedBuilder دارد)
 │ ├── pinned_message_banner.dart (banner خود AnimatedBuilder دارد)
 │ ├── chat_message_list.dart (ListView + empty/loading state)
-│ ├── message_bubble.dart (حباب پیام + context menu + RTL-aware layout)
+│ ├── message_bubble.dart (حباب پیام + RTL-aware layout)
+│ ├── forward_header.dart (Stage 12 — نمایش فوروارد)
+│ ├── linkified_text.dart (Stage 13 — لینک/منشن کلیک‌شدنی)
 │ ├── chat_input_bar.dart (input + voice recording)
 │ ├── reaction_bar.dart (chips + picker)
 │ ├── reply_thumbnail.dart (thumbnail در reply)
@@ -75,80 +84,77 @@ presentation/
 │ ├── unread_divider.dart (divider animation)
 │ ├── user_avatar.dart (avatar + online badge)
 │ └── media_bubble_content.dart (media display)
-├── dialogs/
-│ ├── edit_message_dialog.dart (static show → String?)
-│ ├── retry_upload_dialog.dart (static show → String?)
-│ ├── delete_confirm_dialog.dart (static show → bool)
-│ ├── logout_confirm_dialog.dart (static show → bool)
-│ └── notification_debug_sheet.dart (static show)
+├── dialogs/ (5 فایل)
 └── state/
-├── chat_upload_coordinator.dart (pick/voice/upload/retry)
-└── unread_flow_controller.dart (divider + mark-read)
+├── chat_upload_coordinator.dart
+└── unread_flow_controller.dart
 
 
 ### Data Layer
 data/
-├── chat_repository.dart (ChangeNotifier — state root, ~300 خط)
+├── chat_repository.dart (ChangeNotifier — state root)
 ├── socket_event_dispatcher.dart (12 نوع رویداد سوکت)
-├── upload_lifecycle.dart (چرخهٔ ساخت/نهایی/retry پیام)
-├── pending_action_queue.dart (صف + scheduling retry)
+├── upload_lifecycle.dart (چرخهٔ ساخت/نهایی/retry)
+├── pending_action_queue.dart (صف + scheduling)
 ├── chat_websocket_client.dart (WS + heartbeat 25s/60s)
 └── sync_engine.dart (cursor-based sync + لاگ)
 
 
-### الگوی معماری
-- **State root:** `ChatRepository extends ChangeNotifier`
-- **State controllers:** کلاس‌های stateless با callback به root (`UnreadFlowController`, `ChatUploadCoordinator`).
-- **Data helpers:** کلاس‌های مستقل با callback (`SocketEventDispatcher`, `UploadLifecycle`, `PendingActionQueue`).
-- **هیچ DI framework، هیچ code generation، هیچ abstraction اضافی.**
+### DB Schema
+- **سرور D1:** جدول `messages` شامل ۵ ستون forward (migration 0003).
+- **کلاینت SQLite:** v4 با ۵ ستون forward مشابه.
 
 ## ۵. سرور (Cloudflare Workers)
 
-بدون تغییر این جلسه. نکات مهم:
 - D1 + Durable Object `ChatRoom`.
 - Zero-Trust Session.
 - `/api/sync` بر پایه cursor.
 - مدیا فقط از Telegram Bot API (بدون R2).
-- `ChatRoom.js` هنوز از `INSERT` مستقیم استفاده می‌کند (برای آینده یادداشت شود).
+- `normalizer.js` حالا `forward_origin` (Bot API 7+) و legacy fields را پشتیبانی می‌کند.
+- `ChatRoom.js` هنوز `INSERT` مستقیم دارد (برای آینده).
 
 ## ۶. باگ‌ها و بهبودهای این جلسه
 
-| # | مورد | ریشه | رفع |
-|---|---|---|---|
-| 1 | `_dependents.isEmpty` در دیالوگ ویرایش | `controller.dispose()` زودهنگام در Stage 1 | حذف dispose |
-| 2 | پیام در foreground بعد از بازگشت از background نمی‌آمد | `Bearer ${token.substring(0,8)}...` در هدر (رگرسیون Stage 5) | حذف substring |
-| 3 | `FOREIGN KEY constraint failed` در `saveMessage` | `UPDATE attachments` قبل از `INSERT messages` | `PRAGMA defer_foreign_keys = ON` |
-| 4 | کاربر با session مرده logout نمی‌شد | نبود چک 401 در sync | `SyncResult.unauthorized` + `_handleUnauthorized` |
-| 5 | پیام عکس دو بار نمایش داده می‌شد | rename branch attachments قدیمی را رها می‌کرد | `DELETE` به‌جای `UPDATE` در rename |
-| 6 | `message_ack` ردیف DB را با id جدید ذخیره نمی‌کرد | فقط `updateMessageStatus(realMessageId)` صدا زده می‌شد | `saveMessage(id=realMessageId)` با rename branch |
-| 7 | همهٔ پیام‌ها در سمت راست نمایش داده می‌شدند (Stage 9) | در RTL، `MainAxisAlignment.start` = راست فیزیکی | `MainAxisAlignment.end` برای پیام‌های دیگران |
-| 8 | آواتار کاربر در راست حباب بود (Stage 9) | آواتار فرزند اول Row بود = راست گروه در RTL | آواتار به آخرین فرزند منتقل شد = چپ گروه |
+### Refactor
+| # | مورد | رفع |
+|---|---|---|
+| 1 | `_dependents.isEmpty` در دیالوگ ویرایش | حذف `controller.dispose()` زودهنگام |
+| 2 | پیام بعد از background نمی‌آمد | حذف `substring` در Authorization header |
+| 3 | `FOREIGN KEY constraint failed` | `PRAGMA defer_foreign_keys = ON` |
+| 4 | کاربر با session مرده logout نمی‌شد | `SyncResult.unauthorized` + `_handleUnauthorized` |
+| 5 | پیام عکس دو بار نمایش داده می‌شد | `DELETE` به‌جای rename در `saveMessage` |
+| 6 | `message_ack` DB را با id جدید ذخیره نمی‌کرد | `saveMessage(id=realMessageId)` |
+
+### UI / Feature
+| # | مورد | رفع |
+|---|---|---|
+| 7 | همهٔ پیام‌ها سمت راست بودند | `MainAxisAlignment.end` (RTL-aware) |
+| 8 | آواتار در راست حباب بود | آواتار به آخرین فرزند Row منتقل شد |
+| 9 | لینک‌ها کلیک‌پذیر نبودند | widget `LinkifiedText` + regex |
+| 10 | باز شدن مرورگر به‌جای تلگرام | `tg://` scheme + `<queries>` در manifest |
 
 ## ۷. تصمیمات معماری اخیر
 
-### الگوی callback در `presentation/state/` و `data/`
+### الگوی callback
 - **دلیل:** جدا کردن منطق state پیچیده بدون DI framework.
-- **جایگزین رد شده:** interface جدید یا ChangeNotifier تازه — بیش از حد پیچیده برای این حجم.
-- **پیامد:** کلاس‌های state stateless هستند و برای تست قابل تزریق.
+- **جایگزین رد شده:** interface یا ChangeNotifier جدید.
 
-### لاگ‌های `debugPrint` باقی می‌مانند
-- **دلیل:** درخواست کاربر برای دیباگ بهتر در آینده.
-- **پیامد:** در release build، `debugPrint` خودکار ساکت می‌شود. BODY logging با `kDebugMode` محافظت شده.
+### لاگ‌های `debugPrint` حفظ می‌شوند
+- **دلیل:** درخواست کاربر برای دیباگ بهتر.
+- **پیامد:** در release، `debugPrint` خودکار ساکت می‌شود.
+
+### `tg://` به‌جای `https://t.me/...`
+- **دلیل:** `https://t.me` توسط Chrome و Telegram claim می‌شود → Android ممکن است به مرورگر بفرستد. `tg://` فقط توسط Telegram claim می‌شود → مستقیم به اپ.
+- **جایگزین رد شده:** `intent://` (پیچیده‌تر، مخصوص Android).
 
 ### `PRAGMA defer_foreign_keys = ON` در `saveMessage`
 - **دلیل:** rename branch نیاز به حذف ردیف قدیمی قبل از insert ردیف جدید دارد.
-- **جایگزین رد شده:** تغییر ترتیب عملیات (پیچیده‌تر، شکننده‌تر).
 
 ### `DELETE` به‌جای rename در `saveMessage` rename branch
 - **دلیل:** جلوگیری از duplicate attachment.
-- **جایگزین رد شده:** حفظ ردیف‌های قدیمی و merge (نیازمند فیلد `old_id` در attachments).
 
-### RTL-aware layout در `MessageBubble` (Stage 9)
-- **دلیل:** چیدمان مثل تلگرام — پیام خودی راست، پیام دیگران چپ با آواتار در چپ حباب.
-- **جایگزین رد شده:**
-  - `Directionality(ltr)` دستی دور Row: ناحیهٔ swipe محدود می‌شود.
-  - `Align(centerLeft)` به‌جای `Row`: عرض Row را از دست می‌دهد.
-- **نکته:** از `MainAxisAlignment.end` استفاده می‌شود چون در RTL خودکار = چپ فیزیکی. آواتار آخرین فرزند است تا در چپ‌ترین جای گروه قرار گیرد.
+### RTL-aware layout در `MessageBubble`
+- **دلیل:** چیدمان مثل تلگرام — پیام خودی راست، دیگران چپ با آواتار در چپ.
 - **پیامد:** اگر اپ روزی در LTR اجرا شود، این کد باید بازبینی شود.
 
 ## ۸. محدودیت‌های مهم
@@ -157,51 +163,48 @@ data/
 - سقف حجم هر آپلود: ۲۰ مگابایت.
 - حداکثر پیوست در یک پیام: ۱۰.
 - Android فقط. RTL.
-- FK cascade: `saveMessage` همیشه `UPDATE` وقتی ردیف وجود دارد (نه `INSERT OR REPLACE`).
+- FK cascade: `saveMessage` همیشه `UPDATE` وقتی ردیف وجود دارد.
 
 ## ۹. بدهی فنی باقی‌مانده
 
-- **بدون تست خودکار** (فقط placeholder در `widget_test.dart`).
-- `_ensureConnectedAndSynced()` در `build()` — الگوی نازیبا (باقی‌مانده از قبل).
+- **بدون تست خودکار** (فقط placeholder).
+- `_ensureConnectedAndSynced()` در `build()` — الگوی نازیبا.
 - `/api/test-push` بدون احراز هویت (کاندید حذف).
 - `_showNotificationDebugMenu` در build production نمایش داده می‌شود.
 - **پاک‌سازی ۲۴ ساعته D1** روی `messages` (به درخواست کاربر حفظ می‌شود).
 - **مدیا groups تلگرام:** هر عکس → پیام جدا.
-- `ChatRoom.js` روی سرور هنوز `INSERT` مستقیم دارد.
+- `ChatRoom.js` هنوز `INSERT` مستقیم دارد.
 
 ## ۱۰. حالت کاری فعلی
 
 - **Last verified build:** ✅ staging + دستگاه واقعی (SM A528B)
-- **Last verified tests:** همهٔ سناریوهای Stage 1-9
+- **Last verified tests:** همهٔ سناریوهای Stage 1-13
 - **Known blocking bug:** ندارد.
 
-## ۱۱. حالت کاری این جلسه
-
-- **فایل‌های جدید کل:** ۱۳
-- **فایل‌های تغییر یافته:** `chat_screen`, `chat_repository`, `sync_engine`, `main.dart`, `local_chat_dao`, `socket_event_dispatcher`, `chat_message_list`, `message_bubble`
-- **خطوط کاهش‌یافته در `chat_screen`:** ~۱۲۰۰ خط
-- **خطوط کاهش‌یافته در `chat_repository`:** ~۴۵۰ خط
-
-## ۱۲. مرحلهٔ بعد (پیشنهاد)
+## ۱۱. مرحلهٔ بعد (پیشنهاد)
 
 به ترتیب اولویت:
 
-1. **(P1) تست خودکار** برای `LocalChatDao`, `SyncEngine`, `SocketEventDispatcher` — پوشش باگ‌های رفع‌شده.
+1. **(P1) تست خودکار** برای `LocalChatDao`, `SyncEngine`, `SocketEventDispatcher`, `LinkifiedText`.
 2. **(P1) آپدیت نسخه به `1.0.10+10`** و انتشار روی GitHub Releases.
-3. **(P2) حذف `/api/test-push`** و گیت کردن debug menu.
-4. **(P2) بررسی media groups تلگرام** — اگر کاربر بخواهد.
-5. **(P3) شکستن `_ensureConnectedAndSynced`** در `main.dart`.
-6. **(P3) افزودن لاگ بیشتر** در نقاط کلیدی (به درخواست کاربر).
+3. **(P2) migration روی D1 production** (وقتی staging تأیید شد).
+4. **(P2) حذف `/api/test-push`** و گیت کردن debug menu.
+5. **(P3) بررسی media groups تلگرام**.
+6. **(P3) شکستن `_ensureConnectedAndSynced`** در `main.dart`.
 
-## ۱۳. نقاط حساس (نظارت مداوم)
+## ۱۲. نقاط حساس (نظارت مداوم)
 
-- **پس از release بعدی**: ۱-۲ هفته به این نشانه‌ها توجه کنید:
+- **پس از release بعدی:** ۱-۲ هفته به این نشانه‌ها توجه کنید:
   - دکمهٔ دانلود روی عکس‌های آپلودشده ظاهر شود
   - پیام بعد از Force Stop دو بار دانلود بخواهد
   - پیام دوگانه در یک حباب
   - logout غیرمنتظره (session server-side invalid)
+  - forward header نمایش داده نشود (migration سرور اعمال نشده)
+  - لینک‌ها به مرورگر باز شوند (AndroidManifest قدیمی)
 
-**اگر دیده شد**:
+## ۱۳. اطلاعات تماس سرور
 
-```powershell
-adb shell run-as com.yasinshahabadi.guysgram sqlite3 /data/data/com.yasinshahabadi.guysgram/databases/telegram_chat_local_v2.db "SELECT id, message_id, local_path, is_downloaded FROM attachments ORDER BY created_at DESC LIMIT 10;"
+- **D1 staging DB ID:** `1ecf41a0-8348-439c-b062-10b3cce3e99f`
+- **D1 production DB ID:** `6b53e474-18eb-4be4-87cf-6fda96db3cf1`
+- **Staging URL:** `https://telegram-chat-staging.yasinshahabadi007.workers.dev`
+- **Migration 0003 وضعیت:** ✅ اعمال‌شده روی staging؛ ⏳ در انتظار برای production

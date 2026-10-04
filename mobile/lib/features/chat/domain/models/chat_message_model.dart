@@ -35,6 +35,14 @@ class ChatMessageModel {
   final String? replyToTelegramFileId;
   final String? replyToFileName;
   final int? replyToDuration;
+
+  // ── Stage 11: forward metadata ──
+  final String? forwardFromType;
+  final String? forwardFromChatId;
+  final String? forwardFromChatUsername;
+  final String? forwardFromChatTitle;
+  final int? forwardFromMessageId;
+
   final bool isPinned;
   final bool isEdited;
   final MessageStatus status;
@@ -63,6 +71,11 @@ class ChatMessageModel {
     this.replyToTelegramFileId,
     this.replyToFileName,
     this.replyToDuration,
+    this.forwardFromType,
+    this.forwardFromChatId,
+    this.forwardFromChatUsername,
+    this.forwardFromChatTitle,
+    this.forwardFromMessageId,
     this.isPinned = false,
     this.isEdited = false,
     this.status = MessageStatus.synced,
@@ -84,6 +97,43 @@ class ChatMessageModel {
   bool get replyHasMedia =>
       (replyToMediaType ?? '').isNotEmpty &&
       (replyToTelegramFileId ?? '').isNotEmpty;
+
+  // ── Stage 11 helpers ──
+
+  bool get isForwarded =>
+      (forwardFromType != null && forwardFromType!.isNotEmpty) ||
+      (forwardFromChatTitle != null && forwardFromChatTitle!.isNotEmpty);
+
+  bool get hasForwardLink =>
+      isForwarded &&
+      forwardFromMessageId != null &&
+      ((forwardFromChatUsername != null && forwardFromChatUsername!.isNotEmpty) ||
+          (forwardFromChatId != null && forwardFromChatId!.startsWith('-100')));
+
+  /// ✅ لینک عمیق تلگرام با استفاده از `tg://` scheme.
+  ///
+  /// چرا `tg://` و نه `https://t.me/...`؟
+  ///   چون `https://t.me/...` توسط هر دو Chrome و Telegram claim می‌شود و
+  ///   Android ممکن است آن را به مرورگر بفرستد. اما `tg://` فقط توسط
+  ///   Telegram claim می‌شود و همیشه مستقیم در اپ باز می‌شود.
+  String? get forwardDeepLink {
+    if (!hasForwardLink) return null;
+    final msgId = forwardFromMessageId!;
+
+    final username = forwardFromChatUsername;
+    if (username != null && username.isNotEmpty) {
+      return 'tg://resolve?domain=$username&post=$msgId';
+    }
+
+    final chatId = forwardFromChatId;
+    if (chatId != null && chatId.startsWith('-100')) {
+      // -1001234567890 → 1234567890
+      final stripped = chatId.substring(4);
+      return 'tg://privatepost?channel=$stripped&post=$msgId';
+    }
+
+    return null;
+  }
 
   factory ChatMessageModel.fromDbMap(
     Map<String, dynamic> map, {
@@ -107,6 +157,11 @@ class ChatMessageModel {
       replyToTelegramFileId: map['reply_to_telegram_file_id'] as String?,
       replyToFileName: map['reply_to_file_name'] as String?,
       replyToDuration: map['reply_to_duration'] as int?,
+      forwardFromType: map['forward_from_type'] as String?,
+      forwardFromChatId: map['forward_from_chat_id'] as String?,
+      forwardFromChatUsername: map['forward_from_chat_username'] as String?,
+      forwardFromChatTitle: map['forward_from_chat_title'] as String?,
+      forwardFromMessageId: map['forward_from_message_id'] as int?,
       isPinned: (map['is_pinned'] as int? ?? 0) == 1,
       isEdited: (map['is_edited'] as int? ?? 0) == 1,
       status: MessageStatus.fromString(map['status'] as String?),
@@ -136,6 +191,11 @@ class ChatMessageModel {
       'reply_to_telegram_file_id': replyToTelegramFileId,
       'reply_to_file_name': replyToFileName,
       'reply_to_duration': replyToDuration,
+      'forward_from_type': forwardFromType,
+      'forward_from_chat_id': forwardFromChatId,
+      'forward_from_chat_username': forwardFromChatUsername,
+      'forward_from_chat_title': forwardFromChatTitle,
+      'forward_from_message_id': forwardFromMessageId,
       'is_pinned': isPinned ? 1 : 0,
       'is_edited': isEdited ? 1 : 0,
       'status': status.name,
@@ -178,6 +238,12 @@ class ChatMessageModel {
       }
     }
 
+    final fwdType = (json['forwardFromType'] ?? json['forward_from_type']) as String?;
+    final fwdChatId = (json['forwardFromChatId'] ?? json['forward_from_chat_id']) as String?;
+    final fwdUsername = (json['forwardFromChatUsername'] ?? json['forward_from_chat_username']) as String?;
+    final fwdTitle = (json['forwardFromChatTitle'] ?? json['forward_from_chat_title']) as String?;
+    final fwdMsgId = (json['forwardFromMessageId'] ?? json['forward_from_message_id']) as int?;
+
     return ChatMessageModel(
       id: json['id'] as String? ?? '',
       clientMessageId: json['clientMessageId'] as String? ?? json['client_message_id'] as String?,
@@ -194,6 +260,11 @@ class ChatMessageModel {
       replyToTelegramFileId: json['replyToTelegramFileId'] as String? ?? json['reply_to_telegram_file_id'] as String?,
       replyToFileName: json['replyToFileName'] as String? ?? json['reply_to_file_name'] as String?,
       replyToDuration: json['replyToDuration'] as int? ?? json['reply_to_duration'] as int?,
+      forwardFromType: fwdType,
+      forwardFromChatId: fwdChatId,
+      forwardFromChatUsername: fwdUsername,
+      forwardFromChatTitle: fwdTitle,
+      forwardFromMessageId: fwdMsgId,
       isPinned: json['isPinned'] == true || json['is_pinned'] == 1,
       isEdited: json['isEdited'] == true || json['is_edited'] == 1,
       status: MessageStatus.synced,
@@ -222,6 +293,11 @@ class ChatMessageModel {
     String? replyToTelegramFileId,
     String? replyToFileName,
     int? replyToDuration,
+    String? forwardFromType,
+    String? forwardFromChatId,
+    String? forwardFromChatUsername,
+    String? forwardFromChatTitle,
+    int? forwardFromMessageId,
     bool? isPinned,
     bool? isEdited,
     MessageStatus? status,
@@ -250,6 +326,11 @@ class ChatMessageModel {
       replyToTelegramFileId: replyToTelegramFileId ?? this.replyToTelegramFileId,
       replyToFileName: replyToFileName ?? this.replyToFileName,
       replyToDuration: replyToDuration ?? this.replyToDuration,
+      forwardFromType: forwardFromType ?? this.forwardFromType,
+      forwardFromChatId: forwardFromChatId ?? this.forwardFromChatId,
+      forwardFromChatUsername: forwardFromChatUsername ?? this.forwardFromChatUsername,
+      forwardFromChatTitle: forwardFromChatTitle ?? this.forwardFromChatTitle,
+      forwardFromMessageId: forwardFromMessageId ?? this.forwardFromMessageId,
       isPinned: isPinned ?? this.isPinned,
       isEdited: isEdited ?? this.isEdited,
       status: status ?? this.status,

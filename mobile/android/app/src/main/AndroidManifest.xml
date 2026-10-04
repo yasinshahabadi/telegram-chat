@@ -14,18 +14,32 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <queries>
+        <!-- باز کردن https در مرورگر پیش‌فرض -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" />
         </intent>
         <intent>
             <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="http" />
         </intent>
+        <!-- ✅ tg:// — برای هدایت مستقیم به Telegram (بدون واسطه مرورگر) -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="tg" />
         </intent>
+
+        <!-- ✅ package visibility برای Android 11+ —
+             اعلام صریح اپ‌هایی که با آن‌ها تعامل داریم. -->
+        <package android:name="org.telegram.messenger" />
+        <package android:name="org.telegram.messenger.beta" />
+        <package android:name="org.telegram.plus" />
+        <package android:name="org.thunderdog.challegram" />
+        <package android:name="com.telegram.messenger" />
+        <package android:name="ir.ilmili.telegraph" />
     </queries>
 
     <application
@@ -33,7 +47,6 @@
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon">
 
-        <!-- ✅ حذف شد: android:taskAffinity="" -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -52,17 +65,14 @@
             </intent-filter>
         </activity>
 
-        <!-- کانال پیش‌فرض اعلان‌های FCM -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="guysgram_default_channel_v2" />
 
-        <!-- آیکون پیش‌فرض اعلان‌ها -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@mipmap/launcher_icon" />
 
-        <!-- رنگ پیش‌فرض اعلان‌ها -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_color"
             android:resource="@color/ic_launcher_background" />
