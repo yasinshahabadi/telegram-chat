@@ -1,11 +1,12 @@
 ﻿/**
- * Secure Telegram Webhook Handler (Integrated with Job Queue & FCM Notifications)
- * Enforces X-Telegram-Bot-Api-Secret-Token validation and offloads heavy tasks to background queue.
+ * Secure Telegram Webhook Handler
  */
 
 import { escapeXml, sendTelegramMessage, editTelegramMessageText } from "./telegramClient.js";
 import {
   normalizeIncomingTelegramMessage,
+  normalizeMediaGroupItem,
+  finalizeMediaGroup,
   normalizeTelegramEdit,
   normalizeTelegramReaction,
   normalizeTelegramPin
@@ -14,12 +15,71 @@ import { processTelegramAuthStart } from "../auth/authController.js";
 import { enqueueJob } from "../queue/jobQueue.js";
 import { dispatchNewMessagePush } from "../notifications/fcmService.js";
 
+// ═══════════════════════════════════════════════════════════════
+//  Media Group buffering (Stage 14)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * پس از دریافت اولین item آلبوم، با تأخیر 1.5 ثانیه منتظر می‌مانیم.
+ * اگر در این مدت item جدیدی نرسید → finalize.
+ * اگر رسید → دوباره منتظر می‌مانیم (تا سقف 10s).
+ *
+ * چرا setTimeout؟
+ *   Telegram webhook response باید سریع برگردد. با ctx.waitUntil
+ *   اجرای async پس از پاسخ ادامه می‌یابد.
+ */
+async function finalizeMediaGroupWithDelay(env, groupId, attempt = 1) {
+  const MAX_ATTEMPTS = 7; // 7 × 1.5s ≈ 10.5s
+
+  await new Promise(r => setTimeout(r, 1500));
+
+  if (attempt > MAX_ATTEMPTS) {
+    console.warn(`[Webhook] Media group ${groupId} hit max attempts, forcing finalize`);
+    return await _doFinalize(env, groupId);
+  }
+
+  // آیا در این مدت item جدیدی آمده؟
+  const entry = await env.DB.prepare(
+    "SELECT updated_at FROM pending_media_groups WHERE group_id = ?"
+  ).bind(groupId).first();
+
+  if (!entry) return; // قبلاً finalize شده
+
+  const elapsed = Date.now() - entry.updated_at;
+  if (elapsed < 1000) {
+    // item جدیدی آمده — دوباره منتظر بمان
+    return finalizeMediaGroupWithDelay(env, groupId, attempt + 1);
+  }
+
+  return await _doFinalize(env, groupId);
+}
+
+async function _doFinalize(env, groupId) {
+  const result = await finalizeMediaGroup(env.DB, groupId);
+  if (!result) return;
+
+  // Broadcast + FCM
+  try {
+    const roomId = env.CHAT_ROOM.idFromName("global_room");
+    await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
+      method: "POST",
+      body: JSON.stringify({ type: "new_message", message: result.message }),
+    });
+  } catch (e) {
+    console.error("[Webhook] Broadcast failed:", e);
+  }
+
+  try {
+    await dispatchNewMessagePush(env, result.message, result.message.senderId);
+  } catch (e) {
+    console.error("[Webhook] FCM failed:", e);
+  }
+}
+
 /**
  * متد اصلی پردازش درخواست‌های وب‌هوک تلگرام
- * POST /api/telegram-webhook
  */
 export async function handleTelegramWebhook(request, env, ctx) {
-  // ۱. اعتبارسنجی امنیتی سکرت توکن تلگرام (رفع آسیب‌پذیری بحرانی C-01)
   const secretHeader = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
   if (env.TELEGRAM_WEBHOOK_SECRET && secretHeader !== env.TELEGRAM_WEBHOOK_SECRET) {
     return new Response("Forbidden: Invalid Webhook Secret Token", { status: 403 });
@@ -33,22 +93,18 @@ export async function handleTelegramWebhook(request, env, ctx) {
   }
 
   try {
-    // ۲. پردازش دکمه‌های اینلاین شیشه‌ای (Callback Queries)
     if (update.callback_query) {
       return await handleCallbackQuery(update.callback_query, env);
     }
 
-    // ۳. پردازش دستورات مدیریتی ربات (مثل /admin)
     if (update.message && update.message.text === "/admin") {
       return await handleAdminCommand(update.message, env);
     }
 
-    // ۴. پردازش جریان ورود و ثبت‌نام با دیپ‌لینک (/start auth_<token>)
     if (update.message && update.message.text && update.message.text.startsWith("/start auth_")) {
       return await handleAuthStart(update.message, env);
     }
 
-    // ۵. پردازش پیام‌های پین‌شده تلگرام
     if (update.message && update.message.pinned_message) {
       const pinResult = await normalizeTelegramPin(env.DB, update.message.pinned_message.message_id);
       if (pinResult) {
@@ -61,7 +117,6 @@ export async function handleTelegramWebhook(request, env, ctx) {
       return new Response("OK");
     }
 
-    // ۶. پردازش رویدادهای ری‌اکشن به پیام‌ها
     if (update.message_reaction && update.message_reaction.chat) {
       const isTargetChat = checkIsTargetGroup(update.message_reaction.chat.id, env.TELEGRAM_GROUP_ID);
       if (isTargetChat) {
@@ -81,7 +136,6 @@ export async function handleTelegramWebhook(request, env, ctx) {
       return new Response("OK");
     }
 
-    // ۷. پردازش رویداد ویرایش پیام
     if (update.edited_message && update.edited_message.chat) {
       const isTargetChat = checkIsTargetGroup(update.edited_message.chat.id, env.TELEGRAM_GROUP_ID);
       if (isTargetChat) {
@@ -102,13 +156,24 @@ export async function handleTelegramWebhook(request, env, ctx) {
       return new Response("OK");
     }
 
-    // در بخش ۸: پردازش پیام‌های جدید از سوپرگروه اختصاصی
+    // ✅ Stage 14: پیام‌های جدید + آلبوم
     if (update.message && update.message.chat) {
       const isTargetChat = checkIsTargetGroup(update.message.chat.id, env.TELEGRAM_GROUP_ID);
       if (isTargetChat && !update.message.from?.is_bot) {
+
+        // ✅ اگر پیام بخشی از یک آلبوم است → مسیر buffering
+        if (update.message.media_group_id) {
+          const result = await normalizeMediaGroupItem(env.DB, update.message);
+          if (result.isFirst && result.groupId) {
+            // فقط یک‌بار برای هر آلبوم schedule می‌کنیم
+            ctx.waitUntil(finalizeMediaGroupWithDelay(env, result.groupId));
+          }
+          return new Response("OK");
+        }
+
+        // پیام عادی (تک‌رسانه یا متنی)
         const normalized = await normalizeIncomingTelegramMessage(env.DB, update.message);
         if (normalized && normalized.message) {
-          // الف) برودکست فوری به روم زنده وب‌سوکت
           enqueueJob(ctx, env, {
             type: "BROADCAST_NEW_MESSAGE",
             payload: {
@@ -118,11 +183,9 @@ export async function handleTelegramWebhook(request, env, ctx) {
             handler: async (p, e) => broadcastToChatRoom(e, p)
           });
 
-          // ب) ارسال FCM به سایر کاربران
-          // ✅ تلگرام user_id را به عنوان excludeUserId پاس می‌دهیم تا فرستنده نوتیفیکیشن خودش را نگیرد
           const senderTgId = update.message.from?.id?.toString();
           let excludeAppUserId = null;
-          
+
           if (senderTgId) {
             const senderUser = await env.DB.prepare(
               "SELECT id FROM users WHERE telegram_id = ?"
@@ -132,9 +195,9 @@ export async function handleTelegramWebhook(request, env, ctx) {
 
           enqueueJob(ctx, env, {
             type: "DISPATCH_FCM_PUSH",
-            payload: { 
-              message: normalized.message, 
-              excludeUserId: excludeAppUserId 
+            payload: {
+              message: normalized.message,
+              excludeUserId: excludeAppUserId
             },
             handler: async (p, e) => dispatchNewMessagePush(e, p.message, p.excludeUserId)
           });
@@ -143,18 +206,17 @@ export async function handleTelegramWebhook(request, env, ctx) {
       return new Response("OK");
     }
   } catch (err) {
+    console.error("[Webhook] Error:", err);
     return new Response("OK");
   }
 
   return new Response("OK");
 }
 
-// بررسی تطابق شناسه چت ورودی با شناسه سوپرگروه مجاز
 function checkIsTargetGroup(chatId, targetGroupId) {
   if (!chatId || !targetGroupId) return false;
   const cId = chatId.toString();
   const tId = targetGroupId.toString();
-
   return (
     cId === tId ||
     cId === tId.replace("-", "-100") ||
@@ -162,7 +224,6 @@ function checkIsTargetGroup(chatId, targetGroupId) {
   );
 }
 
-// برودکست رویداد به Durable Object اتاق چت
 async function broadcastToChatRoom(env, payload) {
   const roomId = env.CHAT_ROOM.idFromName("global_room");
   await env.CHAT_ROOM.get(roomId).fetch("https://internal/broadcast", {
@@ -171,7 +232,6 @@ async function broadcastToChatRoom(env, payload) {
   });
 }
 
-// هندلر دکمه‌های اینلاین ادمین
 async function handleCallbackQuery(cb, env) {
   const data = cb.data || "";
   if (cb.from.id.toString() !== env.ADMIN_TELEGRAM_ID.toString()) {
@@ -257,7 +317,6 @@ async function handleCallbackQuery(cb, env) {
   return new Response("OK");
 }
 
-// هندلر دستور /admin
 async function handleAdminCommand(msg, env) {
   if (msg.from.id.toString() !== env.ADMIN_TELEGRAM_ID.toString()) {
     return new Response("Unauthorized", { status: 403 });
@@ -279,7 +338,6 @@ async function handleAdminCommand(msg, env) {
   return new Response("OK");
 }
 
-// هندلر ثبت‌نام و اتصال ورود دیپ‌لینک (/start auth_)
 async function handleAuthStart(msg, env) {
   const token = msg.text.split(" ")[1].replace("auth_", "");
   const tgUser = msg.from;

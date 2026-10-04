@@ -5,6 +5,7 @@ import { escapeXml } from "../telegram/telegramClient.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_FILES_PER_MESSAGE = 10;
+const MAX_ALBUM_SIZE = 10; // محدودیت Bot API
 
 const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif'];
 const VIDEO_EXTS = ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'];
@@ -73,6 +74,62 @@ async function uploadOneToTelegram(env, file, mediaType, caption, tgReplyMsgId) 
   else if (resMsg.document) tgFileId = resMsg.document.file_id;
 
   return { telegramMessageId: resMsg.message_id, telegramFileId: tgFileId, duration };
+}
+
+/**
+ * ✅ Stage 15: ارسال آلبوم با sendMediaGroup.
+ *
+ * شرایط استفاده:
+ *   - حداقل ۲ فایل
+ *   - همه photo یا video
+ *   - حداکثر ۱۰ فایل
+ *
+ * اگر شرایط برقرار نباشد، `null` برمی‌گرداند و caller به ارسال جدا fallback می‌کند.
+ */
+async function uploadMediaGroupToTelegram(env, files, mediaTypes, originalNames, caption, tgReplyMsgId) {
+  if (files.length < 2 || files.length > MAX_ALBUM_SIZE) return null;
+
+  const allPhotoOrVideo = mediaTypes.every(t => t === 'photo' || t === 'video');
+  if (!allPhotoOrVideo) return null;
+
+  const formData = new FormData();
+  formData.append("chat_id", env.TELEGRAM_GROUP_ID);
+
+  const media = [];
+  for (let i = 0; i < files.length; i++) {
+    const type = mediaTypes[i] === 'video' ? 'video' : 'photo';
+    const fieldName = `file${i}`;
+    const item = { type, media: `attach://${fieldName}` };
+    if (i === 0 && caption) {
+      item.caption = caption;
+      item.parse_mode = "HTML";
+    }
+    media.push(item);
+    formData.append(fieldName, files[i], originalNames[i]);
+  }
+
+  formData.append("media", JSON.stringify(media));
+  if (tgReplyMsgId) {
+    formData.append("reply_parameters", JSON.stringify({ message_id: tgReplyMsgId }));
+  }
+
+  const tgRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMediaGroup`, {
+    method: "POST",
+    body: formData,
+  });
+  const tgData = await tgRes.json();
+  if (!tgData.ok) {
+    throw new Error(tgData.description || "خطا در ارسال آلبوم به تلگرام");
+  }
+
+  console.log(`[Media] Album sent: ${tgData.result.length} items`);
+  return tgData.result.map((msg) => {
+    let tgFileId = "";
+    let duration = 0;
+    if (msg.photo && msg.photo.length > 0) tgFileId = msg.photo[msg.photo.length - 1].file_id;
+    else if (msg.video) { tgFileId = msg.video.file_id; duration = msg.video.duration || 0; }
+    return { telegramMessageId: msg.message_id, telegramFileId: tgFileId, duration };
+  });
 }
 
 function attachmentToApi(a) {
@@ -150,7 +207,7 @@ export async function handleMediaUpload(request, env) {
       }
     }
 
-    // ✅ اطلاعات کامل ریپلای شامل پیوست
+    // reply metadata
     let tgReplyMsgId = null;
     let replyToName = null;
     let replyToText = null;
@@ -185,34 +242,61 @@ export async function handleMediaUpload(request, env) {
       }
     }
 
-    const uploadedResults = [];
+    // media types
+    const resolvedTypes = [];
     for (let i = 0; i < files.length; i++) {
-      const file = files[i];
       const meta = fileMeta[i] || {};
-      const mediaType = detectMediaType(
-        meta.fileName || file.name, file.type, meta.mediaType
-      );
+      resolvedTypes.push(detectMediaType(meta.fileName || files[i].name, files[i].type, meta.mediaType));
+    }
 
-      let fileCaption = null;
-      if (i === 0) {
-        fileCaption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(auth.user.fullName)}`;
-        if (replyTo && !tgReplyMsgId) {
-          fileCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml((replyTo.text || "").substring(0, 30))}»`;
-        }
-        if (caption) fileCaption += `\n💬 ${escapeXml(caption)}`;
+    // ✅ Stage 15: تلاش برای ارسال به صورت آلبوم
+    let uploadedResults = [];
+    try {
+      const albumResult = await uploadMediaGroupToTelegram(
+        env, files, resolvedTypes, files.map(f => f.name), caption ? `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(auth.user.fullName)}${caption ? `\n💬 ${escapeXml(caption)}` : ''}` : `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(auth.user.fullName)}`,
+        tgReplyMsgId
+      );
+      if (albumResult) {
+        uploadedResults = albumResult.map((r, i) => ({
+          file: files[i],
+          mediaType: resolvedTypes[i],
+          telegramMessageId: r.telegramMessageId,
+          telegramFileId: r.telegramFileId,
+          duration: r.duration,
+        }));
       }
+    } catch (e) {
+      console.warn("[Media] Album send failed, falling back:", e.message);
+      uploadedResults = [];
+    }
 
-      const uploaded = await uploadOneToTelegram(
-        env, file, mediaType, fileCaption, i === 0 ? tgReplyMsgId : null
-      );
+    // fallback: ارسال جدا
+    if (uploadedResults.length === 0) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const mediaType = resolvedTypes[i];
 
-      uploadedResults.push({
-        file,
-        mediaType,
-        telegramMessageId: uploaded.telegramMessageId,
-        telegramFileId: uploaded.telegramFileId,
-        duration: uploaded.duration,
-      });
+        let fileCaption = null;
+        if (i === 0) {
+          fileCaption = `🌐 <b>[Guysgram]</b>\n👤 <b>فرستنده:</b> ${escapeXml(auth.user.fullName)}`;
+          if (replyTo && !tgReplyMsgId) {
+            fileCaption += `\n↩️ <i>پاسخ به ${escapeXml(replyTo.name)}:</i> «${escapeXml((replyTo.text || "").substring(0, 30))}»`;
+          }
+          if (caption) fileCaption += `\n💬 ${escapeXml(caption)}`;
+        }
+
+        const uploaded = await uploadOneToTelegram(
+          env, file, mediaType, fileCaption, i === 0 ? tgReplyMsgId : null
+        );
+
+        uploadedResults.push({
+          file,
+          mediaType,
+          telegramMessageId: uploaded.telegramMessageId,
+          telegramFileId: uploaded.telegramFileId,
+          duration: uploaded.duration,
+        });
+      }
     }
 
     const now = Date.now();

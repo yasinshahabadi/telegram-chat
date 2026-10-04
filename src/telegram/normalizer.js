@@ -37,24 +37,7 @@ export async function emitSyncEvent(db, eventType, entityId, payload) {
   }
 }
 
-/**
- * استخراج اطلاعات forward از یک پیام تلگرام.
- *
- * از Bot API 7.0 به بعد، فیلد `forward_origin` جایگزین
- * `forward_from`, `forward_from_chat` و ... شده است.
- * این تابع هر دو حالت را پشتیبانی می‌کند.
- *
- * خروجی: null یا:
- *   {
- *     type: 'channel' | 'chat' | 'user' | 'hidden_user',
- *     chatId: string | null,
- *     chatUsername: string | null,
- *     chatTitle: string | null,
- *     messageId: number | null,
- *   }
- */
 export function extractForwardInfo(msg) {
-  // ─── Modern Bot API 7.0+ ───
   if (msg.forward_origin) {
     const origin = msg.forward_origin;
     const type = origin.type || null;
@@ -72,8 +55,7 @@ export function extractForwardInfo(msg) {
 
     if (type === 'user') {
       const user = origin.sender_user || {};
-      const name =
-        `${user.first_name || ""} ${user.last_name || ""}`.trim() || 'کاربر';
+      const name = `${user.first_name || ""} ${user.last_name || ""}`.trim() || 'کاربر';
       return {
         type: 'user',
         chatId: user.id != null ? user.id.toString() : null,
@@ -94,7 +76,6 @@ export function extractForwardInfo(msg) {
     }
   }
 
-  // ─── Legacy fallback (pre Bot API 7.0) ───
   if (msg.forward_from_chat) {
     const chat = msg.forward_from_chat;
     return {
@@ -108,8 +89,7 @@ export function extractForwardInfo(msg) {
 
   if (msg.forward_from) {
     const user = msg.forward_from;
-    const name =
-      `${user.first_name || ""} ${user.last_name || ""}`.trim() || 'کاربر';
+    const name = `${user.first_name || ""} ${user.last_name || ""}`.trim() || 'کاربر';
     return {
       type: 'user',
       chatId: user.id != null ? user.id.toString() : null,
@@ -132,6 +112,73 @@ export function extractForwardInfo(msg) {
   return null;
 }
 
+/**
+ * استخراج اطلاعات یک فایل از پیام (اولین مدیای موجود).
+ */
+function extractMedia(msg) {
+  if (msg.photo && msg.photo.length > 0) {
+    const best = msg.photo[msg.photo.length - 1];
+    return { mediaType: 'photo', fileId: best.file_id, fileSize: best.file_size, fileName: 'photo.jpg', duration: 0 };
+  }
+  if (msg.video) {
+    return { mediaType: 'video', fileId: msg.video.file_id, fileSize: msg.video.file_size,
+             fileName: msg.video.file_name || 'video.mp4', duration: msg.video.duration || 0 };
+  }
+  if (msg.voice) {
+    return { mediaType: 'voice', fileId: msg.voice.file_id, fileSize: msg.voice.file_size,
+             fileName: 'voice.ogg', duration: msg.voice.duration || 0 };
+  }
+  if (msg.audio) {
+    return { mediaType: 'audio', fileId: msg.audio.file_id, fileSize: msg.audio.file_size,
+             fileName: msg.audio.file_name || 'audio.mp3', duration: msg.audio.duration || 0 };
+  }
+  if (msg.document) {
+    return { mediaType: 'document', fileId: msg.document.file_id, fileSize: msg.document.file_size,
+             fileName: msg.document.file_name || 'file', duration: 0 };
+  }
+  return null;
+}
+
+async function resolveReplyInfo(db, msg) {
+  if (!msg.reply_to_message) return { replyToId: null };
+  const parentRow = await db.prepare(`
+    SELECT m.id, m.text, u.full_name AS sender_name,
+           a.id AS att_id, a.media_type, a.telegram_file_id,
+           a.file_name, a.duration
+    FROM messages m
+    LEFT JOIN users u ON m.sender_id = u.id
+    LEFT JOIN attachments a ON a.message_id = m.id
+    WHERE m.telegram_message_id = ?
+    ORDER BY a.created_at ASC
+    LIMIT 1
+  `).bind(msg.reply_to_message.message_id).first();
+
+  if (!parentRow) return { replyToId: null };
+  return {
+    replyToId: parentRow.id,
+    replyToName: parentRow.sender_name || null,
+    replyToText: parentRow.text || null,
+    replyToMediaType: parentRow.media_type || null,
+    replyToAttachmentId: parentRow.att_id || null,
+    replyToTelegramFileId: parentRow.telegram_file_id || null,
+    replyToFileName: parentRow.file_name || null,
+    replyToDuration: parentRow.duration ?? null,
+  };
+}
+
+async function insertAttachment(db, messageId, media, timestamp) {
+  if (!media) return null;
+  const attachmentId = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO attachments (
+      id, message_id, media_type, telegram_file_id, file_name, file_size, duration, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(attachmentId, messageId, media.mediaType, media.fileId,
+          media.fileName, media.fileSize, media.duration, timestamp).run();
+  return attachmentId;
+}
+
 export async function normalizeIncomingTelegramMessage(db, msg) {
   const msgId = crypto.randomUUID();
   const senderId = await ensureTelegramUser(db, msg.from);
@@ -139,132 +186,41 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
   const timestamp = Date.now();
   const text = msg.text || msg.caption || "";
 
-  // ─── Forward metadata (Stage 10) ───
   const forward = extractForwardInfo(msg);
-  const forwardFromType = forward?.type ?? null;
-  const forwardFromChatId = forward?.chatId ?? null;
-  const forwardFromChatUsername = forward?.chatUsername ?? null;
-  const forwardFromChatTitle = forward?.chatTitle ?? null;
-  const forwardFromMessageId = forward?.messageId ?? null;
+  const replyInfo = await resolveReplyInfo(db, msg);
 
-  if (forward) {
-    console.log(
-      `[Normalizer] Forward detected: type=${forward.type} title="${forward.chatTitle}" ` +
-      `username=${forward.chatUsername} msgId=${forward.messageId}`,
-    );
-  }
-
-  // ─── Reply metadata ───
-  let replyToId = null;
-  let replyToName = null;
-  let replyToText = null;
-  let replyToMediaType = null;
-  let replyToAttachmentId = null;
-  let replyToTelegramFileId = null;
-  let replyToFileName = null;
-  let replyToDuration = null;
-
-  if (msg.reply_to_message) {
-    const parentRow = await db.prepare(`
-      SELECT m.id, m.text, u.full_name AS sender_name,
-             a.id AS att_id, a.media_type, a.telegram_file_id,
-             a.file_name, a.duration
-      FROM messages m
-      LEFT JOIN users u ON m.sender_id = u.id
-      LEFT JOIN attachments a ON a.message_id = m.id
-      WHERE m.telegram_message_id = ?
-      ORDER BY a.created_at ASC
-      LIMIT 1
-    `).bind(msg.reply_to_message.message_id).first();
-
-    if (parentRow) {
-      replyToId = parentRow.id;
-      replyToName = parentRow.sender_name || null;
-      replyToText = parentRow.text || null;
-      replyToMediaType = parentRow.media_type || null;
-      replyToAttachmentId = parentRow.att_id || null;
-      replyToTelegramFileId = parentRow.telegram_file_id || null;
-      replyToFileName = parentRow.file_name || null;
-      replyToDuration = parentRow.duration ?? null;
-    }
-  }
-
-  // ─── Media metadata ───
-  let mediaType = null, fileId = null, fileName = null, fileSize = null, thumbId = null, duration = 0;
-
-  if (msg.photo && msg.photo.length > 0) {
-    mediaType = "photo";
-    const bestPhoto = msg.photo[msg.photo.length - 1];
-    fileId = bestPhoto.file_id;
-    fileSize = bestPhoto.file_size;
-    fileName = "photo.jpg";
-  } else if (msg.video) {
-    mediaType = "video";
-    fileId = msg.video.file_id;
-    fileSize = msg.video.file_size;
-    fileName = msg.video.file_name || "video.mp4";
-    duration = msg.video.duration || 0;
-    const th = msg.video.thumbnail || msg.video.thumb;
-    if (th) thumbId = th.file_id;
-  } else if (msg.voice) {
-    mediaType = "voice";
-    fileId = msg.voice.file_id;
-    fileSize = msg.voice.file_size;
-    fileName = "voice.ogg";
-    duration = msg.voice.duration || 0;
-  } else if (msg.audio) {
-    mediaType = "audio";
-    fileId = msg.audio.file_id;
-    fileSize = msg.audio.file_size;
-    fileName = msg.audio.file_name || "audio.mp3";
-    duration = msg.audio.duration || 0;
-  } else if (msg.document) {
-    mediaType = "document";
-    fileId = msg.document.file_id;
-    fileSize = msg.document.file_size;
-    fileName = msg.document.file_name || "file";
-  }
-
-  // ─── INSERT message (شامل forward columns) ───
   await db.prepare(`
     INSERT INTO messages (
       id, sender_id, text, is_from_telegram, created_at, updated_at,
       telegram_message_id, reply_to_message_id,
       forward_from_type, forward_from_chat_id, forward_from_chat_username,
-      forward_from_chat_title, forward_from_message_id
+      forward_from_chat_title, forward_from_message_id,
+      telegram_media_group_id
     )
-    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     msgId, senderId, text, timestamp, timestamp,
-    msg.message_id, replyToId,
-    forwardFromType, forwardFromChatId, forwardFromChatUsername,
-    forwardFromChatTitle, forwardFromMessageId,
+    msg.message_id, replyInfo.replyToId,
+    forward?.type ?? null, forward?.chatId ?? null, forward?.chatUsername ?? null,
+    forward?.chatTitle ?? null, forward?.messageId ?? null,
+    msg.media_group_id || null,
   ).run();
 
-  // ─── Attachment ───
+  const media = extractMedia(msg);
   let attachmentRecord = null;
-  if (fileId) {
-    const attachmentId = crypto.randomUUID();
+  if (media) {
+    const attachmentId = await insertAttachment(db, msgId, media, timestamp);
     attachmentRecord = {
       id: attachmentId,
       messageId: msgId,
-      mediaType,
-      telegramFileId: fileId,
-      fileName,
-      fileSize,
-      duration,
-      thumbId,
+      mediaType: media.mediaType,
+      telegramFileId: media.fileId,
+      fileName: media.fileName,
+      fileSize: media.fileSize,
+      duration: media.duration,
     };
-
-    await db.prepare(`
-      INSERT INTO attachments (
-        id, message_id, media_type, telegram_file_id, file_name, file_size, duration, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(attachmentId, msgId, mediaType, fileId, fileName, fileSize, duration, timestamp).run();
   }
 
-  // ─── Payload for sync + broadcast ───
   const normalizedMessage = {
     id: msgId,
     senderId,
@@ -273,7 +229,174 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     isFromTelegram: true,
     createdAt: timestamp,
     telegramMessageId: msg.message_id,
-    replyToId,
+    replyToId: replyInfo.replyToId,
+    replyToName: replyInfo.replyToName ?? null,
+    replyToText: replyInfo.replyToText ?? null,
+    replyToMediaType: replyInfo.replyToMediaType ?? null,
+    replyToAttachmentId: replyInfo.replyToAttachmentId ?? null,
+    replyToTelegramFileId: replyInfo.replyToTelegramFileId ?? null,
+    replyToFileName: replyInfo.replyToFileName ?? null,
+    replyToDuration: replyInfo.replyToDuration ?? null,
+    attachment: attachmentRecord,
+    forwardFromType: forward?.type ?? null,
+    forwardFromChatId: forward?.chatId ?? null,
+    forwardFromChatUsername: forward?.chatUsername ?? null,
+    forwardFromChatTitle: forward?.chatTitle ?? null,
+    forwardFromMessageId: forward?.messageId ?? null,
+  };
+
+  const cursor = await emitSyncEvent(db, "message_created", msgId, normalizedMessage);
+
+  return { message: normalizedMessage, cursor };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ✅ Stage 14: Media Group Buffering
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * پردازش یک item از media group.
+ *
+ * اگر اولین item آلبوم باشد:
+ *   - یک message جدید + اولین attachment می‌سازد.
+ *   - یک ردیف در pending_media_groups درج می‌کند.
+ *   - { isFirst: true, messageId } برمی‌گرداند تا caller finalize را schedule کند.
+ *
+ * اگر item بعدی باشد:
+ *   - attachment را به همان message اضافه می‌کند.
+ *   - updated_at را تازه می‌کند.
+ *   - { isFirst: false, messageId } برمی‌گرداند.
+ */
+export async function normalizeMediaGroupItem(db, msg) {
+  const groupId = msg.media_group_id;
+  const now = Date.now();
+
+  if (!groupId) {
+    return { isFirst: false, messageId: null, groupId: null };
+  }
+
+  // ۱) آیا این گروه در انتظار است؟
+  const existing = await db.prepare(
+    "SELECT message_id, sender_id, sender_name FROM pending_media_groups WHERE group_id = ?"
+  ).bind(groupId).first();
+
+  if (existing) {
+    // item بعدی — فقط attachment را اضافه کن
+    const media = extractMedia(msg);
+    if (media) {
+      await insertAttachment(db, existing.message_id, media, now);
+    }
+    await db.prepare(
+      "UPDATE pending_media_groups SET updated_at = ? WHERE group_id = ?"
+    ).bind(now, groupId).run();
+    return { isFirst: false, messageId: existing.message_id, groupId };
+  }
+
+  // ۲) اولین item — یک message جدید بساز
+  const msgId = crypto.randomUUID();
+  const senderId = await ensureTelegramUser(db, msg.from);
+  const senderName = `${msg.from.first_name || ""} ${msg.from.last_name || ""}`.trim() || "Telegram User";
+  const text = msg.caption || "";
+  const forward = extractForwardInfo(msg);
+  const replyInfo = await resolveReplyInfo(db, msg);
+
+  await db.prepare(`
+    INSERT INTO messages (
+      id, sender_id, text, is_from_telegram, created_at, updated_at,
+      telegram_message_id, reply_to_message_id,
+      forward_from_type, forward_from_chat_id, forward_from_chat_username,
+      forward_from_chat_title, forward_from_message_id,
+      telegram_media_group_id
+    )
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    msgId, senderId, text, now, now,
+    msg.message_id, replyInfo.replyToId,
+    forward?.type ?? null, forward?.chatId ?? null, forward?.chatUsername ?? null,
+    forward?.chatTitle ?? null, forward?.messageId ?? null,
+    groupId,
+  ).run();
+
+  const media = extractMedia(msg);
+  if (media) {
+    await insertAttachment(db, msgId, media, now);
+  }
+
+  await db.prepare(`
+    INSERT OR IGNORE INTO pending_media_groups
+      (group_id, message_id, sender_id, sender_name, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(groupId, msgId, senderId, senderName, now, now).run();
+
+  console.log(`[Normalizer] Media group started: groupId=${groupId} msgId=${msgId}`);
+  return { isFirst: true, messageId: msgId, senderId, senderName, groupId };
+}
+
+/**
+ * نهایی‌سازی یک media group:
+ *   - خواندن message و همهٔ attachments
+ *   - ساخت payload کامل (attachments آرایه)
+ *   - emitSyncEvent
+ *   - حذف ردیف pending_media_groups
+ */
+export async function finalizeMediaGroup(db, groupId) {
+  const entry = await db.prepare(
+    "SELECT message_id, sender_id, sender_name FROM pending_media_groups WHERE group_id = ?"
+  ).bind(groupId).first();
+
+  if (!entry) return null;
+
+  const msgRow = await db.prepare(
+    "SELECT * FROM messages WHERE id = ?"
+  ).bind(entry.message_id).first();
+
+  if (!msgRow) {
+    await db.prepare("DELETE FROM pending_media_groups WHERE group_id = ?")
+      .bind(groupId).run();
+    return null;
+  }
+
+  const { results: attachments } = await db.prepare(
+    "SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at ASC"
+  ).bind(entry.message_id).all();
+
+  // reply info
+  let replyToName = null, replyToText = null, replyToMediaType = null;
+  let replyToAttachmentId = null, replyToTelegramFileId = null;
+  let replyToFileName = null, replyToDuration = null;
+
+  if (msgRow.reply_to_message_id) {
+    const replyRow = await db.prepare(`
+      SELECT m.text, u.full_name AS sender_name,
+             a.id AS att_id, a.media_type, a.telegram_file_id,
+             a.file_name, a.duration
+      FROM messages m
+      LEFT JOIN users u ON m.sender_id = u.id
+      LEFT JOIN attachments a ON a.message_id = m.id
+      WHERE m.id = ?
+      ORDER BY a.created_at ASC LIMIT 1
+    `).bind(msgRow.reply_to_message_id).first();
+
+    if (replyRow) {
+      replyToName = replyRow.sender_name || null;
+      replyToText = replyRow.text || null;
+      replyToMediaType = replyRow.media_type || null;
+      replyToAttachmentId = replyRow.att_id || null;
+      replyToTelegramFileId = replyRow.telegram_file_id || null;
+      replyToFileName = replyRow.file_name || null;
+      replyToDuration = replyRow.duration ?? null;
+    }
+  }
+
+  const normalizedMessage = {
+    id: entry.message_id,
+    senderId: entry.sender_id,
+    senderName: entry.sender_name,
+    text: msgRow.text || "",
+    isFromTelegram: true,
+    createdAt: msgRow.created_at,
+    telegramMessageId: msgRow.telegram_message_id,
+    replyToId: msgRow.reply_to_message_id,
     replyToName,
     replyToText,
     replyToMediaType,
@@ -281,22 +404,32 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     replyToTelegramFileId,
     replyToFileName,
     replyToDuration,
-    attachment: attachmentRecord,
-
-    // ✅ Stage 10: forward metadata
-    forwardFromType,
-    forwardFromChatId,
-    forwardFromChatUsername,
-    forwardFromChatTitle,
-    forwardFromMessageId,
+    // ✅ آرایهٔ کامل attachments
+    attachments: (attachments || []).map(a => ({
+      id: a.id,
+      messageId: a.message_id,
+      mediaType: a.media_type,
+      telegramFileId: a.telegram_file_id,
+      fileName: a.file_name,
+      fileSize: a.file_size,
+      mimeType: a.mime_type,
+      duration: a.duration,
+      createdAt: a.created_at,
+    })),
+    forwardFromType: msgRow.forward_from_type,
+    forwardFromChatId: msgRow.forward_from_chat_id,
+    forwardFromChatUsername: msgRow.forward_from_chat_username,
+    forwardFromChatTitle: msgRow.forward_from_chat_title,
+    forwardFromMessageId: msgRow.forward_from_message_id,
   };
 
-  const cursor = await emitSyncEvent(db, "message_created", msgId, normalizedMessage);
+  const cursor = await emitSyncEvent(db, "message_created", entry.message_id, normalizedMessage);
 
-  return {
-    message: normalizedMessage,
-    cursor,
-  };
+  await db.prepare("DELETE FROM pending_media_groups WHERE group_id = ?")
+    .bind(groupId).run();
+
+  console.log(`[Normalizer] Media group finalized: groupId=${groupId} msgId=${entry.message_id} attachments=${attachments?.length ?? 0}`);
+  return { message: normalizedMessage, cursor };
 }
 
 export async function normalizeTelegramEdit(db, editMsg) {
@@ -323,7 +456,6 @@ export async function normalizeTelegramEdit(db, editMsg) {
   };
 
   const cursor = await emitSyncEvent(db, "message_edited", msgRow.id, payload);
-
   return { payload, cursor };
 }
 
@@ -342,11 +474,9 @@ export async function normalizeTelegramReaction(db, reactionUpdate) {
     "DELETE FROM reactions WHERE message_id = ? AND telegram_user_id = ?"
   ).bind(msgRow.id, tgUserId).run();
 
-  const newEmojis = [];
   if (reactionUpdate.new_reaction && Array.isArray(reactionUpdate.new_reaction)) {
     for (const r of reactionUpdate.new_reaction) {
       if (r.type === "emoji" && r.emoji) {
-        newEmojis.push(r.emoji);
         await db.prepare(`
           INSERT OR IGNORE INTO reactions (id, message_id, user_id, telegram_user_id, emoji, created_at)
           VALUES (?, ?, NULL, ?, ?, ?)
@@ -369,7 +499,6 @@ export async function normalizeTelegramReaction(db, reactionUpdate) {
   };
 
   const cursor = await emitSyncEvent(db, "reaction_updated", msgRow.id, payload);
-
   return { payload, cursor };
 }
 
@@ -393,6 +522,5 @@ export async function normalizeTelegramPin(db, pinnedTgId) {
   };
 
   const cursor = await emitSyncEvent(db, "message_pinned", msgRow.id, payload);
-
   return { payload, cursor };
 }

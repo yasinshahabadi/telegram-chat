@@ -1,6 +1,6 @@
 # AI_PROJECT_STATE.md
 
-آخرین به‌روزرسانی: 1405/07/14 (2026-10-05)
+آخرین به‌روزرسانی: 1405/07/15 (2026-10-06)
 
 ---
 
@@ -30,6 +30,9 @@
 ### Forward + Links (Stages 10-13) — ✅ کامل
 نمایش forward header، deep link به تلگرام، و لینک‌های کلیک‌شدنی.
 
+### Media Groups / Album (Stages 14-16) — ✅ کامل
+دریافت و ارسال آلبوم‌های تلگرام به صورت یکپارچه.
+
 ### فازهای کامل‌شده (کل جلسه)
 | Stage | محتوا |
 |---|---|
@@ -44,10 +47,13 @@
 | 7 | استخراج صف + آپلود + رفع باگ ack |
 | 8 | پاک‌سازی کد مرده |
 | 9 | چیدمان پیام‌ها مثل تلگرام (خودی راست، دیگران چپ) |
-| **10** | **migration + normalizer سرور برای forward** |
-| **11** | **SQLite v4 + ChatMessageModel + DAO** |
-| **12** | **ForwardHeader widget + ادغام** |
-| **13** | **LinkifiedText + tg:// deep links** |
+| 10 | migration + normalizer سرور برای forward |
+| 11 | SQLite v4 + ChatMessageModel + DAO |
+| 12 | ForwardHeader widget + ادغام |
+| 13 | LinkifiedText + tg:// deep links |
+| **14** | **buffering آلبوم‌های ورودی در webhook** |
+| **15** | **sendMediaGroup برای آلبوم‌های خروجی** |
+| **16** | **state update + commit نهایی** |
 
 ### نتیجهٔ metrics
 | فایل | قبل | بعد |
@@ -62,78 +68,79 @@
 | `forward_header.dart` | — | ~۹۰ خط |
 | `linkified_text.dart` | — | ~۱۳۰ خط |
 
-**فایل‌های جدید کل:** ۱۵ فایل.
+**فایل‌های جدید کل:** ۱۵ فایل در کلاینت + ۲ migration در سرور.
 
-## ۴. معماری فعلی (کلاینت)
+## ۴. معماری فعلی
 
 ### Presentation Layer
 presentation/
 ├── screens/chat_screen.dart (root StatefulWidget, ~330 خط)
 ├── widgets/
-│ ├── chat_app_bar.dart (static factory برای AppBar)
-│ ├── chat_status_subtitle.dart (subtitle خود AnimatedBuilder دارد)
-│ ├── pinned_message_banner.dart (banner خود AnimatedBuilder دارد)
-│ ├── chat_message_list.dart (ListView + empty/loading state)
-│ ├── message_bubble.dart (حباب پیام + RTL-aware layout)
-│ ├── forward_header.dart (Stage 12 — نمایش فوروارد)
-│ ├── linkified_text.dart (Stage 13 — لینک/منشن کلیک‌شدنی)
-│ ├── chat_input_bar.dart (input + voice recording)
-│ ├── reaction_bar.dart (chips + picker)
-│ ├── reply_thumbnail.dart (thumbnail در reply)
-│ ├── swipe_to_reply.dart (swipe gesture wrapper)
-│ ├── unread_divider.dart (divider animation)
-│ ├── user_avatar.dart (avatar + online badge)
-│ └── media_bubble_content.dart (media display)
+│ ├── chat_app_bar.dart
+│ ├── chat_status_subtitle.dart
+│ ├── pinned_message_banner.dart
+│ ├── chat_message_list.dart
+│ ├── message_bubble.dart (RTL-aware layout)
+│ ├── forward_header.dart (Stage 12)
+│ ├── linkified_text.dart (Stage 13)
+│ ├── chat_input_bar.dart
+│ ├── reaction_bar.dart
+│ ├── reply_thumbnail.dart
+│ ├── swipe_to_reply.dart
+│ ├── unread_divider.dart
+│ ├── user_avatar.dart
+│ └── media_bubble_content.dart
 ├── dialogs/ (5 فایل)
 └── state/
 ├── chat_upload_coordinator.dart
 └── unread_flow_controller.dart
 
-
 ### Data Layer
 data/
-├── chat_repository.dart (ChangeNotifier — state root)
-├── socket_event_dispatcher.dart (12 نوع رویداد سوکت)
-├── upload_lifecycle.dart (چرخهٔ ساخت/نهایی/retry)
-├── pending_action_queue.dart (صف + scheduling)
-├── chat_websocket_client.dart (WS + heartbeat 25s/60s)
-└── sync_engine.dart (cursor-based sync + لاگ)
+├── chat_repository.dart
+├── socket_event_dispatcher.dart
+├── upload_lifecycle.dart
+├── pending_action_queue.dart
+├── chat_websocket_client.dart
+└── sync_engine.dart
 
 
 ### DB Schema
-- **سرور D1:** جدول `messages` شامل ۵ ستون forward (migration 0003).
-- **کلاینت SQLite:** v4 با ۵ ستون forward مشابه.
+- **سرور D1:**
+  - جدول `messages` با ۵ ستون forward + `telegram_media_group_id`.
+  - جدول جدید `pending_media_groups` (buffering).
+- **کلاینت SQLite:** v4 با ۵ ستون forward.
 
-## ۵. سرور (Cloudflare Workers)
-
+### سرور
 - D1 + Durable Object `ChatRoom`.
-- Zero-Trust Session.
 - `/api/sync` بر پایه cursor.
-- مدیا فقط از Telegram Bot API (بدون R2).
-- `normalizer.js` حالا `forward_origin` (Bot API 7+) و legacy fields را پشتیبانی می‌کند.
-- `ChatRoom.js` هنوز `INSERT` مستقیم دارد (برای آینده).
+- `normalizer.js`: پشتیبانی از forward + آلبوم (buffering).
+- `webhookHandler.js`: orchestration با `ctx.waitUntil` برای finalize آلبوم.
+- `mediaController.js`: `sendMediaGroup` با fallback به ارسال جدا.
 
-## ۶. باگ‌ها و بهبودهای این جلسه
+## ۵. باگ‌ها و بهبودهای کل جلسه
 
 ### Refactor
 | # | مورد | رفع |
 |---|---|---|
 | 1 | `_dependents.isEmpty` در دیالوگ ویرایش | حذف `controller.dispose()` زودهنگام |
-| 2 | پیام بعد از background نمی‌آمد | حذف `substring` در Authorization header |
+| 2 | پیام بعد از background نمی‌آمد | حذف `substring` در Authorization |
 | 3 | `FOREIGN KEY constraint failed` | `PRAGMA defer_foreign_keys = ON` |
-| 4 | کاربر با session مرده logout نمی‌شد | `SyncResult.unauthorized` + `_handleUnauthorized` |
-| 5 | پیام عکس دو بار نمایش داده می‌شد | `DELETE` به‌جای rename در `saveMessage` |
+| 4 | کاربر با session مرده logout نمی‌شد | `SyncResult.unauthorized` |
+| 5 | پیام عکس دو بار | `DELETE` به‌جای rename |
 | 6 | `message_ack` DB را با id جدید ذخیره نمی‌کرد | `saveMessage(id=realMessageId)` |
 
 ### UI / Feature
 | # | مورد | رفع |
 |---|---|---|
-| 7 | همهٔ پیام‌ها سمت راست بودند | `MainAxisAlignment.end` (RTL-aware) |
-| 8 | آواتار در راست حباب بود | آواتار به آخرین فرزند Row منتقل شد |
-| 9 | لینک‌ها کلیک‌پذیر نبودند | widget `LinkifiedText` + regex |
-| 10 | باز شدن مرورگر به‌جای تلگرام | `tg://` scheme + `<queries>` در manifest |
+| 7 | همهٔ پیام‌ها سمت راست | `MainAxisAlignment.end` (RTL) |
+| 8 | آواتار در راست حباب | آواتار به آخرین فرزند |
+| 9 | لینک‌ها کلیک‌پذیر نبودند | `LinkifiedText` |
+| 10 | باز شدن مرورگر به‌جای تلگرام | `tg://` + `<queries>` |
+| 11 | آلبوم تلگرام → چند حباب | `pending_media_groups` buffering |
+| 12 | ارسال چند فایل → چند پست جدا | `sendMediaGroup` + fallback |
 
-## ۷. تصمیمات معماری اخیر
+## ۶. تصمیمات معماری اخیر
 
 ### الگوی callback
 - **دلیل:** جدا کردن منطق state پیچیده بدون DI framework.
@@ -143,68 +150,80 @@ data/
 - **دلیل:** درخواست کاربر برای دیباگ بهتر.
 - **پیامد:** در release، `debugPrint` خودکار ساکت می‌شود.
 
-### `tg://` به‌جای `https://t.me/...`
-- **دلیل:** `https://t.me` توسط Chrome و Telegram claim می‌شود → Android ممکن است به مرورگر بفرستد. `tg://` فقط توسط Telegram claim می‌شود → مستقیم به اپ.
-- **جایگزین رد شده:** `intent://` (پیچیده‌تر، مخصوص Android).
+### `tg://` به‌جای `https://t.me`
+- **دلیل:** `https://t.me` توسط Chrome و Telegram claim می‌شود.
+- **جایگزین رد شده:** `intent://` (پیچیده‌تر).
 
 ### `PRAGMA defer_foreign_keys = ON` در `saveMessage`
-- **دلیل:** rename branch نیاز به حذف ردیف قدیمی قبل از insert ردیف جدید دارد.
+- **دلیل:** rename branch نیاز به حذف قبل از insert دارد.
 
-### `DELETE` به‌جای rename در `saveMessage` rename branch
+### `DELETE` به‌جای rename در `saveMessage`
 - **دلیل:** جلوگیری از duplicate attachment.
 
 ### RTL-aware layout در `MessageBubble`
-- **دلیل:** چیدمان مثل تلگرام — پیام خودی راست، دیگران چپ با آواتار در چپ.
-- **پیامد:** اگر اپ روزی در LTR اجرا شود، این کد باید بازبینی شود.
+- **دلیل:** چیدمان مثل تلگرام.
+- **پیامد:** اگر LTR شود، باید بازبینی شود.
 
-## ۸. محدودیت‌های مهم
+### Media Group Buffering با D1
+- **دلیل:** Worker stateless است، تلگرام آلبوم‌ها را به‌صورت چند webhook می‌فرستد.
+- **روش:** `pending_media_groups` + `ctx.waitUntil` با تأخیر 1.5s.
+- **پیامد:** آلبوم‌ها ~2s دیرتر نمایش داده می‌شوند (فقط آلبوم).
+
+### `sendMediaGroup` با fallback
+- **دلیل:** Bot API فقط photo/video را در آلبوم قبول می‌کند.
+- **پیامد:** برای فایل مختلط، به ارسال جدا fallback می‌کنیم.
+
+## ۷. محدودیت‌های مهم
 
 - R2 استفاده نمی‌شود (محدودیت کارت اعتباری ایران).
 - سقف حجم هر آپلود: ۲۰ مگابایت.
 - حداکثر پیوست در یک پیام: ۱۰.
+- Bot API آلبوم: فقط photo/video، حداکثر ۱۰ آیتم.
 - Android فقط. RTL.
 - FK cascade: `saveMessage` همیشه `UPDATE` وقتی ردیف وجود دارد.
 
-## ۹. بدهی فنی باقی‌مانده
+## ۸. بدهی فنی باقی‌مانده
 
-- **بدون تست خودکار** (فقط placeholder).
-- `_ensureConnectedAndSynced()` در `build()` — الگوی نازیبا.
-- `/api/test-push` بدون احراز هویت (کاندید حذف).
-- `_showNotificationDebugMenu` در build production نمایش داده می‌شود.
-- **پاک‌سازی ۲۴ ساعته D1** روی `messages` (به درخواست کاربر حفظ می‌شود).
-- **مدیا groups تلگرام:** هر عکس → پیام جدا.
+- **بدون تست خودکار**.
+- `_ensureConnectedAndSynced()` در `build()`.
+- `/api/test-push` بدون احراز هویت.
+- `_showNotificationDebugMenu` در build production.
+- **پاک‌سازی ۲۴ ساعته D1** روی `messages` (به درخواست کاربر).
 - `ChatRoom.js` هنوز `INSERT` مستقیم دارد.
 
-## ۱۰. حالت کاری فعلی
+## ۹. حالت کاری فعلی
 
 - **Last verified build:** ✅ staging + دستگاه واقعی (SM A528B)
-- **Last verified tests:** همهٔ سناریوهای Stage 1-13
+- **Last verified tests:** همهٔ سناریوهای Stage 1-16
 - **Known blocking bug:** ندارد.
 
-## ۱۱. مرحلهٔ بعد (پیشنهاد)
-
-به ترتیب اولویت:
+## ۱۰. مرحلهٔ بعد (پیشنهاد)
 
 1. **(P1) تست خودکار** برای `LocalChatDao`, `SyncEngine`, `SocketEventDispatcher`, `LinkifiedText`.
 2. **(P1) آپدیت نسخه به `1.0.10+10`** و انتشار روی GitHub Releases.
-3. **(P2) migration روی D1 production** (وقتی staging تأیید شد).
+3. **(P1) migration روی D1 production** (migration 0003 و 0004).
 4. **(P2) حذف `/api/test-push`** و گیت کردن debug menu.
-5. **(P3) بررسی media groups تلگرام**.
-6. **(P3) شکستن `_ensureConnectedAndSynced`** در `main.dart`.
+5. **(P3) شکستن `_ensureConnectedAndSynced`** در `main.dart`.
 
-## ۱۲. نقاط حساس (نظارت مداوم)
+## ۱۱. نقاط حساس (نظارت مداوم)
 
-- **پس از release بعدی:** ۱-۲ هفته به این نشانه‌ها توجه کنید:
-  - دکمهٔ دانلود روی عکس‌های آپلودشده ظاهر شود
-  - پیام بعد از Force Stop دو بار دانلود بخواهد
-  - پیام دوگانه در یک حباب
-  - logout غیرمنتظره (session server-side invalid)
-  - forward header نمایش داده نشود (migration سرور اعمال نشده)
-  - لینک‌ها به مرورگر باز شوند (AndroidManifest قدیمی)
+پس از release بعدی، ۱-۲ هفته به این نشانه‌ها توجه کن:
 
-## ۱۳. اطلاعات تماس سرور
+- دکمهٔ دانلود روی عکس‌های آپلودشده
+- پیام بعد از Force Stop دو بار دانلود
+- پیام دوگانه در یک حباب
+- logout غیرمنتظره
+- forward header نمایش داده نشود
+- لینک‌ها به مرورگر باز شوند
+- آلبوم‌ها دیرتر از ۳ ثانیه برسند
+
+## ۱۲. اطلاعات سرور
 
 - **D1 staging DB ID:** `1ecf41a0-8348-439c-b062-10b3cce3e99f`
 - **D1 production DB ID:** `6b53e474-18eb-4be4-87cf-6fda96db3cf1`
 - **Staging URL:** `https://telegram-chat-staging.yasinshahabadi007.workers.dev`
-- **Migration 0003 وضعیت:** ✅ اعمال‌شده روی staging؛ ⏳ در انتظار برای production
+- **Migrations وضعیت:**
+  - 0001: ✅ staging + production
+  - 0002: ✅ staging + production
+  - 0003 (forward): ✅ staging؛ ⏳ production
+  - 0004 (media groups): ✅ staging؛ ⏳ production
