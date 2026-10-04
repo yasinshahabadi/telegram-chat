@@ -87,6 +87,12 @@ void main() async {
       },
     );
 
+    // ✅ اگر session نامعتبر شده، کاربر را logout کن.
+    if (result.unauthorized) {
+      await _handleUnauthorized(authRepository, socketClient);
+      return;
+    }
+
     if (result.newMessagesCount > 0 && chatRepository.isAppInBackground) {
       await NotificationService.instance.showMissedMessagesNotification(
         count: result.newMessagesCount,
@@ -108,6 +114,18 @@ void main() async {
   ));
 
   _checkForUpdate();
+}
+
+/// ✅ خروج کاربر هنگام نامعتبر شدن session روی سرور.
+Future<void> _handleUnauthorized(
+  AuthRepository authRepository,
+  ChatWebSocketClient socketClient,
+) async {
+  debugPrint('[Main] Session invalid — logging out');
+  try {
+    socketClient.disconnect();
+  } catch (_) {}
+  await authRepository.logout();
 }
 
 Future<void> _checkForUpdate() async {
@@ -157,12 +175,7 @@ class _TelegramChatAppState extends State<TelegramChatApp>
   StreamSubscription<RemoteMessage>? _notificationClickSubscription;
   bool _hasInitialized = false;
 
-  /// Debounce برای trigger sync از FCM در foreground.
-  /// اگر ۵ پیام در ۲ ثانیه برسد، فقط یک sync اجرا می‌شود.
   Timer? _foregroundSyncDebounce;
-
-  /// تور اطمینان: هر ۹۰ ثانیه یک sync سبک در foreground.
-  /// پوشش‌دهی برای حالتی که WebSocket گیر کرده ولی خودش نمی‌فهمد.
   Timer? _catchUpTimer;
 
   @override
@@ -173,9 +186,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     _notificationClickSubscription =
         notificationClickStream.listen(_onNotificationClicked);
 
-    // ✅ wire کردن triggerهای sync:
-    //  1) reconnect WebSocket → ChatRepository callback
-    //  2) FCM در foreground → FirebaseMessagingService callback
     widget.chatRepository.onSocketReconnected = _debouncedSync;
     FirebaseMessagingService.instance.onForegroundMessage = _debouncedSync;
   }
@@ -189,7 +199,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     super.dispose();
   }
 
-  /// ✅ اجرای debounce‌شده‌ی sync. هر ۲ ثانیه یک‌بار حداکثر.
   void _debouncedSync() {
     _foregroundSyncDebounce?.cancel();
     _foregroundSyncDebounce = Timer(const Duration(seconds: 2), () {
@@ -197,13 +206,15 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     });
   }
 
-  /// ✅ هستهٔ sync که در چند جای مختلف استفاده می‌شود.
+  /// ✅ هستهٔ sync که در چند جا استفاده می‌شود.
+  ///
+  /// حالا اگر سرور 401 بدهد، کاربر را logout می‌کند.
   Future<void> _performSync() async {
     final token = widget.authStorage.getSessionToken();
     if (token == null || token.isEmpty) return;
 
     final currentUser = widget.authRepository.currentUser;
-    await widget.syncEngine.syncMissedEvents(
+    final result = await widget.syncEngine.syncMissedEvents(
       token,
       currentUserId: currentUser?.id,
       onSyncCompleted: () {
@@ -211,13 +222,15 @@ class _TelegramChatAppState extends State<TelegramChatApp>
         widget.chatRepository.processPendingQueue();
       },
     );
+
+    if (result.unauthorized) {
+      await _handleUnauthorized(widget.authRepository, widget.socketClient);
+    }
   }
 
-  /// ✅ شروع تور اطمینان (هر ۹۰ ثانیه) — فقط وقتی کاربر احراز هویت‌شده است.
   void _startCatchUpTimer() {
     _catchUpTimer?.cancel();
     _catchUpTimer = Timer.periodic(const Duration(seconds: 90), (_) async {
-      // فقط در foreground و وقتی کاربر احراز هویت‌شده است.
       if (widget.chatRepository.isAppInBackground) return;
       if (!widget.authRepository.isAuthenticated) return;
       await _performSync();
@@ -239,7 +252,7 @@ class _TelegramChatAppState extends State<TelegramChatApp>
     }
 
     final currentUser = widget.authRepository.currentUser;
-    await widget.syncEngine.syncMissedEvents(
+    final result = await widget.syncEngine.syncMissedEvents(
       token,
       currentUserId: currentUser?.id,
       onSyncCompleted: () {
@@ -248,6 +261,10 @@ class _TelegramChatAppState extends State<TelegramChatApp>
         _markAllUnreadAsRead();
       },
     );
+
+    if (result.unauthorized) {
+      await _handleUnauthorized(widget.authRepository, widget.socketClient);
+    }
   }
 
   Future<void> _markAllUnreadAsRead() async {
@@ -276,7 +293,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
 
     if (state == AppLifecycleState.resumed) {
       widget.notifService.cancelAllNotifications();
-      // ✅ بازگشت به foreground: احتمال از دست رفتن پیام در زمان background.
       _debouncedSync();
     }
   }
@@ -303,7 +319,12 @@ class _TelegramChatAppState extends State<TelegramChatApp>
             widget.chatRepository.processPendingQueue();
           },
         )
-        .then((result) {
+        .then((result) async {
+      if (result.unauthorized) {
+        await _handleUnauthorized(widget.authRepository, widget.socketClient);
+        return;
+      }
+
       if (result.newMessagesCount > 0 &&
           widget.chatRepository.isAppInBackground) {
         NotificationService.instance.showMissedMessagesNotification(
@@ -323,7 +344,6 @@ class _TelegramChatAppState extends State<TelegramChatApp>
       );
     });
 
-    // ✅ شروع تور اطمینان دوره‌ای.
     _startCatchUpTimer();
   }
 

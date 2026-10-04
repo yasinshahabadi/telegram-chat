@@ -1,23 +1,24 @@
 ﻿import 'dart:async';
-import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:telegram_chat_mobile/core/network/network_monitor.dart';
-import 'package:telegram_chat_mobile/features/notifications/data/firebase_messaging_service.dart';
+
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
-import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_repository.dart';
-import 'package:telegram_chat_mobile/features/chat/data/chat_websocket_client.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/delete_confirm_dialog.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/edit_message_dialog.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/logout_confirm_dialog.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/notification_debug_sheet.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/retry_upload_dialog.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/state/chat_upload_coordinator.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/state/unread_flow_controller.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_app_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_input_bar.dart';
-import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_bubble.dart';
-import 'package:telegram_chat_mobile/features/chat/presentation/widgets/unread_divider.dart';
-import 'package:telegram_chat_mobile/features/media/data/media_download_manager.dart';
-import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_message_list.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/pinned_message_banner.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/screens/storage_settings_screen.dart';
-import 'package:telegram_chat_mobile/features/notifications/data/notification_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final AuthRepository authRepository;
@@ -35,67 +36,48 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-/// State machine برای Divider
-enum _DividerPhase { idle, visible, fading, done }
-
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
-  static const String _prefsKeyLastReadAt = 'chat_last_read_at';
-
   final TextEditingController _inputController = TextEditingController();
   final VoiceRecordService _voiceRecordService = VoiceRecordService();
-  final MediaRemoteService _mediaRemoteService = MediaRemoteService();
 
-  ScrollController? _scrollController;
+  late final ChatUploadCoordinator _uploadCoordinator;
+  late final UnreadFlowController _unreadFlow;
 
   ChatMessageModel? _replyingMessage;
-  bool _isMarkingRead = false;
-  bool _isAppVisible = true;
 
-  final Map<String, GlobalKey> _messageKeys = {};
   String? _highlightedMessageId;
   Timer? _highlightClearTimer;
-
-  Timer? _markReadDebounce;
-  final Set<String> _pendingMarkReadIds = {};
-
-  String? _lastKnownNewestId;
-
-  bool _chatReady = false;
-
-  // ── Initial load window (dynamic) ─────
-  bool _inInitialLoad = true;
-  DateTime? _initialLoadStart;
-  Timer? _initialLoadSettleTimer;
-
-  static const Duration _settleDelay = Duration(milliseconds: 400);
-  static const Duration _settleExtension = Duration(milliseconds: 1200);
-  static const Duration _hardCap = Duration(seconds: 4);
-  static const Duration _dividerRevealDelay = Duration(milliseconds: 150);
-  static const Duration _dividerFadeDelay = Duration(seconds: 5);
-  static const Duration _dividerFadeAnim = Duration(milliseconds: 900);
-
-  // ── Unread divider state ─────
-  int? _lastReadAt;
-  String? _snapshotFirstUnreadId;
-  int _snapshotUnreadCount = 0;
-  final GlobalKey _firstUnreadKey = GlobalKey();
-  _DividerPhase _dividerPhase = _DividerPhase.idle;
-  Timer? _dividerFadeTimer;
-  bool _autoScrollInProgress = false;
-
-  static const double _nearBottomThreshold = 120.0;
-  static const double _messageEstimate = 90.0;
-
-  bool get _isNearBottom {
-    final c = _scrollController;
-    if (c == null || !c.hasClients) return true;
-    return c.offset < _nearBottomThreshold;
-  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    _unreadFlow = UnreadFlowController(
+      getMessages: () => widget.chatRepository.messages,
+      getCurrentUserId: () => widget.authRepository.currentUser?.id,
+      onStateChanged: () {
+        if (mounted) setState(() {});
+      },
+      onScrollToBottomRequest: _scrollToBottom,
+    );
+    _unreadFlow.onMarkReadRequest = (ids) async {
+      await widget.chatRepository.markMessagesAsRead(ids);
+    };
+
+    _uploadCoordinator = ChatUploadCoordinator(
+      authRepository: widget.authRepository,
+      chatRepository: widget.chatRepository,
+      voiceRecordService: _voiceRecordService,
+      getReplyTarget: () => _replyingMessage,
+      onClearReplyTarget: () {
+        if (mounted) setState(() => _replyingMessage = null);
+      },
+      onError: _showError,
+      onScrollToBottom: _scrollToBottom,
+      isMounted: () => mounted,
+    );
+
     _initializeChat();
     widget.chatRepository.addListener(_onChatUpdate);
   }
@@ -104,383 +86,38 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final currentUser = widget.authRepository.currentUser;
     if (currentUser == null) return;
 
-    await _loadLastReadAt();
-
     await widget.chatRepository.initialize(currentUser);
-    final messages = widget.chatRepository.messages;
-    if (messages.isNotEmpty) {
-      _lastKnownNewestId = messages.first.id;
-    }
-
-    _beginInitialLoad();
+    await _unreadFlow.initialize();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.chatRepository.removeListener(_onChatUpdate);
-    _scrollController?.removeListener(_onScrollChanged);
-    _markReadDebounce?.cancel();
     _highlightClearTimer?.cancel();
-    _dividerFadeTimer?.cancel();
-    _initialLoadSettleTimer?.cancel();
     _inputController.dispose();
-    _scrollController?.dispose();
+    _unreadFlow.dispose();
     _voiceRecordService.dispose();
     super.dispose();
   }
 
   // ═════════════════════════════════════════════
-  //  SharedPreferences
-  // ═════════════════════════════════════════════
-
-  Future<void> _loadLastReadAt() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _lastReadAt = prefs.getInt(_prefsKeyLastReadAt);
-    } catch (_) {}
-  }
-
-  Future<void> _saveLastReadAt(int timestamp) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_prefsKeyLastReadAt, timestamp);
-      _lastReadAt = timestamp;
-    } catch (_) {}
-  }
-
-  // ═════════════════════════════════════════════
-  //  Initial load window (dynamic)
-  // ═════════════════════════════════════════════
-
-  void _beginInitialLoad() {
-    _inInitialLoad = true;
-    _initialLoadStart = DateTime.now();
-    _resetSettleTimer(_settleDelay);
-  }
-
-  void _resetSettleTimer(Duration delay) {
-    _initialLoadSettleTimer?.cancel();
-    _initialLoadSettleTimer = Timer(delay, _onInitialLoadSettled);
-  }
-
-  void _extendSettleTimer() {
-    final start = _initialLoadStart;
-    if (start == null) return;
-    if (DateTime.now().difference(start) >= _hardCap) return;
-    _resetSettleTimer(_settleExtension);
-  }
-
-  void _onInitialLoadSettled() {
-    _initialLoadSettleTimer?.cancel();
-    _initialLoadSettleTimer = null;
-    _inInitialLoad = false;
-    _initialLoadStart = null;
-
-    _takeUnreadSnapshot();
-
-    if (_snapshotFirstUnreadId != null) {
-      Future.delayed(_dividerRevealDelay, () {
-        if (!mounted) return;
-        if (_chatReady) {
-          _revealDividerOnResume();
-        } else {
-          _revealDividerOnFirstOpen();
-        }
-      });
-    } else {
-      if (!_chatReady) {
-        _revealChatWithoutDivider();
-      } else {
-        _maybeScheduleReadForVisibleMessages();
-      }
-    }
-  }
-
-  // ═════════════════════════════════════════════
-  //  Snapshot
-  // ═════════════════════════════════════════════
-
-  void _takeUnreadSnapshot() {
-    _snapshotFirstUnreadId = null;
-    _snapshotUnreadCount = 0;
-
-    final user = widget.authRepository.currentUser;
-    if (user == null) return;
-
-    final messages = widget.chatRepository.messages;
-    if (messages.isEmpty) return;
-
-    final lastReadAt = _lastReadAt;
-
-    for (int i = messages.length - 1; i >= 0; i--) {
-      final m = messages[i];
-      if (m.senderId == user.id) continue;
-      if (lastReadAt == null || m.createdAt > lastReadAt) {
-        _snapshotFirstUnreadId = m.id;
-        break;
-      }
-    }
-
-    if (_snapshotFirstUnreadId != null) {
-      for (final m in messages) {
-        if (m.senderId == user.id) continue;
-        if (lastReadAt == null || m.createdAt > lastReadAt) {
-          _snapshotUnreadCount++;
-        }
-      }
-    }
-  }
-
-  // ═════════════════════════════════════════════
-  //  Reveal helpers
-  // ═════════════════════════════════════════════
-
-  void _revealChatWithoutDivider() {
-    _scrollController?.removeListener(_onScrollChanged);
-    _scrollController?.dispose();
-    final c = ScrollController();
-    c.addListener(_onScrollChanged);
-    _scrollController = c;
-
-    setState(() {
-      _chatReady = true;
-      _dividerPhase = _DividerPhase.idle;
-    });
-
-    _maybeScheduleReadForVisibleMessages();
-  }
-
-  void _revealDividerOnFirstOpen() {
-    final messages = widget.chatRepository.messages;
-    double initialOffset = 0.0;
-
-    if (_snapshotFirstUnreadId != null) {
-      final idx = messages.indexWhere((m) => m.id == _snapshotFirstUnreadId);
-      if (idx > 0) {
-        initialOffset = idx * _messageEstimate;
-      }
-    }
-
-    _scrollController?.removeListener(_onScrollChanged);
-    _scrollController?.dispose();
-    final c = ScrollController(initialScrollOffset: initialOffset);
-    c.addListener(_onScrollChanged);
-    _scrollController = c;
-
-    setState(() {
-      _chatReady = true;
-      _dividerPhase = _DividerPhase.visible;
-    });
-
-    _startDividerFadeTimer();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _refineScrollToSnapshot();
-      _markAllUnreadAsReadAndUpdateTimestamp();
-    });
-  }
-
-  void _revealDividerOnResume() {
-    setState(() => _dividerPhase = _DividerPhase.visible);
-    _startDividerFadeTimer();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (!mounted) return;
-      await _refineScrollToSnapshot();
-      if (mounted) _markAllUnreadAsReadAndUpdateTimestamp();
-    });
-  }
-
-  Future<void> _refineScrollToSnapshot() async {
-    if (_snapshotFirstUnreadId == null) return;
-    final ctx = _firstUnreadKey.currentContext;
-    if (ctx == null || !ctx.mounted) return;
-
-    _autoScrollInProgress = true;
-    try {
-      await Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-        alignment: 0.75,
-      );
-    } catch (_) {
-    } finally {
-      _autoScrollInProgress = false;
-    }
-  }
-
-  void _startDividerFadeTimer() {
-    _dividerFadeTimer?.cancel();
-    _dividerFadeTimer = Timer(_dividerFadeDelay, () {
-      if (!mounted) return;
-      setState(() => _dividerPhase = _DividerPhase.fading);
-
-      Timer(_dividerFadeAnim, () {
-        if (!mounted) return;
-        setState(() {
-          _dividerPhase = _DividerPhase.done;
-          _snapshotFirstUnreadId = null;
-          _snapshotUnreadCount = 0;
-        });
-      });
-    });
-  }
-
-  Future<void> _markAllUnreadAsReadAndUpdateTimestamp() async {
-    if (!_isAppVisible) return;
-
-    final user = widget.authRepository.currentUser;
-    if (user == null) return;
-
-    final messages = widget.chatRepository.messages;
-    final unreadIds = messages
-        .where((m) => m.senderId != user.id && m.readAt == null)
-        .map((m) => m.id)
-        .toList();
-
-    if (unreadIds.isEmpty) return;
-
-    _isMarkingRead = true;
-    try {
-      await widget.chatRepository.markMessagesAsRead(unreadIds);
-      if (messages.isNotEmpty) {
-        await _saveLastReadAt(messages.first.createdAt);
-      }
-    } finally {
-      _isMarkingRead = false;
-    }
-  }
-
-  // ═════════════════════════════════════════════
-  //  Lifecycle
+  //  Lifecycle & chat updates
   // ═════════════════════════════════════════════
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final isVisible = state == AppLifecycleState.resumed;
-    if (_isAppVisible != isVisible) {
-      _isAppVisible = isVisible;
-      debugPrint('[ChatScreen] App visibility: $_isAppVisible ($state)');
-
-      if (_isAppVisible) {
-        _markReadDebounce?.cancel();
-        _resetDividerState();
-        _beginInitialLoad();
-      } else {
-        _markReadDebounce?.cancel();
-      }
-    }
-  }
-
-  void _resetDividerState() {
-    _dividerPhase = _DividerPhase.idle;
-    _snapshotFirstUnreadId = null;
-    _snapshotUnreadCount = 0;
-    _dividerFadeTimer?.cancel();
-    _dividerFadeTimer = null;
-    _inInitialLoad = true;
-  }
-
-  void _onScrollChanged() {
-    if (!_isAppVisible) return;
-    if (_autoScrollInProgress) return;
-    if (_inInitialLoad) return;
-    if (!_isNearBottom) return;
-    _maybeScheduleReadForVisibleMessages();
-  }
-
-  void _maybeScheduleReadForVisibleMessages() {
-    if (!_isAppVisible) return;
-    if (_autoScrollInProgress) return;
-    if (_inInitialLoad) return;
-    if (!_isNearBottom) return;
-
-    final user = widget.authRepository.currentUser;
-    if (user == null) return;
-
-    final messages = widget.chatRepository.messages;
-    final unreadIds = messages
-        .where((m) => m.senderId != user.id && m.readAt == null)
-        .map((m) => m.id)
-        .toSet();
-
-    if (unreadIds.isEmpty) return;
-
-    _pendingMarkReadIds.addAll(unreadIds);
-
-    _markReadDebounce?.cancel();
-    _markReadDebounce = Timer(const Duration(milliseconds: 800), () {
-      _flushMarkRead();
-    });
+    _unreadFlow.onAppVisibilityChanged(isVisible);
   }
 
   void _onChatUpdate() {
-    if (!_isAppVisible) return;
-
-    final user = widget.authRepository.currentUser;
-    if (user == null) return;
-
-    final messages = widget.chatRepository.messages;
-
-    final newestId = messages.isNotEmpty ? messages.first.id : null;
-    final previousNewestId = _lastKnownNewestId;
-    _lastKnownNewestId = newestId;
-
-    final hasNewMessage = previousNewestId != null &&
-        newestId != null &&
-        newestId != previousNewestId;
-
-    final newestIsFromOther = hasNewMessage &&
-        messages.isNotEmpty &&
-        messages.first.senderId != user.id;
-
-    if (_inInitialLoad) {
-      if (newestIsFromOther) {
-        _extendSettleTimer();
-      }
-      return;
-    }
-
-    if (hasNewMessage &&
-        _isNearBottom &&
-        !_autoScrollInProgress &&
-        _highlightedMessageId == null) {
-      _scrollToBottom();
-    }
-
-    _maybeScheduleReadForVisibleMessages();
+    _unreadFlow.onChatUpdate();
   }
 
-  Future<void> _flushMarkRead() async {
-    if (!_isAppVisible) return;
-    if (_isMarkingRead) return;
-    if (_inInitialLoad) return;
-    if (_pendingMarkReadIds.isEmpty) return;
-
-    final idsToMark = _pendingMarkReadIds.toList();
-    _pendingMarkReadIds.clear();
-
-    _isMarkingRead = true;
-    try {
-      await widget.chatRepository.markMessagesAsRead(idsToMark);
-
-      final messages = widget.chatRepository.messages;
-      int newestMarked = 0;
-      for (final m in messages) {
-        if (idsToMark.contains(m.id) && m.createdAt > newestMarked) {
-          newestMarked = m.createdAt;
-        }
-      }
-      if (newestMarked > 0) {
-        await _saveLastReadAt(newestMarked);
-      }
-    } finally {
-      _isMarkingRead = false;
-    }
-  }
+  // ═════════════════════════════════════════════
+  //  Reply tap
+  // ═════════════════════════════════════════════
 
   Future<void> _handleTapReplyMessage(String parentMessageId) async {
     final messages = widget.chatRepository.messages;
@@ -491,207 +128,60 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     setState(() => _highlightedMessageId = parentMessageId);
+    _unreadFlow.setHighlightPresent(true);
 
     _highlightClearTimer?.cancel();
     _highlightClearTimer = Timer(const Duration(milliseconds: 1600), () {
       if (mounted && _highlightedMessageId == parentMessageId) {
         setState(() => _highlightedMessageId = null);
+        _unreadFlow.setHighlightPresent(false);
       }
     });
 
-    final key = _messageKeys[parentMessageId];
-    final ctx = key?.currentContext;
-
-    if (ctx != null && ctx.mounted) {
-      await Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOut,
-        alignment: 0.5,
-      );
-    } else {
-      final c = _scrollController;
-      if (c != null && c.hasClients) {
-        final approx = (index * _messageEstimate).clamp(
-          0.0,
-          c.position.maxScrollExtent,
-        );
-        await c.animateTo(
-          approx,
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeInOut,
-        );
-      }
-    }
+    // تلاش اول: با key پیام (اگر mount است)
+    // تلاش دوم: با محاسبهٔ تخمینی offset
+    await _unreadFlow.ensureVisibleOnKey(
+      GlobalKey(), // اگر در آینده به keys دسترسی داشتیم جایگزین می‌شود
+      alignment: 0.5,
+    );
+    await _unreadFlow.animateToApproximateIndex(index);
   }
 
+  // ═════════════════════════════════════════════
+  //  Delete / Retry / Edit
+  // ═════════════════════════════════════════════
+
   Future<void> _confirmDeleteMessage(ChatMessageModel message) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('حذف پیام'),
-          content: const Text(
-            'آیا از حذف این پیام اطمینان دارید؟ این عمل روی گروه تلگرام نیز اعمال می‌شود.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('انصراف'),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red.shade700,
-              ),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('حذف'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (confirm == true) {
+    final confirmed = await DeleteMessageDialog.show(context);
+    if (confirmed) {
       await widget.chatRepository.deleteMessage(message.id);
     }
   }
 
-  // ═════════════════════════════════════════════
-  //  Retry flow
-  // ═════════════════════════════════════════════
-
-  /// ✅ نمایش دیالوگ ویرایش متن + تلاش دوباره برای پیام‌های ناموفق.
   Future<void> _showRetryDialog(ChatMessageModel message) async {
-    final textController = TextEditingController(text: message.text);
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('تلاش دوباره برای ارسال'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'پیام قبلی ارسال نشد. می‌توانید متن همراه فایل را ویرایش کنید و دوباره بفرستید.',
-                style: TextStyle(fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: textController,
-                autofocus: true,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'متن همراه (اختیاری)',
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('انصراف'),
-            ),
-            ElevatedButton.icon(
-              onPressed: () => Navigator.pop(ctx, true),
-              icon: const Icon(Icons.refresh_rounded, size: 18),
-              label: const Text('ارسال دوباره'),
-            ),
-          ],
-        ),
-      ),
+    final newText = await RetryUploadDialog.show(
+      context,
+      initialText: message.text,
     );
 
-    if (confirmed != true) return;
+    if (newText == null) return;
 
-    await _retryUpload(message, textController.text.trim());
+    await _uploadCoordinator.retryUpload(message, newText);
   }
 
-  /// ✅ تلاش مجدد برای ارسال با فایل‌های ذخیره‌شده در storage داخلی.
-  Future<void> _retryUpload(ChatMessageModel message, String newText) async {
-    final user = widget.authRepository.currentUser;
-    final token = widget.authRepository.sessionToken;
-    if (user == null || token == null) {
-      _showError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
-      return;
-    }
+  Future<void> _showEditDialog(ChatMessageModel message) async {
+    final newText = await EditMessageDialog.show(
+      context,
+      initialText: message.text,
+    );
 
-    if (!NetworkMonitor.instance.isOnline) {
-      _showError('اتصال اینترنت برقرار نیست.');
-      return;
-    }
-
-    final files = <File>[];
-    final originalNames = <String>[];
-    final mediaTypes = <String>[];
-
-    for (final att in message.attachments) {
-      final path = att.localPath;
-      if (path == null) continue;
-      final f = File(path);
-      if (!await f.exists()) continue;
-      files.add(f);
-      originalNames.add(att.fileName);
-      mediaTypes.add(att.mediaType);
-    }
-
-    if (files.isEmpty) {
-      _showError('فایل اصلی یافت نشد. لطفاً دوباره ارسال کنید.');
-      return;
-    }
-
-    widget.chatRepository.prepareForRetry(message.id, newText: newText);
-
-    try {
-      final result = await _mediaRemoteService.uploadFiles(
-        files: files,
-        mediaTypes: mediaTypes,
-        originalNames: originalNames,
-        sessionToken: token,
-        caption: newText,
-        clientMessageId: message.clientMessageId,
-        replyTo: message.replyToMessageId != null
-            ? {
-                'id': message.replyToMessageId,
-                'name': message.replyToName,
-                'text': message.replyToText,
-                'tgMsgId': null,
-              }
-            : null,
-        onProgress: (p) {
-          widget.chatRepository.updateUploadProgress(message.id, p);
-        },
-      );
-
-      if (!mounted) return;
-
-      if (!result.isSuccess || result.messageId == null) {
-        await widget.chatRepository.failUpload(
-            message.id, result.error ?? 'خطا');
-        _showError(result.error ?? 'خطا در آپلود فایل');
-        return;
-      }
-
-      widget.chatRepository.finalizeMultiUpload(
-        tempId: message.id,
-        clientMessageId: message.clientMessageId,
-        realMessageId: result.messageId!,
-        attachments: result.attachments,
-      );
-
-      _scrollToBottom();
-    } catch (e) {
-      if (!mounted) return;
-      await widget.chatRepository.failUpload(message.id, e.toString());
-      _showError('خطا در ارسال فایل: $e');
+    if (newText != null) {
+      widget.chatRepository.editMessage(message.id, newText);
     }
   }
 
   // ═════════════════════════════════════════════
-  //  Send / upload
+  //  Send / voice / pick
   // ═════════════════════════════════════════════
 
   void _handleSendMessage(String text) {
@@ -709,14 +199,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _scrollToBottom() {
-    final c = _scrollController;
-    if (c != null && c.hasClients) {
-      c.animateTo(
-        0.0,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-    }
+    _unreadFlow.scrollToBottom();
   }
 
   void _showError(String msg) {
@@ -729,99 +212,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _showNotificationDebugMenu() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  '🛠️ پنل دیباگ و تست اعلان‌ها',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 12),
-                ListTile(
-                  leading: const Icon(Icons.notifications_active,
-                      color: Colors.green),
-                  title: const Text('تست ۱: اعلان مستقیم محلی'),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    await NotificationService.instance.showChatNotification(
-                      id: 101,
-                      senderName: 'تست ۱: محلی',
-                      messageText: 'موتور اعلان داخلی کار می‌کند! ✅',
-                    );
-                  },
-                ),
-                ListTile(
-                  leading:
-                      const Icon(Icons.vpn_key_rounded, color: Colors.amber),
-                  title: const Text('تست ۳: دریافت توکن FCM'),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    final token =
-                        await FirebaseMessagingService.instance.getToken();
-                    if (mounted && token != null) {
-                      showDialog(
-                        context: context,
-                        builder: (_) => AlertDialog(
-                          title: const Text('توکن FCM دستگاه'),
-                          content: SelectableText(token),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: const Text('بستن'),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
-                  },
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   Future<void> _handleStartRecordVoice() async {
-    final started = await _voiceRecordService.startRecording();
-    if (!started && mounted) {
-      _showError('دسترسی به میکروفون داده نشد.');
-    }
+    await _uploadCoordinator.startVoiceRecord();
   }
 
   Future<void> _handleStopAndSendVoice() async {
-    final path = await _voiceRecordService.stopRecording();
-    if (path == null) return;
-
-    final user = widget.authRepository.currentUser;
-    final token = widget.authRepository.sessionToken;
-    if (user == null || token == null) {
-      _showError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
-      return;
-    }
-
-    final file = File(path);
-    if (!await file.exists()) return;
-
-    await _uploadFilesWithOptimisticUI(
-      files: [file],
-      mediaTypes: ['voice'],
-      originalNames: [file.uri.pathSegments.last],
-      token: token,
-      user: user,
-    );
+    await _uploadCoordinator.stopAndSendVoice();
   }
 
   Future<void> _handleAttachmentPick() async {
@@ -842,7 +238,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 subtitle: const Text('می‌توانید چند فایل انتخاب کنید'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _pickAndSendFiles(FileType.media);
+                  _uploadCoordinator.pickAndSendFiles(FileType.media);
                 },
               ),
               ListTile(
@@ -852,7 +248,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 subtitle: const Text('می‌توانید چند فایل انتخاب کنید'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _pickAndSendFiles(FileType.any);
+                  _uploadCoordinator.pickAndSendFiles(FileType.any);
                 },
               ),
             ],
@@ -862,482 +258,59 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _pickAndSendFiles(FileType type) async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: type,
-        allowMultiple: true,
-      );
-      if (result == null || result.files.isEmpty) return;
-
-      final validFiles = <File>[];
-      final mediaTypes = <String>[];
-      final originalNames = <String>[];
-
-      for (final pf in result.files) {
-        if (pf.path == null) continue;
-        final file = File(pf.path!);
-        if (!await file.exists()) continue;
-
-        final name = pf.name;
-        final ext = name.split('.').last.toLowerCase();
-        String mediaType = 'document';
-        if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif']
-            .contains(ext)) {
-          mediaType = 'photo';
-        } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']
-            .contains(ext)) {
-          mediaType = 'video';
-        } else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'].contains(ext)) {
-          mediaType = 'audio';
-        }
-
-        validFiles.add(file);
-        mediaTypes.add(mediaType);
-        originalNames.add(name);
-      }
-
-      if (validFiles.isEmpty) return;
-
-      final user = widget.authRepository.currentUser;
-      final token = widget.authRepository.sessionToken;
-      if (user == null || token == null) {
-        _showError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
-        return;
-      }
-
-      await _uploadFilesWithOptimisticUI(
-        files: validFiles,
-        mediaTypes: mediaTypes,
-        originalNames: originalNames,
-        token: token,
-        user: user,
-      );
-    } catch (e) {
-      _showError('خطا در انتخاب فایل: $e');
-    }
-  }
-
-  Future<void> _uploadFilesWithOptimisticUI({
-    required List<File> files,
-    required List<String> mediaTypes,
-    required List<String> originalNames,
-    required String token,
-    required AuthUser user,
-  }) async {
-    final replyTarget = _replyingMessage;
-
-    final optimistic = await widget.chatRepository.addOptimisticMultiUpload(
-      files: files,
-      mediaTypes: mediaTypes,
-      currentUser: user,
-      replyTo: replyTarget,
-    );
-    final tempId = optimistic.id;
-    final clientMessageId = optimistic.clientMessageId;
-
-    if (!mounted) return;
-
-    setState(() => _replyingMessage = null);
-    _scrollToBottom();
-
-    // ✅ بررسی سریع اتصال قبل از شروع
-    if (!NetworkMonitor.instance.isOnline) {
-      await widget.chatRepository.failUpload(tempId, 'offline');
-      _showError('اتصال اینترنت برقرار نیست.');
-      return;
-    }
-
-    try {
-      final result = await _mediaRemoteService.uploadFiles(
-        files: files,
-        mediaTypes: mediaTypes,
-        originalNames: originalNames,
-        sessionToken: token,
-        clientMessageId: clientMessageId,
-        replyTo: replyTarget != null
-            ? {
-                'id': replyTarget.id,
-                'name': replyTarget.senderName,
-                'text': replyTarget.text,
-                'tgMsgId': replyTarget.telegramMessageId,
-              }
-            : null,
-        onProgress: (p) {
-          widget.chatRepository.updateUploadProgress(tempId, p);
-        },
-      );
-
-      if (!mounted) return;
-
-      if (!result.isSuccess || result.messageId == null) {
-        await widget.chatRepository.failUpload(tempId, result.error ?? 'خطا');
-        _showError(result.error ?? 'خطا در آپلود فایل');
-        return;
-      }
-
-      widget.chatRepository.finalizeMultiUpload(
-        tempId: tempId,
-        clientMessageId: clientMessageId,
-        realMessageId: result.messageId!,
-        attachments: result.attachments,
-      );
-
-      for (int i = 0;
-          i < result.attachments.length && i < files.length;
-          i++) {
-        try {
-          final cached = await MediaDownloadManager.instance.cacheUploadedFile(
-            attachmentId: result.attachments[i].id,
-            sourcePath: files[i].path,
-            originalFileName: originalNames[i],
-          );
-          if (cached != null) {
-            widget.chatRepository.setLocalPathForAttachment(
-              result.messageId!,
-              result.attachments[i].id,
-              cached.path,
-            );
-          }
-        } catch (e) {
-          debugPrint('Cache uploaded file failed: $e');
-        }
-      }
-
-      _scrollToBottom();
-    } catch (e) {
-      if (!mounted) return;
-      await widget.chatRepository.failUpload(tempId, e.toString());
-      _showError('خطا در ارسال فایل: $e');
-    }
-  }
-
-  void _showEditDialog(ChatMessageModel message) {
-    final editController = TextEditingController(text: message.text);
-
-    showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('ویرایش پیام'),
-          content: TextField(
-            controller: editController,
-            autofocus: true,
-            maxLines: 4,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: 'متن جدید پیام...',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('انصراف'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final newText = editController.text.trim();
-                if (newText.isNotEmpty && newText != message.text) {
-                  widget.chatRepository.editMessage(message.id, newText);
-                }
-                Navigator.pop(ctx);
-              },
-              child: const Text('ذخیره'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatusSubtitle(ThemeData theme) {
-    final onlineCount = widget.chatRepository.onlineCount;
-
-    if (widget.chatRepository.typingUserName != null) {
-      return Text(
-        '${widget.chatRepository.typingUserName} در حال نوشتن...',
-        style: TextStyle(
-          fontSize: 12,
-          color: theme.colorScheme.primary,
-          fontStyle: FontStyle.italic,
-        ),
-      );
-    }
-
-    if (onlineCount > 0) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: const BoxDecoration(
-              color: Color(0xFF4CAF50),
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '$onlineCount نفر آنلاین',
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.green.shade600,
-            ),
-          ),
-        ],
-      );
-    }
-
-    final state = widget.chatRepository.connectionState;
-    switch (state) {
-      case SocketConnectionState.connected:
-        return Text(
-          'متصل به گفتگوی زنده',
-          style: TextStyle(fontSize: 12, color: Colors.green.shade600),
-        );
-      case SocketConnectionState.connecting:
-      case SocketConnectionState.reconnecting:
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 10,
-              height: 10,
-              child: CircularProgressIndicator(
-                strokeWidth: 1.5,
-                color: theme.colorScheme.primary,
-              ),
-            ),
-            const SizedBox(width: 6),
-            const Text(
-              'در حال اتصال مجدد...',
-              style: TextStyle(fontSize: 12, color: Colors.amber),
-            ),
-          ],
-        );
-      case SocketConnectionState.disconnected:
-        return const Text(
-          'آفلاین (استفاده از حافظه دستگاه)',
-          style: TextStyle(fontSize: 12, color: Colors.grey),
-        );
-    }
-  }
-
   // ═════════════════════════════════════════════
-  //  Build helpers
+  //  Build
   // ═════════════════════════════════════════════
-
-  Widget _buildMessageItem({
-    required ChatMessageModel message,
-    required AuthUser? currentUser,
-  }) {
-    final isMe = currentUser != null &&
-        (message.senderId == currentUser.id ||
-            message.senderName == currentUser.fullName);
-    final canDelete = isMe || (currentUser?.isAdmin == true);
-
-    final isFirstUnread = message.id == _snapshotFirstUnreadId;
-    final showDivider = isFirstUnread &&
-        _dividerPhase != _DividerPhase.done &&
-        _dividerPhase != _DividerPhase.idle;
-
-    final bubble = MessageBubble(
-      message: message,
-      isMe: isMe,
-      isSenderOnline: widget.chatRepository.isUserOnline(message.senderId),
-      isHighlighted: _highlightedMessageId == message.id,
-      canDelete: canDelete,
-      onReply: () => setState(() => _replyingMessage = message),
-      onEdit: isMe ? () => _showEditDialog(message) : null,
-      onDelete: canDelete ? () => _confirmDeleteMessage(message) : null,
-      onPin: () => widget.chatRepository.pinMessage(message.id),
-      onRetry: message.isFailed ? () => _showRetryDialog(message) : null,
-      onTapReplyMessage: message.replyToMessageId != null
-          ? () => _handleTapReplyMessage(message.replyToMessageId!)
-          : null,
-      onToggleReaction: (emoji) =>
-          widget.chatRepository.toggleReaction(message.id, emoji),
-    );
-
-    if (showDivider) {
-      return KeyedSubtree(
-        key: _firstUnreadKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            UnreadDivider(
-              visible: _dividerPhase != _DividerPhase.fading,
-              count: _snapshotUnreadCount,
-            ),
-            bubble,
-          ],
-        ),
-      );
-    }
-
-    return bubble;
-  }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final currentUser = widget.authRepository.currentUser;
 
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
-        appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'سوپرگروه تلگرام',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        appBar: ChatAppBar.build(
+          chatRepository: widget.chatRepository,
+          onOpenStorage: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const StorageSettingsScreen(),
               ),
-              AnimatedBuilder(
-                animation: widget.chatRepository,
-                builder: (_, __) => _buildStatusSubtitle(theme),
-              ),
-            ],
-          ),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.storage_rounded),
-              tooltip: 'مدیریت حافظه',
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const StorageSettingsScreen(),
-                  ),
-                );
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.build_circle_rounded, color: Colors.amber),
-              tooltip: 'پنل تست اعلان‌ها',
-              onPressed: _showNotificationDebugMenu,
-            ),
-            IconButton(
-              icon: const Icon(Icons.logout_rounded),
-              tooltip: 'خروج از حساب',
-              onPressed: () async {
-                final confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('خروج از حساب'),
-                    content: const Text('آیا از خروج اطمینان دارید؟'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('خیر'),
-                      ),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: const Text('خروج'),
-                      ),
-                    ],
-                  ),
-                );
-                if (confirm == true) widget.onLogout();
-              },
-            ),
-          ],
+            );
+          },
+          onOpenDebug: () {
+            NotificationDebugSheet.show(context);
+          },
+          onLogout: () async {
+            final confirm = await LogoutConfirmDialog.show(context);
+            if (confirm) widget.onLogout();
+          },
         ),
         body: Column(
           children: [
-            AnimatedBuilder(
-              animation: widget.chatRepository,
-              builder: (_, __) {
-                final pinned = widget.chatRepository.pinnedMessage;
-                if (pinned == null) return const SizedBox.shrink();
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  color: theme.colorScheme.primaryContainer.withAlpha(128),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.push_pin_rounded,
-                        size: 18,
-                        color: theme.colorScheme.primary,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'پیام پین‌شده: ${pinned.senderName}',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: theme.colorScheme.primary,
-                              ),
-                            ),
-                            Text(
-                              pinned.text,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded, size: 16),
-                        onPressed: () => widget.chatRepository.unpinMessage(),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
+            PinnedMessageBanner(chatRepository: widget.chatRepository),
 
             Expanded(
-              child: AnimatedBuilder(
-                animation: widget.chatRepository,
-                builder: (_, __) {
-                  final messages = widget.chatRepository.messages;
-
-                  if (!_chatReady || _scrollController == null) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  if (messages.isEmpty && widget.chatRepository.isLoading) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  if (messages.isEmpty) {
-                    return Center(
-                      child: Text(
-                        'هنوز پیامی وجود ندارد.\nنخستین پیام را ارسال کنید!',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color:
-                              theme.colorScheme.onSurfaceVariant.withAlpha(160),
-                        ),
-                      ),
-                    );
-                  }
-
-                  return ListView.builder(
-                    controller: _scrollController,
-                    reverse: true,
-                    itemCount: messages.length,
-                    itemBuilder: (context, index) {
-                      final message = messages[index];
-                      return RepaintBoundary(
-                        key: ValueKey(message.id),
-                        child: _buildMessageItem(
-                          message: message,
-                          currentUser: currentUser,
-                        ),
-                      );
-                    },
-                  );
-                },
+              child: ChatMessageList(
+                chatRepository: widget.chatRepository,
+                currentUser: currentUser,
+                scrollController: _unreadFlow.scrollController,
+                chatReady: _unreadFlow.chatReady,
+                dividerPhase: _unreadFlow.dividerPhase,
+                snapshotFirstUnreadId: _unreadFlow.snapshotFirstUnreadId,
+                snapshotUnreadCount: _unreadFlow.snapshotUnreadCount,
+                firstUnreadKey: _unreadFlow.firstUnreadKey,
+                highlightedMessageId: _highlightedMessageId,
+                onReply: (message) =>
+                    setState(() => _replyingMessage = message),
+                onEdit: _showEditDialog,
+                onDelete: _confirmDeleteMessage,
+                onRetry: _showRetryDialog,
+                onPin: (message) =>
+                    widget.chatRepository.pinMessage(message.id),
+                onTapReplyMessage: _handleTapReplyMessage,
+                onToggleReaction: (messageId, emoji) =>
+                    widget.chatRepository.toggleReaction(messageId, emoji),
               ),
             ),
 

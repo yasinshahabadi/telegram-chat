@@ -1,6 +1,7 @@
 ﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/core/database/local_chat_dao.dart';
@@ -12,12 +13,16 @@ class SyncResult {
   final int newMessagesCount;
   final String? lastMessageSender;
   final String? lastMessageText;
+  /// ✅ اگر session روی سرور نامعتبر شده باشد، این true می‌شود.
+  /// در این حالت `ChatScreen`/`main.dart` باید کاربر را logout کند.
+  final bool unauthorized;
 
   const SyncResult({
     required this.success,
     this.newMessagesCount = 0,
     this.lastMessageSender,
     this.lastMessageText,
+    this.unauthorized = false,
   });
 
   SyncResult.failure() : this(success: false);
@@ -46,7 +51,11 @@ class SyncEngine {
     String? currentUserId,
     Function()? onSyncCompleted,
   }) async {
+    debugPrint('[Sync] ─── syncMissedEvents START ───');
+    debugPrint('[Sync] isSyncing=$_isSyncing tokenEmpty=${sessionToken.isEmpty} tokenLen=${sessionToken.length} currentUserId=$currentUserId');
+
     if (_isSyncing || sessionToken.isEmpty) {
+      debugPrint('[Sync] ABORT: isSyncing=$_isSyncing, tokenEmpty=${sessionToken.isEmpty}');
       return const SyncResult(success: false);
     }
     _isSyncing = true;
@@ -57,11 +66,22 @@ class SyncEngine {
 
     try {
       bool hasMore = true;
+      int iteration = 0;
 
       while (hasMore) {
-        final currentCursor = await _localDao.getSyncCursor();
-        final url = Uri.parse('$_baseUrl/api/sync?cursor=$currentCursor&limit=50');
+        iteration++;
+        if (iteration > 20) {
+          debugPrint('[Sync] ABORT: too many iterations ($iteration)');
+          break;
+        }
 
+        final currentCursor = await _localDao.getSyncCursor();
+        debugPrint('[Sync] iteration=$iteration cursor=$currentCursor');
+
+        final url = Uri.parse('$_baseUrl/api/sync?cursor=$currentCursor&limit=50');
+        debugPrint('[Sync] GET $url');
+
+        // ✅ هدر با توکن کامل. فقط برای لاگ، نسخهٔ کوتاه نمایش می‌دهیم.
         final response = await _client.get(
           url,
           headers: {
@@ -70,17 +90,39 @@ class SyncEngine {
           },
         ).timeout(_timeout);
 
-        if (response.statusCode != 200) break;
+        debugPrint('[Sync] statusCode=${response.statusCode}');
+
+        // ✅ تشخیص صریح 401 → کاربر باید logout شود.
+        if (response.statusCode == 401) {
+          debugPrint('[Sync] 401 UNAUTHORIZED — session invalid on server');
+          debugPrint('[Sync] BODY: ${response.body}');
+          return const SyncResult(success: false, unauthorized: true);
+        }
+
+        if (response.statusCode != 200) {
+          debugPrint('[Sync] non-200 status: ${response.statusCode}');
+          debugPrint('[Sync] BODY: ${response.body}');
+          return const SyncResult(success: false);
+        }
 
         final Map<String, dynamic> data = jsonDecode(response.body);
-        if (data['ok'] != true) break;
+        debugPrint('[Sync] ok=${data['ok']} eventsCount=${(data['events'] as List?)?.length ?? -1} latestCursor=${data['latestCursor']} systemMaxCursor=${data['systemMaxCursor']} hasMore=${data['hasMore']}');
+
+        if (data['ok'] != true) {
+          debugPrint('[Sync] ABORT: ok != true');
+          return const SyncResult(success: false);
+        }
 
         final events = data['events'] as List<dynamic>? ?? [];
-        if (events.isEmpty) break;
+        if (events.isEmpty) {
+          debugPrint('[Sync] no events, ending loop');
+          break;
+        }
 
         for (final rawEvent in events) {
           final event = rawEvent as Map<String, dynamic>;
           final eventType = event['eventType'] as String?;
+          debugPrint('[Sync] processing eventType=$eventType cursor=${event['cursor']}');
 
           if (eventType == 'message_created') {
             final payload = event['payload'] as Map<String, dynamic>?;
@@ -98,27 +140,35 @@ class SyncEngine {
         }
 
         final latestCursor = data['latestCursor'] as int? ?? currentCursor;
+        debugPrint('[Sync] setSyncCursor($latestCursor)');
         await _localDao.setSyncCursor(latestCursor);
 
         hasMore = data['hasMore'] == true;
+        debugPrint('[Sync] loop continue? hasMore=$hasMore');
       }
 
+      debugPrint('[Sync] COMPLETED: newMessagesCount=$newMessagesCount, calling onSyncCompleted');
       onSyncCompleted?.call();
 
+      debugPrint('[Sync] ─── syncMissedEvents END (success) ───');
       return SyncResult(
         success: true,
         newMessagesCount: newMessagesCount,
         lastMessageSender: lastSender,
         lastMessageText: lastText,
       );
-    } on SocketException {
+    } on SocketException catch (e) {
+      debugPrint('[Sync] SocketException: $e');
       return const SyncResult(success: false);
-    } on TimeoutException {
+    } on TimeoutException catch (e) {
+      debugPrint('[Sync] TimeoutException: $e');
       return const SyncResult(success: false);
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[Sync] UNCAUGHT EXCEPTION: $e\nSTACK: $st');
       return const SyncResult(success: false);
     } finally {
       _isSyncing = false;
+      debugPrint('[Sync] ─── syncMissedEvents EXIT ───');
     }
   }
 
@@ -129,15 +179,25 @@ class SyncEngine {
     final eventType =
         event['eventType'] as String? ?? event['event_type'] as String?;
     final payload = event['payload'] as Map<String, dynamic>?;
-    if (eventType == null || payload == null) return;
+    if (eventType == null || payload == null) {
+      debugPrint('[Sync] SKIP: eventType=$eventType payload=$payload');
+      return;
+    }
 
     switch (eventType) {
       case 'message_created':
         final incoming = ChatMessageModel.fromJson(payload);
+        debugPrint('[Sync] saving message id=${incoming.id} text="${incoming.text}"');
+
+        if (incoming.id.isEmpty) {
+          debugPrint('[Sync] ✗ SKIP: incoming.id is empty! payload keys=${payload.keys.toList()}');
+          return;
+        }
 
         ChatMessageModel toSave = incoming;
         final existingRow = await _localDao.getMessageById(incoming.id);
         if (existingRow != null) {
+          debugPrint('[Sync] message exists in DB, merging');
           final existing = ChatMessageModel.fromDbMap(existingRow);
 
           if (toSave.replyToName == null && existing.replyToName != null) {
@@ -184,6 +244,7 @@ class SyncEngine {
         }
 
         await _localDao.saveMessage(toSave.toDbMap());
+        debugPrint('[Sync] ✓ saved message id=${toSave.id}');
         for (final a in toSave.attachments) {
           try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
         }
@@ -193,6 +254,7 @@ class SyncEngine {
         final messageId =
             payload['messageId'] as String? ?? payload['id'] as String?;
         final text = payload['text'] as String? ?? '';
+        debugPrint('[Sync] message_edited id=$messageId');
         if (messageId != null) {
           await _localDao.updateMessageText(messageId, text);
         }
@@ -201,6 +263,7 @@ class SyncEngine {
       case 'message_deleted':
         final messageId =
             payload['messageId'] as String? ?? payload['id'] as String?;
+        debugPrint('[Sync] message_deleted id=$messageId');
         if (messageId != null) {
           await _localDao.deleteMessage(messageId);
         }
@@ -219,8 +282,6 @@ class SyncEngine {
         }
         break;
 
-      // ✅ رسید خوانده‌شدن از راه دور: برای گیرنده‌ای که در لحظهٔ mark_read آفلاین بوده.
-      //    فقط پیام‌های خودِ ما را به‌روزرسانی می‌کند (sender_id = currentUserId).
       case 'messages_read_batch':
         if (currentUserId == null) break;
         final rawIds = payload['messageIds'];
@@ -229,7 +290,6 @@ class SyncEngine {
             DateTime.now().millisecondsSinceEpoch;
 
         if (readerUserId == null || readerUserId == currentUserId) {
-          // خواننده خودمان هستیم → این رسید برای ما معنی ندارد.
           break;
         }
 
