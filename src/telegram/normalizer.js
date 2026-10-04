@@ -37,6 +37,9 @@ export async function emitSyncEvent(db, eventType, entityId, payload) {
   }
 }
 
+/**
+ * استخراج forward metadata — Bot API 7+ و legacy.
+ */
 export function extractForwardInfo(msg) {
   if (msg.forward_origin) {
     const origin = msg.forward_origin;
@@ -76,6 +79,7 @@ export function extractForwardInfo(msg) {
     }
   }
 
+  // ─── Legacy fallback ───
   if (msg.forward_from_chat) {
     const chat = msg.forward_from_chat;
     return {
@@ -113,7 +117,7 @@ export function extractForwardInfo(msg) {
 }
 
 /**
- * استخراج اطلاعات یک فایل از پیام (اولین مدیای موجود).
+ * استخراج فایل از یک پیام (اولین مدیای موجود).
  */
 function extractMedia(msg) {
   if (msg.photo && msg.photo.length > 0) {
@@ -137,6 +141,21 @@ function extractMedia(msg) {
              fileName: msg.document.file_name || 'file', duration: 0 };
   }
   return null;
+}
+
+/**
+ * ✅ Stage 17: استخراج entities از پیام و تبدیل به JSON string برای ذخیره در DB.
+ *
+ * Bot API: `msg.entities` برای متن، `msg.caption_entities` برای کپشن مدیا.
+ */
+function extractEntitiesJson(msg) {
+  const entities = msg.entities || msg.caption_entities || null;
+  if (!entities || !Array.isArray(entities) || entities.length === 0) return null;
+  try {
+    return JSON.stringify(entities);
+  } catch (_) {
+    return null;
+  }
 }
 
 async function resolveReplyInfo(db, msg) {
@@ -179,6 +198,10 @@ async function insertAttachment(db, messageId, media, timestamp) {
   return attachmentId;
 }
 
+/**
+ * پیام تک‌رسانه یا متنی incoming.
+ * شامل: forward metadata + text entities (Stage 17).
+ */
 export async function normalizeIncomingTelegramMessage(db, msg) {
   const msgId = crypto.randomUUID();
   const senderId = await ensureTelegramUser(db, msg.from);
@@ -189,21 +212,25 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
   const forward = extractForwardInfo(msg);
   const replyInfo = await resolveReplyInfo(db, msg);
 
+  // ✅ Stage 17: entities
+  const textEntitiesJson = extractEntitiesJson(msg);
+
   await db.prepare(`
     INSERT INTO messages (
       id, sender_id, text, is_from_telegram, created_at, updated_at,
       telegram_message_id, reply_to_message_id,
       forward_from_type, forward_from_chat_id, forward_from_chat_username,
       forward_from_chat_title, forward_from_message_id,
-      telegram_media_group_id
+      telegram_media_group_id, text_entities
     )
-    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     msgId, senderId, text, timestamp, timestamp,
     msg.message_id, replyInfo.replyToId,
     forward?.type ?? null, forward?.chatId ?? null, forward?.chatUsername ?? null,
     forward?.chatTitle ?? null, forward?.messageId ?? null,
     msg.media_group_id || null,
+    textEntitiesJson,
   ).run();
 
   const media = extractMedia(msg);
@@ -243,6 +270,8 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
     forwardFromChatUsername: forward?.chatUsername ?? null,
     forwardFromChatTitle: forward?.chatTitle ?? null,
     forwardFromMessageId: forward?.messageId ?? null,
+    // ✅ Stage 17
+    textEntities: textEntitiesJson ? JSON.parse(textEntitiesJson) : null,
   };
 
   const cursor = await emitSyncEvent(db, "message_created", msgId, normalizedMessage);
@@ -251,21 +280,14 @@ export async function normalizeIncomingTelegramMessage(db, msg) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  ✅ Stage 14: Media Group Buffering
+//  Media Group Buffering (Stage 14)
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * پردازش یک item از media group.
+ * پردازش یک item از media group (album).
  *
- * اگر اولین item آلبوم باشد:
- *   - یک message جدید + اولین attachment می‌سازد.
- *   - یک ردیف در pending_media_groups درج می‌کند.
- *   - { isFirst: true, messageId } برمی‌گرداند تا caller finalize را schedule کند.
- *
- * اگر item بعدی باشد:
- *   - attachment را به همان message اضافه می‌کند.
- *   - updated_at را تازه می‌کند.
- *   - { isFirst: false, messageId } برمی‌گرداند.
+ * - اولین item: ساخت message + اولین attachment + ردیف pending_media_groups
+ * - item های بعدی: افزودن attachment به همان message
  */
 export async function normalizeMediaGroupItem(db, msg) {
   const groupId = msg.media_group_id;
@@ -275,13 +297,12 @@ export async function normalizeMediaGroupItem(db, msg) {
     return { isFirst: false, messageId: null, groupId: null };
   }
 
-  // ۱) آیا این گروه در انتظار است؟
+  // ── item بعدی ──
   const existing = await db.prepare(
     "SELECT message_id, sender_id, sender_name FROM pending_media_groups WHERE group_id = ?"
   ).bind(groupId).first();
 
   if (existing) {
-    // item بعدی — فقط attachment را اضافه کن
     const media = extractMedia(msg);
     if (media) {
       await insertAttachment(db, existing.message_id, media, now);
@@ -292,7 +313,7 @@ export async function normalizeMediaGroupItem(db, msg) {
     return { isFirst: false, messageId: existing.message_id, groupId };
   }
 
-  // ۲) اولین item — یک message جدید بساز
+  // ── اولین item ──
   const msgId = crypto.randomUUID();
   const senderId = await ensureTelegramUser(db, msg.from);
   const senderName = `${msg.from.first_name || ""} ${msg.from.last_name || ""}`.trim() || "Telegram User";
@@ -300,21 +321,25 @@ export async function normalizeMediaGroupItem(db, msg) {
   const forward = extractForwardInfo(msg);
   const replyInfo = await resolveReplyInfo(db, msg);
 
+  // ✅ Stage 17: entities (از caption_entities)
+  const textEntitiesJson = extractEntitiesJson(msg);
+
   await db.prepare(`
     INSERT INTO messages (
       id, sender_id, text, is_from_telegram, created_at, updated_at,
       telegram_message_id, reply_to_message_id,
       forward_from_type, forward_from_chat_id, forward_from_chat_username,
       forward_from_chat_title, forward_from_message_id,
-      telegram_media_group_id
+      telegram_media_group_id, text_entities
     )
-    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     msgId, senderId, text, now, now,
     msg.message_id, replyInfo.replyToId,
     forward?.type ?? null, forward?.chatId ?? null, forward?.chatUsername ?? null,
     forward?.chatTitle ?? null, forward?.messageId ?? null,
     groupId,
+    textEntitiesJson,
   ).run();
 
   const media = extractMedia(msg);
@@ -333,11 +358,11 @@ export async function normalizeMediaGroupItem(db, msg) {
 }
 
 /**
- * نهایی‌سازی یک media group:
- *   - خواندن message و همهٔ attachments
- *   - ساخت payload کامل (attachments آرایه)
+ * نهایی‌سازی media group:
+ *   - خواندن message + همه attachments + entities
+ *   - ساخت payload کامل
  *   - emitSyncEvent
- *   - حذف ردیف pending_media_groups
+ *   - حذف ردیف pending
  */
 export async function finalizeMediaGroup(db, groupId) {
   const entry = await db.prepare(
@@ -360,7 +385,6 @@ export async function finalizeMediaGroup(db, groupId) {
     "SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at ASC"
   ).bind(entry.message_id).all();
 
-  // reply info
   let replyToName = null, replyToText = null, replyToMediaType = null;
   let replyToAttachmentId = null, replyToTelegramFileId = null;
   let replyToFileName = null, replyToDuration = null;
@@ -388,6 +412,16 @@ export async function finalizeMediaGroup(db, groupId) {
     }
   }
 
+  // ✅ Stage 17: parse entities از DB
+  let textEntities = null;
+  if (msgRow.text_entities) {
+    try {
+      textEntities = JSON.parse(msgRow.text_entities);
+    } catch (_) {
+      textEntities = null;
+    }
+  }
+
   const normalizedMessage = {
     id: entry.message_id,
     senderId: entry.sender_id,
@@ -404,7 +438,6 @@ export async function finalizeMediaGroup(db, groupId) {
     replyToTelegramFileId,
     replyToFileName,
     replyToDuration,
-    // ✅ آرایهٔ کامل attachments
     attachments: (attachments || []).map(a => ({
       id: a.id,
       messageId: a.message_id,
@@ -421,6 +454,8 @@ export async function finalizeMediaGroup(db, groupId) {
     forwardFromChatUsername: msgRow.forward_from_chat_username,
     forwardFromChatTitle: msgRow.forward_from_chat_title,
     forwardFromMessageId: msgRow.forward_from_message_id,
+    // ✅ Stage 17
+    textEntities,
   };
 
   const cursor = await emitSyncEvent(db, "message_created", entry.message_id, normalizedMessage);
@@ -442,17 +477,30 @@ export async function normalizeTelegramEdit(db, editMsg) {
 
   if (!msgRow) return null;
 
-  await db.prepare(`
-    UPDATE messages
-    SET text = ?, is_edited = 1, updated_at = ?
-    WHERE id = ?
-  `).bind(newText, now, msgRow.id).run();
+  // ✅ Stage 17: entities روی edit هم می‌تواند بیاید
+  const entitiesJson = extractEntitiesJson(editMsg);
+
+  if (entitiesJson) {
+    await db.prepare(`
+      UPDATE messages
+      SET text = ?, is_edited = 1, updated_at = ?, text_entities = ?
+      WHERE id = ?
+    `).bind(newText, now, entitiesJson, msgRow.id).run();
+  } else {
+    await db.prepare(`
+      UPDATE messages
+      SET text = ?, is_edited = 1, updated_at = ?
+      WHERE id = ?
+    `).bind(newText, now, msgRow.id).run();
+  }
 
   const payload = {
     messageId: msgRow.id,
     telegramMessageId: editMsg.message_id,
     text: newText,
     updatedAt: now,
+    // ✅ Stage 17: entities در payload هم
+    textEntities: entitiesJson ? JSON.parse(entitiesJson) : null,
   };
 
   const cursor = await emitSyncEvent(db, "message_edited", msgRow.id, payload);

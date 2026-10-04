@@ -37,16 +37,6 @@ class LocalChatDao {
     return false;
   }
 
-  /// ✅ ذخیره پیام با گارد در برابر cascade-delete ناخواسته.
-  ///
-  /// سه وضعیت ممکن است:
-  ///   ۱) ردیفی با همین id هست → UPDATE (بدون cascade).
-  ///   ۲) ردیفی با همین client_message_id ولی id متفاوت هست → rename.
-  ///   ۳) هیچ‌کدام → INSERT ساده.
-  ///
-  /// ⚠️ در حالت rename: ردیف‌های attachments و reactions قدیمی حذف می‌شوند
-  /// (نه rename). دلیل: caller ردیف‌های جدید را insert می‌کند و اگر rename
-  /// کنیم، duplicate می‌شود.
   Future<void> saveMessage(Map<String, dynamic> messageData) async {
     final db = await _db;
     final messageId = messageData['id'] as String?;
@@ -65,6 +55,8 @@ class LocalChatDao {
           messageData['senderName'] ??
           'کاربر',
       'text': messageData['text'] ?? '',
+      'text_entities': messageData['text_entities'] ??
+          messageData['textEntities'],
       'is_from_telegram': (messageData['is_from_telegram'] == 1 ||
               messageData['isFromTelegram'] == true)
           ? 1
@@ -88,7 +80,6 @@ class LocalChatDao {
           messageData['replyToFileName'],
       'reply_to_duration': messageData['reply_to_duration'] ??
           messageData['replyToDuration'],
-      // ✅ Stage 11: forward fields
       'forward_from_type': messageData['forward_from_type'] ??
           messageData['forwardFromType'],
       'forward_from_chat_id': messageData['forward_from_chat_id'] ??
@@ -123,7 +114,6 @@ class LocalChatDao {
         await txn.execute('PRAGMA defer_foreign_keys = ON');
       } catch (_) {}
 
-      // ۱) اگر ردیفی با همین id هست → UPDATE
       final byId = await txn.query(
         'messages',
         columns: ['id'],
@@ -142,7 +132,6 @@ class LocalChatDao {
         return;
       }
 
-      // ۲) اگر ردیفی با همین client_message_id هست ولی id متفاوت → rename
       if (cmId != null) {
         final byCm = await txn.query(
           'messages',
@@ -170,7 +159,6 @@ class LocalChatDao {
         }
       }
 
-      // ۳) درج ردیف جدید
       await txn.insert('messages', values);
     });
   }

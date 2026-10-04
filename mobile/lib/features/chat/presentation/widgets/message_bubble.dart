@@ -1,8 +1,8 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/formatted_message_text.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/forward_header.dart';
-import 'package:telegram_chat_mobile/features/chat/presentation/widgets/linkified_text.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reaction_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reply_thumbnail.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/swipe_to_reply.dart';
@@ -57,14 +57,9 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // چیدمان پیام‌ها (مطابق تلگرام RTL):
-    //   - پیام خودی (isMe): سمت راست فیزیکی، بدون آواتار.
-    //   - پیام دیگران (!isMe): سمت چپ فیزیکی، آواتار در چپ‌ترین جای گروه.
-    //
-    // نکتهٔ RTL:
-    //   اپ در `Directionality(textDirection: RTL)` قرار دارد. در RTL:
-    //     - `MainAxisAlignment.end` = چپ فیزیکی
-    //     - فرزند اول در سمت راست گروه، فرزند آخر در سمت چپ گروه.
+    // چیدمان (RTL):
+    //   - isMe: راست فیزیکی، بدون آواتار.
+    //   - !isMe: چپ فیزیکی، آواتار در چپ‌ترین جای گروه.
     final content = !isMe
         ? Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -129,9 +124,7 @@ class MessageBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // ✅ Stage 12: Forward header (بالای همه‌چیز).
-                  // وقتی پیام forward شده، نام فرستنده نمایش داده نمی‌شود
-                  // (چون header خودش هویت مبدأ را نشان می‌دهد — مطابق تلگرام).
+                  // ✅ Forward header (Stage 12)
                   if (message.isForwarded) ...[
                     ForwardHeader(
                       message: message,
@@ -172,10 +165,11 @@ class MessageBubble extends StatelessWidget {
                     if (message.text.isNotEmpty) const SizedBox(height: 6),
                   ],
 
-
+                  // ✅ Stage 17: متن با فرمت‌دهی entities
                   if (message.text.isNotEmpty) ...[
-                    LinkifiedText(
+                    FormattedMessageText(
                       text: message.text,
+                      entities: message.textEntities,
                       style: TextStyle(
                         fontSize: 15,
                         height: 1.35,

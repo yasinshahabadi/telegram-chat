@@ -7,16 +7,13 @@ import 'package:sqflite/sqflite.dart';
 /// Schema version history:
 ///   v1 → initial
 ///   v2 → added messages.read_at
-///   v3 → added reply preview media fields (reply_to_media_type,
-///        reply_to_attachment_id, reply_to_telegram_file_id,
-///        reply_to_file_name, reply_to_duration)
-///   v4 → added forward metadata (forward_from_type, forward_from_chat_id,
-///        forward_from_chat_username, forward_from_chat_title,
-///        forward_from_message_id)
+///   v3 → added reply preview media fields
+///   v4 → added forward metadata
+///   v5 → added text_entities (JSON of Telegram entities)
 class AppDatabase {
   static final AppDatabase instance = AppDatabase._internal();
   static Database? _database;
-  static const int _schemaVersion = 4;
+  static const int _schemaVersion = 5;
 
   AppDatabase._internal();
 
@@ -46,44 +43,25 @@ class AppDatabase {
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN read_at INTEGER');
-      } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN read_at INTEGER'); } catch (_) {}
     }
     if (oldVersion < 3) {
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_media_type TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_attachment_id TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_telegram_file_id TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_file_name TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN reply_to_duration INTEGER');
-      } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN reply_to_media_type TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN reply_to_attachment_id TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN reply_to_telegram_file_id TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN reply_to_file_name TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN reply_to_duration INTEGER'); } catch (_) {}
     }
     if (oldVersion < 4) {
-      // ✅ Stage 11: forward metadata columns
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN forward_from_type TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN forward_from_chat_id TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN forward_from_chat_username TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN forward_from_chat_title TEXT');
-      } catch (_) {}
-      try {
-        await db.execute('ALTER TABLE messages ADD COLUMN forward_from_message_id INTEGER');
-      } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN forward_from_type TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN forward_from_chat_id TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN forward_from_chat_username TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN forward_from_chat_title TEXT'); } catch (_) {}
+      try { await db.execute('ALTER TABLE messages ADD COLUMN forward_from_message_id INTEGER'); } catch (_) {}
+    }
+    if (oldVersion < 5) {
+      // ✅ Stage 17: entities (JSON)
+      try { await db.execute('ALTER TABLE messages ADD COLUMN text_entities TEXT'); } catch (_) {}
     }
   }
 
@@ -95,6 +73,7 @@ class AppDatabase {
         sender_id TEXT NOT NULL,
         sender_name TEXT NOT NULL,
         text TEXT,
+        text_entities TEXT,
         is_from_telegram INTEGER NOT NULL DEFAULT 0,
         telegram_message_id INTEGER,
         reply_to_message_id TEXT,

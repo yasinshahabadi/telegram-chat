@@ -1,4 +1,6 @@
-﻿import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
+﻿import 'dart:convert';
+import 'package:telegram_chat_mobile/features/chat/domain/models/message_entity.dart';
+import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 
 enum MessageStatus {
   pending,
@@ -25,6 +27,10 @@ class ChatMessageModel {
   final String senderId;
   final String senderName;
   final String text;
+
+  /// ✅ Stage 17: entities (bold, italic, link, blockquote, ...).
+  final List<MessageEntity> textEntities;
+
   final bool isFromTelegram;
   final int? telegramMessageId;
   final String? replyToMessageId;
@@ -61,6 +67,7 @@ class ChatMessageModel {
     required this.senderId,
     required this.senderName,
     required this.text,
+    this.textEntities = const [],
     this.isFromTelegram = false,
     this.telegramMessageId,
     this.replyToMessageId,
@@ -98,8 +105,6 @@ class ChatMessageModel {
       (replyToMediaType ?? '').isNotEmpty &&
       (replyToTelegramFileId ?? '').isNotEmpty;
 
-  // ── Stage 11 helpers ──
-
   bool get isForwarded =>
       (forwardFromType != null && forwardFromType!.isNotEmpty) ||
       (forwardFromChatTitle != null && forwardFromChatTitle!.isNotEmpty);
@@ -110,12 +115,7 @@ class ChatMessageModel {
       ((forwardFromChatUsername != null && forwardFromChatUsername!.isNotEmpty) ||
           (forwardFromChatId != null && forwardFromChatId!.startsWith('-100')));
 
-  /// ✅ لینک عمیق تلگرام با استفاده از `tg://` scheme.
-  ///
-  /// چرا `tg://` و نه `https://t.me/...`؟
-  ///   چون `https://t.me/...` توسط هر دو Chrome و Telegram claim می‌شود و
-  ///   Android ممکن است آن را به مرورگر بفرستد. اما `tg://` فقط توسط
-  ///   Telegram claim می‌شود و همیشه مستقیم در اپ باز می‌شود.
+  /// ✅ لینک عمیق تلگرام با `tg://` scheme.
   String? get forwardDeepLink {
     if (!hasForwardLink) return null;
     final msgId = forwardFromMessageId!;
@@ -127,7 +127,6 @@ class ChatMessageModel {
 
     final chatId = forwardFromChatId;
     if (chatId != null && chatId.startsWith('-100')) {
-      // -1001234567890 → 1234567890
       final stripped = chatId.substring(4);
       return 'tg://privatepost?channel=$stripped&post=$msgId';
     }
@@ -135,6 +134,7 @@ class ChatMessageModel {
     return null;
   }
 
+  // ── Factory from DB row ──
   factory ChatMessageModel.fromDbMap(
     Map<String, dynamic> map, {
     Map<String, int> reactions = const {},
@@ -147,6 +147,8 @@ class ChatMessageModel {
       senderId: map['sender_id'] as String? ?? '',
       senderName: map['sender_name'] as String? ?? 'کاربر',
       text: map['text'] as String? ?? '',
+      // ✅ Stage 17
+      textEntities: MessageEntity.parseList(map['text_entities']),
       isFromTelegram: (map['is_from_telegram'] as int? ?? 0) == 1,
       telegramMessageId: map['telegram_message_id'] as int?,
       replyToMessageId: map['reply_to_message_id'] as String?,
@@ -181,6 +183,17 @@ class ChatMessageModel {
       'sender_id': senderId,
       'sender_name': senderName,
       'text': text,
+      // ✅ Stage 17: entities به صورت JSON string
+      'text_entities': textEntities.isEmpty
+          ? null
+          : jsonEncode(textEntities.map((e) => {
+                'type': e.type,
+                'offset': e.offset,
+                'length': e.length,
+                if (e.url != null) 'url': e.url,
+                if (e.userId != null) 'user': {'id': e.userId},
+                if (e.language != null) 'language': e.language,
+              }).toList()),
       'is_from_telegram': isFromTelegram ? 1 : 0,
       'telegram_message_id': telegramMessageId,
       'reply_to_message_id': replyToMessageId,
@@ -205,6 +218,7 @@ class ChatMessageModel {
     };
   }
 
+  // ── Factory from server payload ──
   factory ChatMessageModel.fromJson(
     Map<String, dynamic> json, {
     String? currentUserId,
@@ -244,12 +258,17 @@ class ChatMessageModel {
     final fwdTitle = (json['forwardFromChatTitle'] ?? json['forward_from_chat_title']) as String?;
     final fwdMsgId = (json['forwardFromMessageId'] ?? json['forward_from_message_id']) as int?;
 
+    // ✅ Stage 17
+    final entitiesRaw = json['textEntities'] ?? json['text_entities'];
+    final entities = MessageEntity.parseList(entitiesRaw);
+
     return ChatMessageModel(
       id: json['id'] as String? ?? '',
       clientMessageId: json['clientMessageId'] as String? ?? json['client_message_id'] as String?,
       senderId: json['senderId'] as String? ?? json['sender_id'] as String? ?? '',
       senderName: json['senderName'] as String? ?? json['sender_name'] as String? ?? 'کاربر',
       text: json['text'] as String? ?? '',
+      textEntities: entities,
       isFromTelegram: json['isFromTelegram'] == true || json['is_from_telegram'] == 1,
       telegramMessageId: json['telegramMessageId'] as int? ?? json['tg_msg_id'] as int?,
       replyToMessageId: json['replyToId'] as String? ?? json['reply_to_id'] as String?,
@@ -283,6 +302,7 @@ class ChatMessageModel {
     String? senderId,
     String? senderName,
     String? text,
+    List<MessageEntity>? textEntities,
     bool? isFromTelegram,
     int? telegramMessageId,
     String? replyToMessageId,
@@ -316,6 +336,7 @@ class ChatMessageModel {
       senderId: senderId ?? this.senderId,
       senderName: senderName ?? this.senderName,
       text: text ?? this.text,
+      textEntities: textEntities ?? this.textEntities,
       isFromTelegram: isFromTelegram ?? this.isFromTelegram,
       telegramMessageId: telegramMessageId ?? this.telegramMessageId,
       replyToMessageId: replyToMessageId ?? this.replyToMessageId,
