@@ -39,20 +39,19 @@ class LocalChatDao {
 
   /// ✅ ذخیره پیام با گارد در برابر cascade-delete ناخواسته.
   ///
-  /// مشکل قبلی (که هنوز هم در rename branch فعال بود):
-  ///   در rename، ابتدا `UPDATE attachments SET message_id = newId` اجرا می‌شد،
-  ///   ولی `newId` هنوز در جدول `messages` وجود نداشت → FOREIGN KEY constraint failed.
+  /// سه وضعیت ممکن است:
+  ///   ۱) ردیفی با همین id هست → UPDATE (بدون cascade).
+  ///   ۲) ردیفی با همین client_message_id ولی id متفاوت هست → rename.
+  ///   ۳) هیچ‌کدام → INSERT ساده.
   ///
-  /// راه‌حل: `PRAGMA defer_foreign_keys = ON` در ابتدای transaction.
-  /// این pragma تمام چک‌های FK را تا لحظهٔ COMMIT به تعویق می‌اندازد، بنابراین:
-  ///   - UPDATE attachments → OK (FK در commit چک می‌شود)
-  ///   - UPDATE reactions  → OK
-  ///   - DELETE messages   → OK (attachments حالا به id جدید اشاره دارند)
-  ///   - INSERT messages   → OK (client_message_id یکتا آزاد شده)
-  ///   - COMMIT → همه FK ها معتبرند
+  /// ⚠️ در حالت rename: ردیف‌های attachments و reactions قدیمی **حذف** می‌شوند
+  /// (نه rename). دلیل: هر caller بعد از rename ردیف‌های جدید را insert می‌کند
+  /// (با local_path حفظ‌شده در mergedAtts). اگر rename کنیم، ردیف‌های قدیمی با
+  /// id قدیمی رها می‌مانند و پس از insert ردیف‌های جدید، شاهد duplicate
+  /// (مثلاً دو تصویر در یک حباب) خواهیم بود.
   ///
-  /// این pragma فقط برای همین transaction فعال است و به‌طور خودکار در
-  /// COMMIT/ROLLBACK ریست می‌شود.
+  /// `PRAGMA defer_foreign_keys = ON` در ابتدای transaction تضمین می‌کند که
+  /// حذف ردیف قدیمی قبل از insert ردیف جدید، FK constraint را نمی‌شکند.
   Future<void> saveMessage(Map<String, dynamic> messageData) async {
     final db = await _db;
     final messageId = messageData['id'] as String?;
@@ -113,7 +112,7 @@ class LocalChatDao {
     };
 
     await db.transaction((txn) async {
-      // ✅ کلید رفع باگ: FK چک‌ها به commit موکول می‌شوند.
+      // ✅ FK چک‌ها به commit موکول می‌شوند.
       try {
         await txn.execute('PRAGMA defer_foreign_keys = ON');
       } catch (_) {}
@@ -150,22 +149,23 @@ class LocalChatDao {
         if (byCm.isNotEmpty) {
           final oldId = byCm.first['id'] as String?;
           if (oldId != null && oldId != messageId) {
-            // انتقال attachments و reactions به id جدید.
-            // با defer_foreign_keys دیگر مهم نیست که id جدید هنوز در
-            // جدول messages نیست.
-            await txn.update(
+            // ✅ حذف attachments قدیمی. caller ردیف‌های جدید را insert می‌کند
+            // (با local_path حفظ‌شده). اگر فقط rename کنیم، duplicate می‌شود.
+            await txn.delete(
               'attachments',
-              {'message_id': messageId},
               where: 'message_id = ?',
               whereArgs: [oldId],
             );
-            await txn.update(
+
+            // ✅ reactions قدیمی هم حذف می‌شوند — replaceReactionsForMessage
+            // در صورت وجود event جدید، از نو insert می‌کند.
+            await txn.delete(
               'reactions',
-              {'message_id': messageId},
               where: 'message_id = ?',
               whereArgs: [oldId],
             );
-            // حذف ردیف قدیمی پیام (attachments دیگر به آن ارجاع ندارند)
+
+            // حذف ردیف قدیمی پیام
             await txn.delete('messages', where: 'id = ?', whereArgs: [oldId]);
           }
         }

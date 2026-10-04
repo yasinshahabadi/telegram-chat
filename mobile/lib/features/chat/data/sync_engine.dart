@@ -95,13 +95,19 @@ class SyncEngine {
         // ✅ تشخیص صریح 401 → کاربر باید logout شود.
         if (response.statusCode == 401) {
           debugPrint('[Sync] 401 UNAUTHORIZED — session invalid on server');
-          debugPrint('[Sync] BODY: ${response.body}');
+          // ✅ محافظ kDebugMode: بدنهٔ پاسخ ممکن است حاوی اطلاعات حساس باشد.
+          // در release این رشته حتی ساخته نمی‌شود.
+          if (kDebugMode) {
+            debugPrint('[Sync] BODY: ${response.body}');
+          }
           return const SyncResult(success: false, unauthorized: true);
         }
 
         if (response.statusCode != 200) {
           debugPrint('[Sync] non-200 status: ${response.statusCode}');
-          debugPrint('[Sync] BODY: ${response.body}');
+          if (kDebugMode) {
+            debugPrint('[Sync] BODY: ${response.body}');
+          }
           return const SyncResult(success: false);
         }
 

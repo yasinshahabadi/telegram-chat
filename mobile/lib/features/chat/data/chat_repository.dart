@@ -10,11 +10,16 @@ import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_mo
 import 'package:telegram_chat_mobile/features/media/data/media_local_storage.dart';
 import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 import 'chat_websocket_client.dart';
+import 'socket_event_dispatcher.dart';
 
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
   final MediaLocalStorage _mediaStorage = MediaLocalStorage();
+
+  /// ✅ هندلر رویدادهای سوکت (Stage 6).
+  /// کلاس جدا، ولی با callback به state داخلی این repo وصل می‌شود.
+  late final SocketEventDispatcher _dispatcher;
 
   List<ChatMessageModel> _messages = [];
   ChatMessageModel? _pinnedMessage;
@@ -36,7 +41,36 @@ class ChatRepository extends ChangeNotifier {
     required LocalChatDao localDao,
     required ChatWebSocketClient socketClient,
   })  : _localDao = localDao,
-        _socketClient = socketClient;
+        _socketClient = socketClient {
+    _dispatcher = SocketEventDispatcher(
+      localDao: _localDao,
+      getMessages: () => _messages,
+      getCurrentUserId: () => _currentUserId,
+      getPinnedMessage: () => _pinnedMessage,
+      notifyChanged: () => notifyListeners(),
+      setPinnedMessage: (pinned) {
+        _pinnedMessage = pinned;
+        // نکته: notify عمداً اینجا نیست — caller خودش notifyChanged را
+        // صدا می‌زند (چون ممکن است چند تغییر state در یک رویداد رخ دهد).
+      },
+      setTypingUserName: (name) {
+        _typingUserName = name;
+        _typingTimer?.cancel();
+        if (name != null) {
+          _typingTimer = Timer(const Duration(seconds: 3), () {
+            _typingUserName = null;
+            notifyListeners();
+          });
+        }
+        notifyListeners();
+      },
+      setOnlineUsers: (users) {
+        _onlineUsers.clear();
+        _onlineUsers.addAll(users);
+        notifyListeners();
+      },
+    );
+  }
 
   List<ChatMessageModel> get messages => _messages;
   ChatMessageModel? get pinnedMessage => _pinnedMessage;
@@ -44,7 +78,8 @@ class ChatRepository extends ChangeNotifier {
   bool get isLoading => _isLoading;
   SocketConnectionState get connectionState => _socketClient.state;
 
-  Map<String, Map<String, dynamic>> get onlineUsers => Map.unmodifiable(_onlineUsers);
+  Map<String, Map<String, dynamic>> get onlineUsers =>
+      Map.unmodifiable(_onlineUsers);
   int get onlineCount => _onlineUsers.length;
   bool isUserOnline(String userId) => _onlineUsers.containsKey(userId);
 
@@ -73,7 +108,8 @@ class ChatRepository extends ChangeNotifier {
 
       _socketSubscription?.cancel();
       _socketSubscription = _socketClient.messageStream.listen((event) {
-        _handleIncomingSocketEvent(event, currentUser).catchError((e, st) {
+        // ✅ تمام پردازش رویداد به SocketEventDispatcher منتقل شده.
+        _dispatcher.handle(event).catchError((e, st) {
           debugPrint('[ChatRepo] Failed to handle socket event: $e\n$st');
         });
       });
@@ -89,7 +125,9 @@ class ChatRepository extends ChangeNotifier {
   Future<void> loadLocalMessages({int limit = 50}) async {
     try {
       // ✅ پاک‌سازی پیام‌های temp orphan قبل از خواندن
-      try { await _localDao.deleteOrphanTempMessages(); } catch (_) {}
+      try {
+        await _localDao.deleteOrphanTempMessages();
+      } catch (_) {}
 
       final rawList = await _localDao.getMessagesList(limit: limit);
       final me = _currentUserId;
@@ -101,7 +139,8 @@ class ChatRepository extends ChangeNotifier {
 
         final List<MediaAttachmentModel> atts = [];
         try {
-          final attachments = await _localDao.getAttachmentsForMessage(messageId);
+          final attachments =
+              await _localDao.getAttachmentsForMessage(messageId);
           for (final a in attachments) {
             atts.add(MediaAttachmentModel.fromDbMap(a));
           }
@@ -163,7 +202,8 @@ class ChatRepository extends ChangeNotifier {
 
   _ReplyPreviewInfo? _extractReplyPreview(ChatMessageModel? replyTo) {
     if (replyTo == null) return null;
-    final att = replyTo.attachments.isNotEmpty ? replyTo.attachments.first : null;
+    final att =
+        replyTo.attachments.isNotEmpty ? replyTo.attachments.first : null;
     return _ReplyPreviewInfo(
       messageId: replyTo.id,
       name: replyTo.senderName,
@@ -227,7 +267,8 @@ class ChatRepository extends ChangeNotifier {
                 'tgMsgId': replyTo?.telegramMessageId,
               },
       });
-      await _localDao.enqueuePendingAction(messageId, 'send_message', payloadJson);
+      await _localDao.enqueuePendingAction(
+          messageId, 'send_message', payloadJson);
     } catch (_) {}
 
     if (_socketClient.isConnected) {
@@ -357,7 +398,8 @@ class ChatRepository extends ChangeNotifier {
     );
     notifyListeners();
 
-    final sent = _socketClient.sendToggleReaction(messageId: messageId, emoji: emoji);
+    final sent =
+        _socketClient.sendToggleReaction(messageId: messageId, emoji: emoji);
     if (!sent) {
       _messages[idx] = msg;
       notifyListeners();
@@ -394,11 +436,6 @@ class ChatRepository extends ChangeNotifier {
   }
 
   /// ✅ کپی فایل‌های انتخاب‌شده به storage داخلی اپ + ثبت رکورد optimistic.
-  ///
-  /// مزایای کپی قبل از آپلود:
-  ///   - فایل اصلی (از file_picker cache) هرگز توسط سیستم پاک نمی‌شود.
-  ///   - پس از قطعی اینترنت، retry با همان فایل انجام می‌شود.
-  ///   - تصویر در حباب همیشه نمایش داده می‌شود.
   Future<ChatMessageModel> addOptimisticMultiUpload({
     required List<File> files,
     required List<String> mediaTypes,
@@ -505,7 +542,7 @@ class ChatRepository extends ChangeNotifier {
 
     final old = _messages[idx];
     final now = DateTime.now().millisecondsSinceEpoch;
-    final mergedAtts = _mergeAttachmentsByIndex(old.attachments, attachments);
+    final mergedAtts = _mergeAttachmentsForUpload(old.attachments, attachments);
 
     _messages[idx] = old.copyWith(
       id: realMessageId,
@@ -518,8 +555,6 @@ class ChatRepository extends ChangeNotifier {
     notifyListeners();
 
     // ✅ ابتدا پیام ذخیره می‌شود، سپس پیوست‌ها.
-    //    این ترتیب تضمین می‌کند وقتی saveMessage ردیف temp را rename می‌کند،
-    //    پیوست‌ها در جای درست قرار می‌گیرند.
     _localDao.saveMessage(_messages[idx].toDbMap()).then((_) {
       for (final a in mergedAtts) {
         _localDao.saveAttachment(a.toDbMap()).catchError((_) {});
@@ -528,9 +563,6 @@ class ChatRepository extends ChangeNotifier {
   }
 
   /// ✅ تغییر وضعیت به «ناموفق» + ذخیره در DB.
-  ///
-  /// قبلاً فقط حافظه تغییر می‌کرد و DB همچنان 'sending' می‌ماند؛
-  /// نتیجه این بود که بعد از هر sync، icon ساعت برمی‌گشت.
   Future<void> failUpload(String tempId, String error) async {
     final idx = _messages.indexWhere((m) => m.id == tempId);
     if (idx != -1) {
@@ -566,7 +598,9 @@ class ChatRepository extends ChangeNotifier {
     String attachmentId,
     String localPath,
   ) {
-    _localDao.updateAttachmentLocalPath(attachmentId, localPath).catchError((_) {});
+    _localDao
+        .updateAttachmentLocalPath(attachmentId, localPath)
+        .catchError((_) {});
 
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx == -1) return;
@@ -584,246 +618,13 @@ class ChatRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _handleIncomingSocketEvent(
-      Map<String, dynamic> event, AuthUser currentUser) async {
-    final type = event['type'] as String?;
-    if (type == null) return;
-
-    if (type == 'pong') return;
-
-    if (type == 'online_users' && event['users'] != null) {
-      final usersList = (event['users'] as List).cast<Map<String, dynamic>>();
-      _onlineUsers.clear();
-      for (final u in usersList) {
-        final id = u['userId'] as String?;
-        if (id != null) _onlineUsers[id] = u;
-      }
-      notifyListeners();
-      return;
-    }
-
-    if (type == 'messages_read' && event['messageIds'] != null) {
-      final ids = (event['messageIds'] as List).cast<String>();
-      final readerId = event['userId'] as String?;
-      final readAt = event['readAt'] as int? ?? DateTime.now().millisecondsSinceEpoch;
-
-      final toMark = <String>[];
-      for (final id in ids) {
-        final idx = _messages.indexWhere((m) => m.id == id);
-        if (idx != -1) {
-          final msg = _messages[idx];
-          if (msg.senderId == currentUser.id &&
-              msg.senderId != readerId &&
-              msg.readAt == null) {
-            toMark.add(id);
-            _messages[idx] = msg.copyWith(readAt: readAt);
-          }
-        }
-      }
-
-      if (toMark.isNotEmpty) {
-        await _localDao.markMessagesAsRead(toMark, readAt);
-        notifyListeners();
-      }
-      return;
-    }
-
-    if (type == 'new_message' && event['message'] != null) {
-      final msgJson = event['message'] as Map<String, dynamic>;
-      final incoming = ChatMessageModel.fromJson(
-        msgJson,
-        currentUserId: currentUser.id,
-      );
-      final clientMsgId = incoming.clientMessageId;
-
-      if (clientMsgId != null) {
-        final idx = _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
-        if (idx != -1) {
-          final existing = _messages[idx];
-          final mergedAtts = _mergeAttachmentsByIndex(
-            existing.attachments, incoming.attachments,
-          );
-          final merged = existing.copyWith(
-            id: incoming.id,
-            telegramMessageId: incoming.telegramMessageId,
-            status: MessageStatus.synced,
-            isUploading: false,
-            uploadProgress: 1.0,
-            attachments: mergedAtts,
-            updatedAt: incoming.updatedAt,
-            replyToName: incoming.replyToName ?? existing.replyToName,
-            replyToText: incoming.replyToText ?? existing.replyToText,
-            replyToMediaType: incoming.replyToMediaType ?? existing.replyToMediaType,
-            replyToAttachmentId: incoming.replyToAttachmentId ?? existing.replyToAttachmentId,
-            replyToTelegramFileId: incoming.replyToTelegramFileId ?? existing.replyToTelegramFileId,
-            replyToFileName: incoming.replyToFileName ?? existing.replyToFileName,
-            replyToDuration: incoming.replyToDuration ?? existing.replyToDuration,
-          );
-          await _localDao.saveMessage(merged.toDbMap());
-          for (final a in merged.attachments) {
-            try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
-          }
-          await _localDao.removePendingAction(existing.id);
-          _messages[idx] = merged;
-          notifyListeners();
-          return;
-        }
-      }
-
-      final idxById = _messages.indexWhere((m) => m.id == incoming.id);
-      if (idxById != -1) {
-        final existing = _messages[idxById];
-        final mergedAtts = _mergeAttachmentsByIndex(
-          existing.attachments, incoming.attachments,
-        );
-        final merged = existing.copyWith(
-          clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
-          attachments: mergedAtts,
-        );
-        await _localDao.saveMessage(merged.toDbMap());
-        for (final a in merged.attachments) {
-          try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
-        }
-        _messages[idxById] = merged;
-        notifyListeners();
-        return;
-      }
-
-      await _localDao.saveMessage(incoming.toDbMap());
-      for (final a in incoming.attachments) {
-        try { await _localDao.saveAttachment(a.toDbMap()); } catch (_) {}
-      }
-      _messages.insert(0, incoming);
-      notifyListeners();
-      return;
-    }
-
-    if (type == 'message_ack' && event['clientMessageId'] != null) {
-      final clientMsgId = event['clientMessageId'] as String;
-      final realMessageId = event['messageId'] as String?;
-      final idx = _messages.indexWhere((m) => m.clientMessageId == clientMsgId);
-      if (idx != -1 && realMessageId != null) {
-        _messages[idx] = _messages[idx].copyWith(
-          id: realMessageId,
-          status: MessageStatus.synced,
-        );
-        await _localDao.updateMessageStatus(realMessageId, 'synced');
-        notifyListeners();
-      }
-      return;
-    }
-
-    if (type == 'message_edited' && event['messageId'] != null) {
-      final mId = event['messageId'] as String;
-      final newText = event['text'] as String? ?? '';
-      await _localDao.updateMessageText(mId, newText);
-
-      final index = _messages.indexWhere((m) => m.id == mId);
-      if (index != -1) {
-        _messages[index] = _messages[index].copyWith(text: newText, isEdited: true);
-        notifyListeners();
-      }
-      return;
-    }
-
-    if (type == 'message_deleted' && event['messageId'] != null) {
-      final mId = event['messageId'] as String;
-      _messages.removeWhere((m) => m.id == mId);
-      if (_pinnedMessage?.id == mId) _pinnedMessage = null;
-      notifyListeners();
-      try { await _localDao.deleteMessage(mId); } catch (_) {}
-      try { await _localDao.removePendingAction('delete_$mId'); } catch (_) {}
-      return;
-    }
-
-    if (type == 'reaction_updated' && event['messageId'] != null) {
-      final mId = event['messageId'] as String;
-      final rawList = event['reactions'];
-      final List<Map<String, dynamic>> aggregated = [];
-      if (rawList is List) {
-        for (final r in rawList) {
-          if (r is Map) aggregated.add(r.cast<String, dynamic>());
-        }
-      }
-
-      final idx = _messages.indexWhere((m) => m.id == mId);
-      if (idx != -1) {
-        final newReactions = <String, int>{};
-        final newMyReactions = <String>{};
-        for (final r in aggregated) {
-          final emoji = r['emoji'] as String?;
-          if (emoji == null || emoji.isEmpty) continue;
-          final count = (r['count'] as num?)?.toInt() ?? 0;
-          newReactions[emoji] = count;
-          final ids = (r['userIds'] as List?)?.whereType<String>().toList() ?? const [];
-          if (ids.contains(currentUser.id)) newMyReactions.add(emoji);
-        }
-        _messages[idx] = _messages[idx].copyWith(
-          reactions: newReactions,
-          myReactions: newMyReactions,
-        );
-        notifyListeners();
-      }
-
-      try {
-        await _localDao.replaceReactionsForMessage(mId, aggregated);
-      } catch (_) {}
-      return;
-    }
-
-    if (type == 'message_pinned' && event['message'] != null) {
-      final msgJson = event['message'] as Map<String, dynamic>;
-      final pinned = ChatMessageModel.fromJson(msgJson, currentUserId: currentUser.id);
-      await _localDao.setPinnedMessage(pinned.id, true);
-
-      _pinnedMessage = pinned;
-      for (int i = 0; i < _messages.length; i++) {
-        if (_messages[i].id != pinned.id && _messages[i].isPinned) {
-          _messages[i] = _messages[i].copyWith(isPinned: false);
-        }
-      }
-      final index = _messages.indexWhere((m) => m.id == pinned.id);
-      if (index != -1) {
-        _messages[index] = _messages[index].copyWith(isPinned: true);
-      }
-      notifyListeners();
-      return;
-    }
-
-    if (type == 'message_unpinned') {
-      _pinnedMessage = null;
-      for (int i = 0; i < _messages.length; i++) {
-        if (_messages[i].isPinned) {
-          _messages[i] = _messages[i].copyWith(isPinned: false);
-        }
-      }
-      notifyListeners();
-      return;
-    }
-
-    if (type == 'typing' && event['fullName'] != null) {
-      _typingUserName = event['fullName'] as String;
-      notifyListeners();
-
-      _typingTimer?.cancel();
-      _typingTimer = Timer(const Duration(seconds: 3), () {
-        _typingUserName = null;
-        notifyListeners();
-      });
-      return;
-    }
-
-    if (type == 'error') {
-      debugPrint('[Socket] Server error: ${event['message']}');
-      return;
-    }
-  }
-
-  /// ✅ ادغام پیوست‌ها با حفظ مقادیر محلی.
+  /// ادغام پیوست‌های آپلود (نسخهٔ Stage 3).
   ///
-  /// اگر incoming خالی باشد (مثلاً پیام فقط متن است)، آرایهٔ موجود حفظ می‌شود
-  /// تا پیوست‌های آپلودشده پاک نشوند.
-  List<MediaAttachmentModel> _mergeAttachmentsByIndex(
+  /// این نسخه با `SocketEventDispatcher._mergeAttachmentsByIndex` متفاوت است:
+  /// نسخهٔ dispatcher بر اساس clientMessageId merge می‌کند، این نسخه بر اساس
+  /// ترتیب index در `addOptimisticMultiUpload`. هر دو ضروری‌اند و در جای
+  /// خود استفاده می‌شوند.
+  List<MediaAttachmentModel> _mergeAttachmentsForUpload(
     List<MediaAttachmentModel> existing,
     List<MediaAttachmentModel> incoming,
   ) {
@@ -859,7 +660,8 @@ class ChatRepository extends ChangeNotifier {
 
     final index = _messages.indexWhere((m) => m.id == messageId);
     if (index != -1) {
-      _messages[index] = _messages[index].copyWith(text: newText, isEdited: true);
+      _messages[index] =
+          _messages[index].copyWith(text: newText, isEdited: true);
       notifyListeners();
     }
   }
