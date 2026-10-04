@@ -138,12 +138,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     });
 
-    // تلاش اول: با key پیام (اگر mount است)
-    // تلاش دوم: با محاسبهٔ تخمینی offset
-    await _unreadFlow.ensureVisibleOnKey(
-      GlobalKey(), // اگر در آینده به keys دسترسی داشتیم جایگزین می‌شود
-      alignment: 0.5,
-    );
+    // ✅ scroll تخمینی به موقعیت پیام والد بر اساس index در لیست.
     await _unreadFlow.animateToApproximateIndex(index);
   }
 

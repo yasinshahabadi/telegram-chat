@@ -7,46 +7,15 @@ import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_mo
 import 'package:telegram_chat_mobile/features/media/domain/models/media_attachment_model.dart';
 
 /// هندلر رویدادهای ورودی سوکت.
-///
-/// ۱۲ نوع رویداد از سرور می‌آید:
-///   pong, online_users, messages_read, new_message, message_ack,
-///   message_edited, message_deleted, reaction_updated, message_pinned,
-///   message_unpinned, typing, error
-///
-/// هر رویداد ممکن است state را در حافظه (`messages`, `pinned`, `typing`, `online`)
-/// و در DB به‌روز کند. چون این کلاس به state داخلی `ChatRepository` دسترسی ندارد،
-/// تمام خواندن‌ها و نوشتن‌ها از طریق callback انجام می‌شود.
-///
-/// چرا callback و نه interface؟
-///   همان الگوی Stage 4 و 5 — یک interface جدید یک abstraction اضافی است که
-///   برای این حجم توجیه ندارد. callback الگوی جاافتاده در همین پروژه است
-///   (`NetworkMonitor.onNetworkRestored`، `ChatRepository.onSocketReconnected`).
 class SocketEventDispatcher {
   final LocalChatDao localDao;
 
-  /// لیست پیام‌های جاری. این لیست مرجع است — تغییرات روی آن (insert، removeWhere،
-  /// `[]=`) مستقیماً در `ChatRepository._messages` منعکس می‌شود.
   final List<ChatMessageModel> Function() getMessages;
-
-  /// شناسهٔ کاربر جاری (برای فیلتر کردن read receipt و reaction).
   final String? Function() getCurrentUserId;
-
-  /// پیام پین‌شدهٔ فعلی (برای چک کردن حذف پیام پین‌شده).
   final ChatMessageModel? Function() getPinnedMessage;
-
-  /// پس از هر تغییر در state، این callback صدا زده می‌شود.
   final void Function() notifyChanged;
-
-  /// تنظیم پیام پین‌شده (یا null برای حذف پین).
-  /// نکته: این callback خودش `notifyChanged` را صدا نمی‌زند.
   final void Function(ChatMessageModel? pinned) setPinnedMessage;
-
-  /// به‌روزرسانی نام کاربر در حال نوشتن. null = پاک کردن.
-  /// پیاده‌سازی این callback در `ChatRepository` باید timer 3 ثانیه‌ای را
-  /// هم مدیریت کند.
   final void Function(String? fullName) setTypingUserName;
-
-  /// جایگزینی کامل لیست کاربران آنلاین.
   final void Function(Map<String, Map<String, dynamic>> users) setOnlineUsers;
 
   SocketEventDispatcher({
@@ -68,8 +37,6 @@ class SocketEventDispatcher {
     final type = event['type'] as String?;
     if (type == null) return;
 
-    // لاگ تشخیصی — رویدادهای پرتکرار (pong, typing, online_users) را ساکت
-    // نگه می‌داریم تا ترمینال پر نشود.
     if (type != 'pong' && type != 'typing' && type != 'online_users') {
       debugPrint('[Socket] ← $type');
     }
@@ -170,7 +137,7 @@ class SocketEventDispatcher {
     debugPrint('[Socket] new_message id=${incoming.id} '
         'clientMsgId=$clientMsgId text="${incoming.text}"');
 
-    // Case 1: match by clientMessageId (پیام optimistic ما که الآن id سرور را گرفت)
+    // Case 1: match by clientMessageId
     if (clientMsgId != null) {
       final idx = messages.indexWhere((m) => m.clientMessageId == clientMsgId);
       if (idx != -1) {
@@ -213,7 +180,7 @@ class SocketEventDispatcher {
       }
     }
 
-    // Case 2: match by id (پیام شناخته‌شده، فقط پیوست‌ها را merge کن)
+    // Case 2: match by id
     final idxById = messages.indexWhere((m) => m.id == incoming.id);
     if (idxById != -1) {
       final existing = messages[idxById];
@@ -236,7 +203,7 @@ class SocketEventDispatcher {
       return;
     }
 
-    // Case 3: پیام کاملاً جدید
+    // Case 3: کاملاً جدید
     await localDao.saveMessage(incoming.toDbMap());
     for (final a in incoming.attachments) {
       try {
@@ -247,6 +214,16 @@ class SocketEventDispatcher {
     notifyChanged();
   }
 
+  /// ✅ ack از سرور برای پیام متنی.
+  ///
+  /// باگ قبلی: تنها `updateMessageStatus(realMessageId, 'synced')` صدا زده
+  /// می‌شد، ولی چون ردیفی با `id=realMessageId` هنوز در DB نبود (ردیف فعلی
+  /// id=clientUuid دارد)، این UPDATE بی‌اثر بود. نتیجه: پیام در DB با
+  /// `id=clientUuid` و `status=sending` رها می‌شد. اگر اپ پیش از رسیدن
+  /// `new_message` بسته می‌شد، پیام با id اشتباه بارگذاری می‌شد.
+  ///
+  /// راه‌حل: `saveMessage` را با id جدید صدا بزن — rename branch ردیف قدیمی
+  /// را حذف و ردیف جدید را insert می‌کند.
   Future<void> _handleMessageAck(Map<String, dynamic> event) async {
     final clientMsgId = event['clientMessageId'] as String;
     final realMessageId = event['messageId'] as String?;
@@ -256,11 +233,19 @@ class SocketEventDispatcher {
     final idx = messages.indexWhere((m) => m.clientMessageId == clientMsgId);
     if (idx == -1) return;
 
-    messages[idx] = messages[idx].copyWith(
+    final old = messages[idx];
+    final updated = old.copyWith(
       id: realMessageId,
       status: MessageStatus.synced,
     );
-    await localDao.updateMessageStatus(realMessageId, 'synced');
+    messages[idx] = updated;
+
+    try {
+      await localDao.saveMessage(updated.toDbMap());
+    } catch (e) {
+      debugPrint('[Socket] message_ack saveMessage failed: $e');
+    }
+
     notifyChanged();
   }
 
@@ -282,7 +267,6 @@ class SocketEventDispatcher {
     final messages = getMessages();
     messages.removeWhere((m) => m.id == mId);
 
-    // فقط اگر پیام پین‌شده همان پیام حذف‌شده بود، پین را پاک کن.
     if (getPinnedMessage()?.id == mId) {
       setPinnedMessage(null);
     }
@@ -383,10 +367,6 @@ class SocketEventDispatcher {
   //  Helpers
   // ═════════════════════════════════════════════
 
-  /// ادغام پیوست‌ها با حفظ مقادیر محلی.
-  ///
-  /// اگر incoming خالی باشد (مثلاً پیام فقط متن است)، آرایهٔ موجود حفظ می‌شود
-  /// تا پیوست‌های آپلودشده پاک نشوند.
   List<MediaAttachmentModel> _mergeAttachmentsByIndex(
     List<MediaAttachmentModel> existing,
     List<MediaAttachmentModel> incoming,
