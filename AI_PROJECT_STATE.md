@@ -19,7 +19,7 @@
 ## ۲. هدف پروژه
 
 اپلیکیشن اندروید اختصاصی برای گروه محدودی از کاربران، که پیام‌ها و مدیای
-سوپرگروه تلگرام را در یک UI بومی نمایش می‌دهد، با پشتیبانی کامل آفلاین،
+سوپراگروه تلگرام را در یک UI بومی نمایش می‌دهد، با پشتیبانی کامل آفلاین،
 اعلان‌های FCM و پاسخ مستقیم از اعلان.
 
 ## ۳. وضعیت جاری: Refactor کامل شد ✅
@@ -41,6 +41,7 @@
 | 6.5 | رفع باگ duplicate attachment | (تغییر در `local_chat_dao`) |
 | 7 | استخراج صف + آپلود + رفع باگ ack | `pending_action_queue.dart`, `upload_lifecycle.dart` |
 | 8 | پاک‌سازی کد مرده | (فقط `chat_screen.dart`) |
+| 9 | چیدمان پیام‌ها مثل تلگرام | (فقط `message_bubble.dart`) |
 
 ### نتیجهٔ metrics
 | فایل | قبل | بعد |
@@ -58,6 +59,7 @@
 ## ۴. معماری فعلی (کلاینت)
 
 ### Presentation Layer
+
 presentation/
 ├── screens/chat_screen.dart (root StatefulWidget, ~330 خط)
 ├── widgets/
@@ -65,7 +67,7 @@ presentation/
 │ ├── chat_status_subtitle.dart (subtitle خود AnimatedBuilder دارد)
 │ ├── pinned_message_banner.dart (banner خود AnimatedBuilder دارد)
 │ ├── chat_message_list.dart (ListView + empty/loading state)
-│ ├── message_bubble.dart (حباب پیام + context menu)
+│ ├── message_bubble.dart (حباب پیام + context menu + RTL-aware layout)
 │ ├── chat_input_bar.dart (input + voice recording)
 │ ├── reaction_bar.dart (chips + picker)
 │ ├── reply_thumbnail.dart (thumbnail در reply)
@@ -82,6 +84,7 @@ presentation/
 └── state/
 ├── chat_upload_coordinator.dart (pick/voice/upload/retry)
 └── unread_flow_controller.dart (divider + mark-read)
+
 
 ### Data Layer
 data/
@@ -108,9 +111,9 @@ data/
 - مدیا فقط از Telegram Bot API (بدون R2).
 - `ChatRoom.js` هنوز از `INSERT` مستقیم استفاده می‌کند (برای آینده یادداشت شود).
 
-## ۶. باگ‌های رفع‌شده در این جلسه
+## ۶. باگ‌ها و بهبودهای این جلسه
 
-| # | باگ | ریشه | رفع |
+| # | مورد | ریشه | رفع |
 |---|---|---|---|
 | 1 | `_dependents.isEmpty` در دیالوگ ویرایش | `controller.dispose()` زودهنگام در Stage 1 | حذف dispose |
 | 2 | پیام در foreground بعد از بازگشت از background نمی‌آمد | `Bearer ${token.substring(0,8)}...` در هدر (رگرسیون Stage 5) | حذف substring |
@@ -118,6 +121,8 @@ data/
 | 4 | کاربر با session مرده logout نمی‌شد | نبود چک 401 در sync | `SyncResult.unauthorized` + `_handleUnauthorized` |
 | 5 | پیام عکس دو بار نمایش داده می‌شد | rename branch attachments قدیمی را رها می‌کرد | `DELETE` به‌جای `UPDATE` در rename |
 | 6 | `message_ack` ردیف DB را با id جدید ذخیره نمی‌کرد | فقط `updateMessageStatus(realMessageId)` صدا زده می‌شد | `saveMessage(id=realMessageId)` با rename branch |
+| 7 | همهٔ پیام‌ها در سمت راست نمایش داده می‌شدند (Stage 9) | در RTL، `MainAxisAlignment.start` = راست فیزیکی | `MainAxisAlignment.end` برای پیام‌های دیگران |
+| 8 | آواتار کاربر در راست حباب بود (Stage 9) | آواتار فرزند اول Row بود = راست گروه در RTL | آواتار به آخرین فرزند منتقل شد = چپ گروه |
 
 ## ۷. تصمیمات معماری اخیر
 
@@ -137,6 +142,14 @@ data/
 ### `DELETE` به‌جای rename در `saveMessage` rename branch
 - **دلیل:** جلوگیری از duplicate attachment.
 - **جایگزین رد شده:** حفظ ردیف‌های قدیمی و merge (نیازمند فیلد `old_id` در attachments).
+
+### RTL-aware layout در `MessageBubble` (Stage 9)
+- **دلیل:** چیدمان مثل تلگرام — پیام خودی راست، پیام دیگران چپ با آواتار در چپ حباب.
+- **جایگزین رد شده:**
+  - `Directionality(ltr)` دستی دور Row: ناحیهٔ swipe محدود می‌شود.
+  - `Align(centerLeft)` به‌جای `Row`: عرض Row را از دست می‌دهد.
+- **نکته:** از `MainAxisAlignment.end` استفاده می‌شود چون در RTL خودکار = چپ فیزیکی. آواتار آخرین فرزند است تا در چپ‌ترین جای گروه قرار گیرد.
+- **پیامد:** اگر اپ روزی در LTR اجرا شود، این کد باید بازبینی شود.
 
 ## ۸. محدودیت‌های مهم
 
@@ -159,13 +172,13 @@ data/
 ## ۱۰. حالت کاری فعلی
 
 - **Last verified build:** ✅ staging + دستگاه واقعی (SM A528B)
-- **Last verified tests:** همهٔ سناریوهای Stage 1-8
+- **Last verified tests:** همهٔ سناریوهای Stage 1-9
 - **Known blocking bug:** ندارد.
 
 ## ۱۱. حالت کاری این جلسه
 
 - **فایل‌های جدید کل:** ۱۳
-- **فایل‌های تغییر یافته:** `chat_screen`, `chat_repository`, `sync_engine`, `main.dart`, `local_chat_dao`, `socket_event_dispatcher`, `chat_message_list`
+- **فایل‌های تغییر یافته:** `chat_screen`, `chat_repository`, `sync_engine`, `main.dart`, `local_chat_dao`, `socket_event_dispatcher`, `chat_message_list`, `message_bubble`
 - **خطوط کاهش‌یافته در `chat_screen`:** ~۱۲۰۰ خط
 - **خطوط کاهش‌یافته در `chat_repository`:** ~۴۵۰ خط
 

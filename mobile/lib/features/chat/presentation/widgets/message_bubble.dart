@@ -55,12 +55,31 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // چیدمان پیام‌ها (مطابق تلگرام RTL):
+    //   - پیام خودی (isMe): سمت راست فیزیکی، بدون آواتار.
+    //   - پیام دیگران (!isMe): سمت چپ فیزیکی، آواتار در چپ‌ترین جای گروه،
+    //     حباب بلافاصله بعد از آن (به سمت راستِ آواتار).
+    //
+    // نکتهٔ RTL:
+    //   اپ در `Directionality(textDirection: RTL)` قرار دارد. در RTL:
+    //     - `MainAxisAlignment.start` = راست فیزیکی
+    //     - `MainAxisAlignment.end`   = چپ فیزیکی
+    //     - فرزند اول در سمت راست گروه، فرزند آخر در سمت چپ گروه.
+    //   چون می‌خواهیم کل گروه در چپ صفحه باشد، `end` لازم است.
+    //   چون می‌خواهیم آواتار در چپ‌ترین جای گروه باشد، آواتار باید
+    //   آخرین فرزند باشد.
     final content = !isMe
         ? Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(
+              // ✅ RTL: `end` = سمت چپ فیزیکی → کل گروه در چپ.
+              mainAxisAlignment: MainAxisAlignment.end,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // ✅ فرزند اول در RTL = راست گروه → حباب در راست.
+                Flexible(child: _buildBubble(context, isMe: false)),
+                const SizedBox(width: 8),
+                // ✅ فرزند آخر در RTL = چپ گروه → آواتار در چپ.
                 UserAvatar(
                   userId: message.senderId,
                   fullName: message.senderName,
@@ -68,14 +87,13 @@ class MessageBubble extends StatelessWidget {
                   showOnlineBadge: true,
                   isOnline: isSenderOnline,
                 ),
-                const SizedBox(width: 8),
-                Flexible(child: _buildBubble(context, isMe: false)),
               ],
             ),
           )
         : Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Align(
+              // ✅ `Alignment.centerRight` همیشه فیزیکی است (نه وابسته به RTL).
               alignment: Alignment.centerRight,
               child: _buildBubble(context, isMe: true),
             ),
