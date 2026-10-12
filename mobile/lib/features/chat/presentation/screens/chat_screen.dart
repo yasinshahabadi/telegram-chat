@@ -264,7 +264,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
-        // ✅ Stage 19: Drawer همبرگری در سمت راست (RTL).
         drawer: const AppDrawer(),
         appBar: ChatAppBar.build(
           chatRepository: widget.chatRepository,

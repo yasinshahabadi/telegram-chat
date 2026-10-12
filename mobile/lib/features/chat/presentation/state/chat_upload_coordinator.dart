@@ -16,31 +16,16 @@ import 'package:telegram_chat_mobile/features/media/data/voice_record_service.da
 ///
 /// این کلاس stateless است و هیچ state داخلی ندارد. تمام state تعاملی
 /// (reply target، scroll، نمایش خطا) از طریق callback به `ChatScreen` برمی‌گردد.
-///
-/// چرا از callback استفاده می‌کنیم؟
-///   چون منطق آپلود به `BuildContext` و `setState` وابسته نیست، ولی
-///   «واکنش به نتیجه» به این‌ها وابسته است. جدا کردن این دو، تست‌پذیری و
-///   خوانایی را بالا می‌برد.
 class ChatUploadCoordinator {
   final AuthRepository authRepository;
   final ChatRepository chatRepository;
   final VoiceRecordService voiceRecordService;
   final MediaRemoteService mediaRemoteService;
 
-  /// reply فعلی را از `ChatScreen` می‌پرسد (چون ممکن است بین start و end
-  /// آپلود تغییر کند).
   final ChatMessageModel? Function() getReplyTarget;
-
-  /// پس از شروع آپلود optimistic، reply را پاک می‌کند.
   final void Function() onClearReplyTarget;
-
-  /// نمایش خطا به کاربر.
   final void Function(String message) onError;
-
-  /// پیمایش لیست به پایین (پس از ارسال).
   final void Function() onScrollToBottom;
-
-  /// چک می‌کند که screen هنوز mount است.
   final bool Function() isMounted;
 
   ChatUploadCoordinator({
@@ -59,7 +44,6 @@ class ChatUploadCoordinator {
   //  Voice
   // ═════════════════════════════════════════════
 
-  /// شروع ضبط صدا. اگر دسترسی داده نشد، پیام خطا می‌دهد.
   Future<void> startVoiceRecord() async {
     final started = await voiceRecordService.startRecording();
     if (!started && isMounted()) {
@@ -67,7 +51,6 @@ class ChatUploadCoordinator {
     }
   }
 
-  /// توقف ضبط + ارسال فایل صوتی با optimistic UI.
   Future<void> stopAndSendVoice() async {
     final path = await voiceRecordService.stopRecording();
     if (path == null) return;
@@ -96,7 +79,6 @@ class ChatUploadCoordinator {
   //  Pick & send
   // ═════════════════════════════════════════════
 
-  /// انتخاب چند فایل از گالری/فایل‌منیجر + آپلود.
   Future<void> pickAndSendFiles(FileType type) async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -158,7 +140,6 @@ class ChatUploadCoordinator {
   //  Retry
   // ═════════════════════════════════════════════
 
-  /// تلاش مجدد برای ارسال پیام ناموفق با فایل‌های ذخیره‌شده در storage داخلی.
   Future<void> retryUpload(ChatMessageModel message, String newText) async {
     final user = authRepository.currentUser;
     final token = authRepository.sessionToken;

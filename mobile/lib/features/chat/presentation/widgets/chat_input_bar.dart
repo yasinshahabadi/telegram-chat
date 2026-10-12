@@ -76,9 +76,6 @@ class _ChatInputBarState extends State<ChatInputBar> {
   /// - اگر پنل بسته است → کیبورد بسته می‌شود و پنل باز می‌شود.
   void _toggleEmojiPanel() {
     if (_isEmojiPanelOpen) {
-      // ✅ ابتدا پنل را ببند (setState)، سپس فوکوس بده تا کیبورد بیاید.
-      //    ترتیب مهم است: اگر برعکس عمل کنیم، listener روی FocusNode
-      //    ممکن است پنل را دوباره باز کند.
       setState(() => _isEmojiPanelOpen = false);
       _inputFocusNode.requestFocus();
     } else {
@@ -94,8 +91,6 @@ class _ChatInputBarState extends State<ChatInputBar> {
   }
 
   /// درج ایموجی در محل cursor فعلی متن.
-  /// اگر cursor معتبر نبود (مثلاً TextField هرگز فوکوس نگرفته)،
-  /// در انتهای متن درج می‌شود.
   void _insertEmoji(String emoji) {
     final controller = widget.controller;
     final text = controller.text;
