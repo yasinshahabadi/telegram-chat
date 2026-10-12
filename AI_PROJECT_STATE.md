@@ -30,6 +30,7 @@
 ### Text Entities (Stage 17) — ✅ کامل
 ### Supergroup Fix (Stage 18) — ✅ کامل روی staging
 ### Reaction Emoji Settings (Stage 19) — ✅ کامل روی staging
+### Input Bar Emoji Picker (Stage 20-A) — ✅ کامل روی staging
 
 ### فازهای کامل‌شده
 | Stage | محتوا |
@@ -44,7 +45,11 @@
 | 16 | state update + commit |
 | 17 | Text entities (bold/link/blockquote/code) — سرور + کلاینت |
 | 18 | رفع قطع ارتباط پس از ارتقای گروه به سوپرگروه |
-| 19 | تنظیم ایموجی‌های ری‌اکشن (Drawer + صفحهٔ تنظیمات + سرویس محلی) |
+| 19 | تنظیم ایموجی‌های ری‌اکشن (Drawer + صفحه + سرویس محلی) |
+| 20-A | انتخابگر ایموجی در کادر تایپ چت |
+
+### فاز در حال انجام
+- **20-B** — پیست تصویر از کلیپ‌بورد (کلاینت + Platform Channel بومی اندروید)
 
 ## ۴. معماری فعلی
 
@@ -60,8 +65,8 @@ presentation/
 │ ├── forward_header.dart
 │ ├── linkified_text.dart (fallback)
 │ ├── formatted_message_text.dart
-│ ├── chat_input_bar.dart
-│ ├── reaction_bar.dart (Stage 19: از ReactionEmojiSettings می‌خواند)
+│ ├── chat_input_bar.dart (Stage 20-A: StatefulWidget + emoji panel)
+│ ├── reaction_bar.dart
 │ ├── reply_thumbnail.dart
 │ ├── swipe_to_reply.dart
 │ ├── unread_divider.dart
@@ -86,7 +91,7 @@ data/
 ├── chat_websocket_client.dart
 └── sync_engine.dart
 
-### Core — settings (Stage 19)
+### Core — settings
 core/settings/
 └── reaction_emoji_settings.dart
 
@@ -100,11 +105,11 @@ domain/models/
   - `messages`: + 5 ستون forward + `telegram_media_group_id` + `text_entities`
   - `pending_media_groups` (buffering آلبوم)
 - **کلاینت SQLite:** v5 با ۵ ستون forward + `text_entities`.
-- **کلاینت SharedPreferences:** `reaction_emojis_v1` (Stage 19).
+- **کلاینت SharedPreferences:** `reaction_emojis_v1`.
 
 ### سرور
 - `normalizer.js`: forward + آلبوم buffering + entities
-- `webhookHandler.js`: orchestration آلبوم + لاگ تشخیصی chat_id (Stage 18)
+- `webhookHandler.js`: orchestration آلبوم + لاگ تشخیصی chat_id
 - `mediaController.js`: `sendMediaGroup` با fallback
 
 ## ۵. باگ‌ها و بهبودهای کل جلسات
@@ -126,6 +131,8 @@ domain/models/
 | 13 | فرمت متن رعایت نمی‌شد | `text_entities` + `FormattedMessageText` |
 | 14 | قطع کامل ارتباط برنامه ↔ گروه | به‌روزرسانی `TELEGRAM_GROUP_ID` |
 | 15 | Emoji picker پس‌زمینهٔ سفید در تم تاریک | تنظیم `Config` رنگ‌ها از `Theme` (Stage 19) |
+| 16 | شمارندهٔ معکوس RTL (`12 / 11` به‌جای `11 / 12`) | ⏳ ثبت‌شده، رفع نشده (تصمیم کاربر: بی‌اهمیت) |
+| 17 | دکمهٔ keyboard در پنل ایموجی کیبورد را باز نمی‌کرد | `_inputFocusNode.requestFocus()` بعد از `setState` (Stage 20-A) |
 
 ## ۶. تصمیمات معماری
 
@@ -152,31 +159,39 @@ domain/models/
 - **جایگزین رد شده:** پارس HTML روی کلاینت.
 
 ### لاگ تشخیصی `chat_id` در `webhookHandler.js` (Stage 18)
-- **دلیل:** وقتی تلگرام گروه را خودکار به سوپرگروه ارتقا می‌دهد،
-  `chat_id` کاملاً عوض می‌شود و پیام‌های ورودی بی‌صدا دور ریخته
-  می‌شوند؛ هیچ خطایی در `wrangler tail` دیده نمی‌شود.
-- **روش:** در سه نقطه (`message`, `edited_message`, `message_reaction`)،
-  اگر `checkIsTargetGroup` نامطابق بود، `console.warn` با `chat_id`
-  واقعی چاپ می‌شود.
+- **دلیل:** تلگرام می‌تواند بدون هشدار گروه را به سوپرگروه ارتقا دهد.
+- **روش:** `console.warn` در سه نقطه.
 - **جایگزین رد شده:** ارسال هشدار به ادمین در تلگرام.
 
 ### تنظیم ایموجی‌های ری‌اکشن (Stage 19)
-- **دلیل:** کاربر باید بتواند لیست پیش‌فرض ایموجی‌های منوی long-press
-  را شخصی‌سازی کند.
-- **روش:** `ReactionEmojiSettings` (singleton + ChangeNotifier +
-  SharedPreferences با کلید `reaction_emojis_v1`).
-- **دلیل per-device (نه سرور):** کاربر درخواست کرد شخصی‌سازی فقط محلی
-  باشد. هر دستگاه لیست خودش را دارد.
+- **دلیل:** شخصی‌سازی ایموجی‌های منوی long-press.
+- **روش:** `ReactionEmojiSettings` (per-device، SharedPreferences).
 - **مرزها:** حداکثر ۱۲، حداقل ۱، بدون تکرار.
-- **Drawer قابل‌گسترش:** `AppDrawer` با `_SectionLabel` + `_DrawerItem`.
-  افزودن گزینهٔ جدید فقط یک `_DrawerItem`.
-- **جایگزین رد شده:** ذخیره در سرور (نیاز به جدول جدید + endpoint).
+- **Drawer قابل‌گسترش:** افزودن گزینه = یک `_DrawerItem` جدید.
+- **جایگزین رد شده:** ذخیره در سرور.
 
-### API جدید `onReorderItem` (Stage 19)
-- **دلیل:** `ReorderableListView.onReorder` در Flutter 3.41+ deprecated
-  شده و `onReorderItem` جایگزین آن است.
-- **پیامد:** متد `reorderEmojis` در سرویس دیگر offset را اصلاح نمی‌کند؛
-  API جدید خودش `newIndex` را تنظیم می‌کند.
+### API `onReorderItem` در `ReorderableListView` (Stage 19)
+- **دلیل:** `onReorder` در Flutter 3.41+ deprecated شده است.
+- **پیامد:** متد `reorderEmojis` در سرویس دیگر offset را اصلاح نمی‌کند.
+
+### انتخابگر ایموجی در کادر تایپ (Stage 20-A)
+- **دلیل:** تجربهٔ مشابه تلگرام برای درج سریع ایموجی.
+- **روش:** `ChatInputBar` از `StatelessWidget` → `StatefulWidget`.
+  پنل ثابت با `AnimatedSize` (220ms، easeOutCubic، ارتفاع ۳۰۰dp).
+- **FocusNode:** یک `_inputFocusNode` روی `TextField` برای تشخیص
+  فوکوس و انحصار متقابل با پنل.
+- **متد `_insertEmoji`:** درج در محل `controller.selection` با
+  به‌روزرسانی cursor به `cursorPos + emoji.length`.
+- **رفع باگ دکمهٔ keyboard (Stage 20-A):** وقتی پنل باز است و
+  کاربر روی آیکون keyboard می‌زند، ابتدا `setState(_isEmojiPanelOpen = false)`
+  سپس `_inputFocusNode.requestFocus()` — ترتیب مهم است.
+- **جایگزین رد شده:** `showModalBottomSheet` (تجربهٔ کاربری پایین‌تر
+  از پنل ثابت).
+
+### ویژگی‌های رد شده (برای مرجع آینده)
+- **پشتیبانی از GIF:** توسط کاربر کنسل شد.
+- **پیست متن از کلیپ‌بورد:** تصمیم گرفته شد انجام نشود چون long-press
+  سیستم اندروید از قبل paste را دارد.
 
 ## ۷. محدودیت‌ها
 
@@ -196,22 +211,21 @@ domain/models/
 - `ChatRoom.js` هنوز INSERT مستقیم دارد.
 - **🔴 توکن ربات در چت لو رفته و باید بچرخد** (بخش ۱۳).
 - **🟡 عدد شمارنده در `reaction_emojis_screen.dart` در حالت RTL
-  معکوس نمایش داده می‌شود** (`12 / 11` به‌جای `11 / 12`). اصلاح
-  پیشنهادی: `Directionality(textDirection: TextDirection.ltr, ...)`.
-  **در انتظار تأیید کاربر.**
+  معکوس نمایش داده می‌شود.** تصمیم کاربر: فعلاً بی‌اهمیت.
 
 ## ۹. حالت فعلی
 
 - **Last verified build:** ✅ staging + دستگاه واقعی
 - **Known blocking bug:** ندارد.
-- **Stage 18 و 19 کامل روی staging.**
+- **Stage 18، 19، 20-A کامل روی staging.**
 
 ## ۱۰. مرحلهٔ بعد
 
-- **🔴 چرخش توکن ربات** (اولویت P0 — امنیتی).
-- **Deploy production Worker** با تغییرات Stage 18 و 19.
-- migration های production D1 (0003/0004/0005) — با backup اولیه.
-- انتشار `v1.0.11+11` (در صورت درخواست کاربر).
+- **20-B** — پیست تصویر از کلیپ‌بورد (Platform Channel بومی اندروید).
+- **🔴 چرخش توکن ربات** (اولویت P0 — امنیتی، هنوز انجام نشده).
+- **Deploy production Worker** با تمام تغییرات Stage 18/19/20-A.
+- migration های production D1 (0003/0004/0005) — با backup.
+- انتشار `v1.0.11+11`.
 - تست خودکار (P1).
 - حذف `/api/test-push` (P2).
 
@@ -229,17 +243,14 @@ domain/models/
 
 ## ۱۲. نقاط حساس (نظارت)
 
-- پیام‌های قدیمی که فرمت‌دار نیستند (entities قبل از Stage 17 ذخیره نشده)
-- آلبوم‌ها دیرتر از ۳ ثانیه برسند
-- لینک‌ها به مرورگر باز شوند (AndroidManifest قدیمی روی گوشی)
-- forward header نمایش داده نشود
+- پیام‌های قدیمی که فرمت‌دار نیستند (entities قبل از Stage 17).
+- آلبوم‌ها دیرتر از ۳ ثانیه برسند.
+- لینک‌ها به مرورگر باز شوند (AndroidManifest قدیمی روی گوشی).
+- forward header نمایش داده نشود.
 - **🔴 اگر در `wrangler tail` پیام‌های زیر دیده شد:**
-  - `[Webhook] ⚠️ message IGNORED — chat_id=... does not match TELEGRAM_GROUP_ID=...`
+  - `[Webhook] ⚠️ message IGNORED — chat_id=...`
   - `[Webhook] ⚠️ edited_message IGNORED — ...`
   - `[Webhook] ⚠️ message_reaction IGNORED — ...`
-- **🟡 ترتیب ایموجی‌ها پس از reorder درست ذخیره می‌شود؟**
-  (با API جدید `onReorderItem` — تست دستی تأیید شده، ولی در صورت
-  مشاهدهٔ رفتار عجیب، اول این را چک کنید.)
 
 ## ۱۳. هشدار امنیتی — نیازمند اقدام فوری
 
@@ -247,43 +258,30 @@ domain/models/
 
 مراحل (اولویت P0):
 
-1. در BotFather → `/revoke` → توکن جدید بگیرید.
-2. در `.dev.vars` (که نباید در گیت باشد) جایگزین کنید.
+1. در BotFather → `/revoke` → توکن جدید.
+2. `.dev.vars` محلی به‌روزرسانی.
 3. `npx wrangler secret put TELEGRAM_BOT_TOKEN --env staging`
 4. `npx wrangler secret put TELEGRAM_BOT_TOKEN` (production)
-5. `setWebhook` را با توکن جدید برای staging (و در صورت نیاز production)
-   مجدداً تنظیم کنید.
-6. commit نکنید — توکن فقط در Secrets Cloudflare و `.dev.vars` محلی.
+5. `setWebhook` با توکن جدید.
+6. commit نکنید — فقط در Secrets و `.dev.vars` محلی.
 
-**هرگز توکن واقعی را در چت، در گیت، یا در اسکرین‌شات قرار ندهید.**
-در پیام‌های آیندهٔ چت، آن را با `<TOKEN>` جایگزین کنید.
+## ۱۴. نقشهٔ رفع باگ Stage 18 (مرجع آینده)
 
-## ۱۴. نقشهٔ رفع باگ Stage 18 (برای مرجع آینده)
+**علت ریشه‌ای:** تلگرام گروه را به سوپرگروه ارتقا داد و `chat_id`
+از `-5585398377` به `-1004362736569` تغییر کرد.
 
-**علامت:** برنامه هیچ پیامی از گروه نمی‌گیرد و هیچ پیامی به گروه نمی‌فرستد.
-
-**علت ریشه‌ای:** تلگرام گروه عادی `WWW chat` را به سوپرگروه ارتقا داد
-(به دلیل فعال شدن «تاریخچه برای اعضای جدید»). این کار باعث شد
-`chat_id` از `-5585398377` به `-1004362736569` تغییر کند.
-
-**تشخیص قطعی:**
+**تشخیص:**
 ```bash
 curl.exe -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
-curl.exe -s "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<OLD_ID>&text=TestFromBot"
-# انتظار: ok:false با description: "group chat was upgraded to a supergroup chat"
-# و پارامتر migrate_to_chat_id
-
+curl.exe -s "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<OLD_ID>&text=Test"
+# انتظار: ok:false + "group chat was upgraded to a supergroup chat"
 ```
 
 رفع (commit 1d7516f):
 
-wrangler.toml: تغییر هر دو TELEGRAM_GROUP_ID.
+wrangler.toml: هر دو TELEGRAM_GROUP_ID.
 
 webhookHandler.js: افزودن console.warn تشخیصی.
-
-Deploy: npx wrangler deploy --env staging.
-
-درس‌آموخته: تلگرام می‌تواند بدون هشدار صریح گروه را ارتقا دهد.
 
 ۱۵. نقشهٔ Stage 19 (Reaction Emoji Settings)
 فایل‌های جدید:
@@ -296,20 +294,57 @@ mobile/lib/features/settings/presentation/screens/reaction_emojis_screen.dart
 
 فایل‌های اصلاح‌شده:
 
-mobile/lib/main.dart (import + initialize)
+mobile/lib/main.dart
 
 mobile/lib/features/chat/presentation/widgets/reaction_bar.dart
 
-mobile/lib/features/chat/presentation/screens/chat_screen.dart (drawer)
+mobile/lib/features/chat/presentation/screens/chat_screen.dart
+
+نکات: کلید prefs reaction_emojis_v1، مرزها ۱..۱۲، بدون تکرار،
+onReorderItem (Flutter 3.41+).
+
+۱۶. نقشهٔ Stage 20-A (Input Bar Emoji Picker)
+فایل اصلاح‌شده:
+
+mobile/lib/features/chat/presentation/widgets/chat_input_bar.dart
 
 نکات کلیدی:
 
-کلید prefs: reaction_emojis_v1
+StatefulWidget + _inputFocusNode + _isEmojiPanelOpen.
 
-حداقل ۱، حداکثر ۱۲، بدون تکرار
+پنل با AnimatedSize (220ms).
 
-Drawer قابل‌گسترش (افزودن گزینه = افزودن یک _DrawerItem)
+_insertEmoji در محل cursor.
 
-Drag & Drop با onReorderItem (Flutter 3.41+)
+رفع باگ toggle کیبورد: setState(false) سپس requestFocus().
 
-رنگ‌بندی Picker از Theme.colorScheme (سازگار با dark/light)
+جایگزین‌های رد شده: showModalBottomSheet.
+
+۱۷. نقشهٔ Stage 20-B (برنامه‌ریزی‌شده)
+هدف: پیست تصویر از کلیپ‌بورد اندروید.
+
+فایل‌های جدید:
+
+mobile/lib/features/media/data/clipboard_image_service.dart
+
+اصلاح mobile/android/app/src/main/kotlin/com/yasinshahabadi/guysgram/MainActivity.kt
+(افزودن MethodChannel ~۴۰ خط Kotlin)
+
+فایل‌های اصلاح‌شده:
+
+mobile/lib/features/chat/presentation/widgets/chat_input_bar.dart
+(افزودن دکمهٔ paste)
+
+mobile/lib/features/chat/presentation/state/chat_upload_coordinator.dart
+(افزودن pasteImageFromClipboard)
+
+دلیل Platform Channel (نه پکیج): super_clipboard build پیچیده،
+pasteboard نگهداری‌نشده. راه بومی امن‌تر است.
+
+رفتار پیشنهادی:
+
+دکمهٔ paste فقط زمانی فعال که کلیپ‌بورد تصویر دارد.
+
+بررسی روی resume اپ.
+
+ارسال به تلگرام مثل photo معمولی.
