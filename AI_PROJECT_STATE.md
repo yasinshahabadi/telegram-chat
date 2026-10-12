@@ -1,6 +1,6 @@
 # AI_PROJECT_STATE.md
 
-آخرین به‌روزرسانی: 1405/07/15 (2026-10-06)
+آخرین به‌روزرسانی: 1405/07/20 (2026-10-12)
 
 ---
 
@@ -8,9 +8,9 @@
 
 - نام: **Guysgram**
 - پکیج اندروید: `com.yasinshahabadi.guysgram`
-- نسخهٔ فعلی در کد: **1.0.9+9**
-- نسخهٔ منتشرشده روی GitHub: **v1.0.9**
-- نسخهٔ بعدی برنامه‌ریزی‌شده: **1.0.10+10**
+- نسخهٔ فعلی در کد: **1.0.10+10**
+- نسخهٔ منتشرشده روی GitHub: **v1.0.10**
+- نسخهٔ بعدی برنامه‌ریزی‌شده: **1.0.11+11**
 - پلتفرم هدف: **فقط اندروید**
 - شاخهٔ جاری: **upgrade-v3**
 - ریپوی GitHub: `yasinshahabadi/telegram-chat`
@@ -28,6 +28,7 @@
 ### Forward + Links (Stages 10-13) — ✅ کامل
 ### Media Groups / Album (Stages 14-16) — ✅ کامل
 ### Text Entities (Stage 17) — ✅ کامل
+### Supergroup Fix (Stage 18) — ✅ کامل روی staging
 
 ### فازهای کامل‌شده
 | Stage | محتوا |
@@ -40,22 +41,8 @@
 | 14 | buffering آلبوم‌های ورودی |
 | 15 | sendMediaGroup برای آلبوم‌های خروجی |
 | 16 | state update + commit |
-| **17** | **Text entities (bold/link/blockquote/code) — سرور + کلاینت** |
-
-### نتیجهٔ metrics
-| فایل | قبل | بعد |
-|---|---|---|
-| `chat_screen.dart` | ~۱۵۰۰ خط | ~۳۳۰ خط |
-| `chat_repository.dart` | ~۷۵۰ خط | ~۳۰۰ خط |
-| `socket_event_dispatcher.dart` | — | ~۳۰۰ خط |
-| `upload_lifecycle.dart` | — | ~۳۵۰ خط |
-| `pending_action_queue.dart` | — | ~۱۸۰ خط |
-| `unread_flow_controller.dart` | — | ~۳۲۰ خط |
-| `chat_upload_coordinator.dart` | — | ~۲۸۰ خط |
-| `forward_header.dart` | — | ~۹۰ خط |
-| `linkified_text.dart` | — | ~۱۳۰ خط |
-| `formatted_message_text.dart` | — | ~۳۰۰ خط |
-| `message_entity.dart` | — | ~۱۳۰ خط |
+| 17 | Text entities (bold/link/blockquote/code) — سرور + کلاینت |
+| **18** | **رفع قطع ارتباط پس از ارتقای گروه به سوپرگروه** |
 
 ## ۴. معماری فعلی
 
@@ -83,7 +70,6 @@ presentation/
 ├── chat_upload_coordinator.dart
 └── unread_flow_controller.dart
 
-
 ### Data
 data/
 ├── chat_repository.dart
@@ -93,12 +79,10 @@ data/
 ├── chat_websocket_client.dart
 └── sync_engine.dart
 
-
 ### Domain Models
 domain/models/
 ├── chat_message_model.dart
 └── message_entity.dart (Stage 17)
-
 
 ### DB Schema
 - **سرور D1:**
@@ -108,10 +92,10 @@ domain/models/
 
 ### سرور
 - `normalizer.js`: forward + آلبوم buffering + entities
-- `webhookHandler.js`: orchestration آلبوم
+- `webhookHandler.js`: orchestration آلبوم + لاگ تشخیصی chat_id (Stage 18)
 - `mediaController.js`: `sendMediaGroup` با fallback
 
-## ۵. باگ‌ها و بهبودهای کل جلسه
+## ۵. باگ‌ها و بهبودهای کل جلسات
 
 | # | مورد | رفع |
 |---|---|---|
@@ -128,6 +112,7 @@ domain/models/
 | 11 | آلبوم → چند حباب | `pending_media_groups` |
 | 12 | چند فایل → چند پست | `sendMediaGroup` |
 | 13 | فرمت متن (bold/blockquote/link) رعایت نمی‌شد | `text_entities` + `FormattedMessageText` |
+| 14 | **قطع کامل ارتباط برنامه ↔ گروه** | **به‌روزرسانی `TELEGRAM_GROUP_ID` از `-5585398377` به `-1004362736569`** |
 
 ## ۶. تصمیمات معماری
 
@@ -153,6 +138,16 @@ domain/models/
 - **روش:** ذخیرهٔ `msg.entities` به‌عنوان JSON در DB + رندر با `TextSpan`.
 - **جایگزین رد شده:** پارس HTML روی کلاینت (شکننده، خطاها زیاد).
 
+### لاگ تشخیصی `chat_id` در `webhookHandler.js` (Stage 18)
+- **دلیل:** وقتی تلگرام یک گروه را خودکار به سوپرگروه ارتقا می‌دهد،
+  `chat_id` کاملاً عوض می‌شود و همهٔ پیام‌های ورودی بی‌صدا دور ریخته
+  می‌شوند؛ هیچ خطایی در `wrangler tail` دیده نمی‌شود.
+- **روش:** در سه نقطه (`message`, `edited_message`, `message_reaction`)،
+  اگر `checkIsTargetGroup` نامطابق بود، `console.warn` با `chat_id`
+  واقعی چاپ می‌شود تا در `npx wrangler tail` فوراً قابل تشخیص باشد.
+- **جایگزین رد شده:** ارسال هشدار به ادمین در تلگرام (پیچیدگی اضافی و
+  وابستگی به در دسترس بودن ربات — رد شد).
+
 ## ۷. محدودیت‌ها
 
 - R2 استفاده نمی‌شود.
@@ -169,25 +164,33 @@ domain/models/
 - debug menu در production build.
 - پاک‌سازی ۲۴ ساعته D1 (به درخواست کاربر).
 - `ChatRoom.js` هنوز INSERT مستقیم دارد.
+- **🔴 توکن ربات در چت لو رفته و باید بچرخد** (زیر بخش ۱۳).
 
 ## ۹. حالت فعلی
 
 - **Last verified build:** ✅ staging + دستگاه واقعی
 - **Known blocking bug:** ندارد.
-- **Stage 17 کامل.**
+- **Stage 18 کامل روی staging.** production در انتظار deploy.
 
 ## ۱۰. مرحلهٔ بعد
-- **انتشار v1.0.10+10** (این جلسه).
+
+- **انتشار v1.0.11+11** (این جلسه یا جلسهٔ آینده — تصمیم کاربر).
+- **Deploy کردن production Worker** با تغییرات Stage 18 (طبق
+  تصمیم کاربر: در جلسهٔ جداگانه انجام می‌شود).
+- **🔴 چرخش توکن ربات** (اولویت P0 — امنیتی).
+- migration های production D1 (0003/0004/0005) — فقط در صورت نیاز به
+  فعال‌سازی قابلیت‌های جدید روی production.
 - تست خودکار (P1).
-- migration روی production D1.
-- حذف `/api/test-push`.
+- حذف `/api/test-push` (P2).
 
 ## ۱۱. اطلاعات سرور
 
 - **D1 staging DB ID:** `1ecf41a0-8348-439c-b062-10b3cce3e99f`
 - **D1 production DB ID:** `6b53e474-18eb-4be4-87cf-6fda96db3cf1`
 - **Staging URL:** `https://telegram-chat-staging.yasinshahabadi007.workers.dev`
-- **Production URL (طبق wrangler.toml name = telegram-chat-app):** `https://telegram-chat-app.yasinshahabadi007.workers.dev`
+- **Production URL:** `https://telegram-chat-app.yasinshahabadi007.workers.dev`
+- **گروه تلگرام (سوپرگروه فعلی):** `-1004362736569`
+- **گروه تلگرام (شناسهٔ قدیمی، منسوخ):** `-5585398377`
 - **Migrations وضعیت:**
   - 0001, 0002: ✅ staging + production
   - 0003, 0004, 0005: ✅ staging؛ ⏳ production
@@ -199,3 +202,44 @@ domain/models/
 - آلبوم‌ها دیرتر از ۳ ثانیه برسند
 - لینک‌ها به مرورگر باز شوند (AndroidManifest قدیمی روی گوشی)
 - forward header نمایش داده نشود
+- **🔴 اگر در `wrangler tail` پیام‌های زیر دیده شد، یعنی `TELEGRAM_GROUP_ID`
+  با گروه فعلی مطابقت ندارد (احتمالاً گروه باز ارتقا یافته):**
+  - `[Webhook] ⚠️ message IGNORED — chat_id=... does not match TELEGRAM_GROUP_ID=...`
+  - `[Webhook] ⚠️ edited_message IGNORED — ...`
+  - `[Webhook] ⚠️ message_reaction IGNORED — ...`
+
+## ۱۳. هشدار امنیتی — نیازمند اقدام فوری
+
+**توکن ربات `@chattransfer_test_bot` در یک پیام چت لو رفته است.**
+
+مراحل بایست انجام شود (اولویت P0):
+
+1. در BotFather → `/revoke` → توکن جدید بگیرید.
+2. توکن جدید را در `.dev.vars` (که نباید در گیت باشد) جایگزین کنید.
+3. `npx wrangler secret put TELEGRAM_BOT_TOKEN --env staging`
+4. `npx wrangler secret put TELEGRAM_BOT_TOKEN` (production)
+5. `setWebhook` را با توکن جدید برای staging (و در صورت نیاز production)
+   مجدداً تنظیم کنید.
+6. commit نکنید — توکن فقط در Secrets Cloudflare و فایل محلی `.dev.vars`
+   نگه‌داری شود.
+
+**هرگز توکن واقعی را در چت، در گیت، یا در اسکرین‌شات قرار ندهید.**
+در پیام‌های آیندهٔ چت، آن را با `<TOKEN>` جایگزین کنید.
+
+## ۱۴. نقشهٔ رفع باگ Stage 18 (برای مرجع آینده)
+
+**علامت:** برنامه هیچ پیامی از گروه نمی‌گیرد و هیچ پیامی به گروه نمی‌فرستد.
+
+**علت ریشه‌ای:** تلگرام گروه عادی `WWW chat` را به سوپرگروه ارتقا داد
+(به دلیل فعال شدن «تاریخچه برای اعضای جدید»). این کار باعث شد
+`chat_id` از `-5585398377` به `-1004362736569` تغییر کند. کدها هنوز
+از مقدار قدیمی استفاده می‌کردند و تلگرام همهٔ درخواست‌های sendMessage را
+با خطای 400 رد می‌کرد. همچنین `checkIsTargetGroup` در سمت webhook،
+پیام‌های ورودی جدید را نامطابق تشخیص می‌داد و بی‌صدا دور می‌ریخت.
+
+**تشخیص قطعی (دستورات):**
+```bash
+curl.exe -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
+curl.exe -s "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<OLD_ID>&text=TestFromBot"
+# انتظار: ok:false با description: "group chat was upgraded to a supergroup chat"
+# و پارامتر migrate_to_chat_id
