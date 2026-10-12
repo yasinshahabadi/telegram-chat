@@ -7,6 +7,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'core/database/app_database.dart';
 import 'core/database/local_chat_dao.dart';
 import 'core/network/network_monitor.dart';
+import 'core/settings/reaction_emoji_settings.dart';
 import 'core/update/update_dialog.dart';
 import 'core/update/update_service.dart';
 import 'features/auth/data/auth_local_storage.dart';
@@ -29,6 +30,11 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final prefs = await SharedPreferences.getInstance();
+
+  // ✅ Stage 19 (مرحله ۱): بارگذاری ایموجی‌های ری‌اکشن کاربر پیش از runApp
+  // تا اولین long-press روی پیام، لیست صحیح را ببیند.
+  await ReactionEmojiSettings.instance.initialize();
+
   final localDao = LocalChatDao(appDatabase: AppDatabase.instance);
 
   final authStorage = AuthLocalStorage(prefs: prefs);

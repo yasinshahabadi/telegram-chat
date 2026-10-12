@@ -19,6 +19,7 @@ import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_mes
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/pinned_message_banner.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/screens/storage_settings_screen.dart';
+import 'package:telegram_chat_mobile/features/settings/presentation/widgets/app_drawer.dart';
 
 class ChatScreen extends StatefulWidget {
   final AuthRepository authRepository;
@@ -138,7 +139,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     });
 
-    // ✅ scroll تخمینی به موقعیت پیام والد بر اساس index در لیست.
     await _unreadFlow.animateToApproximateIndex(index);
   }
 
@@ -264,6 +264,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
+        // ✅ Stage 19: Drawer همبرگری در سمت راست (RTL).
+        drawer: const AppDrawer(),
         appBar: ChatAppBar.build(
           chatRepository: widget.chatRepository,
           onOpenStorage: () {
