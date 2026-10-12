@@ -21,7 +21,7 @@ new_sqlite_classes = ["ChatRoom"]
 crons = ["0 * * * *"]
 
 [vars]
-TELEGRAM_GROUP_ID = "-5585398377"
+TELEGRAM_GROUP_ID = "-1004362736569"
 ADMIN_TELEGRAM_ID = "122623127"
 
 # --- محیط آزمایشی کاملاً مستقل (Staging) ---
@@ -39,5 +39,5 @@ bindings = [
 ]
 
 [env.staging.vars]
-TELEGRAM_GROUP_ID = "-5585398377"
+TELEGRAM_GROUP_ID = "-1004362736569"
 ADMIN_TELEGRAM_ID = "122623127"

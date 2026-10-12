@@ -119,6 +119,13 @@ export async function handleTelegramWebhook(request, env, ctx) {
 
     if (update.message_reaction && update.message_reaction.chat) {
       const isTargetChat = checkIsTargetGroup(update.message_reaction.chat.id, env.TELEGRAM_GROUP_ID);
+      if (!isTargetChat) {
+        console.warn(
+          `[Webhook] ⚠️ message_reaction IGNORED — chat_id=${update.message_reaction.chat.id} ` +
+          `does not match TELEGRAM_GROUP_ID=${env.TELEGRAM_GROUP_ID}. ` +
+          `Group may have been upgraded to a supergroup; check TELEGRAM_GROUP_ID in wrangler.toml.`
+        );
+      }
       if (isTargetChat) {
         const rxResult = await normalizeTelegramReaction(env.DB, update.message_reaction);
         if (rxResult) {
@@ -138,6 +145,13 @@ export async function handleTelegramWebhook(request, env, ctx) {
 
     if (update.edited_message && update.edited_message.chat) {
       const isTargetChat = checkIsTargetGroup(update.edited_message.chat.id, env.TELEGRAM_GROUP_ID);
+      if (!isTargetChat) {
+        console.warn(
+          `[Webhook] ⚠️ edited_message IGNORED — chat_id=${update.edited_message.chat.id} ` +
+          `does not match TELEGRAM_GROUP_ID=${env.TELEGRAM_GROUP_ID}. ` +
+          `Group may have been upgraded to a supergroup; check TELEGRAM_GROUP_ID in wrangler.toml.`
+        );
+      }
       if (isTargetChat) {
         const editResult = await normalizeTelegramEdit(env.DB, update.edited_message);
         if (editResult) {
@@ -159,6 +173,13 @@ export async function handleTelegramWebhook(request, env, ctx) {
     // ✅ Stage 14: پیام‌های جدید + آلبوم
     if (update.message && update.message.chat) {
       const isTargetChat = checkIsTargetGroup(update.message.chat.id, env.TELEGRAM_GROUP_ID);
+      if (!isTargetChat) {
+        console.warn(
+          `[Webhook] ⚠️ message IGNORED — chat_id=${update.message.chat.id} ` +
+          `does not match TELEGRAM_GROUP_ID=${env.TELEGRAM_GROUP_ID}. ` +
+          `Group may have been upgraded to a supergroup; check TELEGRAM_GROUP_ID in wrangler.toml.`
+        );
+      }
       if (isTargetChat && !update.message.from?.is_bot) {
 
         // ✅ اگر پیام بخشی از یک آلبوم است → مسیر buffering
