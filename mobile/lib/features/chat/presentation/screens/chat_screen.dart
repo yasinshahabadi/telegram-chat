@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -13,11 +13,14 @@ import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/notifica
 import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/retry_upload_dialog.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/state/chat_upload_coordinator.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/state/unread_flow_controller.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/attachment_action.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_app_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_input_bar.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_message_list.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/pinned_message_banner.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
+import 'package:telegram_chat_mobile/features/media/presentation/screens/media_composer_screen.dart';
+import 'package:telegram_chat_mobile/features/media/presentation/screens/media_picker_screen.dart';
 import 'package:telegram_chat_mobile/features/media/presentation/screens/storage_settings_screen.dart';
 import 'package:telegram_chat_mobile/features/settings/presentation/widgets/app_drawer.dart';
 
@@ -215,42 +218,61 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     await _uploadCoordinator.stopAndSendVoice();
   }
 
-  Future<void> _handleAttachmentPick() async {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.image_rounded, color: Colors.blue),
-                title: const Text('ارسال عکس یا ویدیو'),
-                subtitle: const Text('می‌توانید چند فایل انتخاب کنید'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _uploadCoordinator.pickAndSendFiles(FileType.media);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.insert_drive_file_rounded,
-                    color: Colors.amber),
-                title: const Text('ارسال فایل و اسناد'),
-                subtitle: const Text('می‌توانید چند فایل انتخاب کنید'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _uploadCoordinator.pickAndSendFiles(FileType.any);
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
+  Future<void> _handleGalleryPick() async {
+    final payload = await MediaPickerScreen.show(context);
+    if (!mounted || payload == null) return;
+
+    await _uploadCoordinator.sendPickedMedia(
+      payload.media,
+      caption: payload.caption,
     );
+  }
+
+  Future<void> _handleFilePick(FileType type) async {
+    final picked = await _uploadCoordinator.pickFiles(type);
+    if (!mounted || picked == null) return;
+
+    final payload = await MediaComposerScreen.show(
+      context,
+      media: picked,
+      allowAddMore: false,
+    );
+    if (!mounted || payload == null) return;
+
+    await _uploadCoordinator.sendPickedMedia(
+      payload.media,
+      caption: payload.caption,
+    );
+  }
+
+  /// اکشن‌های نوار پیوست.
+  ///
+  /// برای افزودن گزینهٔ جدید در آینده (مثلاً موقعیت یا مخاطب) کافی است
+  /// یک [AttachmentAction] دیگر به این لیست اضافه شود.
+  List<AttachmentAction> _buildAttachmentActions(ThemeData theme) {
+    return [
+      AttachmentAction(
+        id: 'gallery',
+        label: 'گالری',
+        icon: Icons.photo_library_rounded,
+        accentColor: theme.colorScheme.primary,
+        onSelected: _handleGalleryPick,
+      ),
+      AttachmentAction(
+        id: 'file',
+        label: 'فایل',
+        icon: Icons.insert_drive_file_rounded,
+        accentColor: const Color(0xFFE0A63A),
+        onSelected: () => _handleFilePick(FileType.any),
+      ),
+      AttachmentAction(
+        id: 'music',
+        label: 'موزیک',
+        icon: Icons.library_music_rounded,
+        accentColor: const Color(0xFFB07CD6),
+        onSelected: () => _handleFilePick(FileType.audio),
+      ),
+    ];
   }
 
   // ═════════════════════════════════════════════
@@ -260,6 +282,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final currentUser = widget.authRepository.currentUser;
+    final theme = Theme.of(context);
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -285,7 +308,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         body: Column(
           children: [
             PinnedMessageBanner(chatRepository: widget.chatRepository),
-
             Expanded(
               child: ChatMessageList(
                 chatRepository: widget.chatRepository,
@@ -309,14 +331,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     widget.chatRepository.toggleReaction(messageId, emoji),
               ),
             ),
-
             ChatInputBar(
               controller: _inputController,
               replyMessage: _replyingMessage,
               onCancelReply: () => setState(() => _replyingMessage = null),
               onSend: _handleSendMessage,
               onTyping: () => widget.chatRepository.sendTyping(),
-              onAttachment: _handleAttachmentPick,
+              attachmentActions: _buildAttachmentActions(theme),
               voiceRecordService: _voiceRecordService,
               onStartRecordVoice: _handleStartRecordVoice,
               onStopAndSendVoice: _handleStopAndSendVoice,

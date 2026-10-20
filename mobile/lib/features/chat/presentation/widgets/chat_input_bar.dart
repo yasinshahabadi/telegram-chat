@@ -1,7 +1,9 @@
-﻿import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/attachment_action.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/widgets/attachment_panel.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/reply_thumbnail.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
 
@@ -11,7 +13,7 @@ class ChatInputBar extends StatefulWidget {
   final VoidCallback onCancelReply;
   final ValueChanged<String> onSend;
   final VoidCallback onTyping;
-  final VoidCallback? onAttachment;
+  final List<AttachmentAction> attachmentActions;
   final VoiceRecordService voiceRecordService;
   final VoidCallback onStartRecordVoice;
   final VoidCallback onStopAndSendVoice;
@@ -24,7 +26,7 @@ class ChatInputBar extends StatefulWidget {
     required this.onCancelReply,
     required this.onSend,
     required this.onTyping,
-    this.onAttachment,
+    required this.attachmentActions,
     required this.voiceRecordService,
     required this.onStartRecordVoice,
     required this.onStopAndSendVoice,
@@ -38,6 +40,7 @@ class ChatInputBar extends StatefulWidget {
 class _ChatInputBarState extends State<ChatInputBar> {
   final FocusNode _inputFocusNode = FocusNode();
   bool _isEmojiPanelOpen = false;
+  bool _isAttachmentPanelOpen = false;
 
   @override
   void initState() {
@@ -53,19 +56,55 @@ class _ChatInputBarState extends State<ChatInputBar> {
   }
 
   /// وقتی کاربر روی TextField ضربه می‌زند (کیبورد می‌خواهد بیاید)،
-  /// پنل ایموجی بسته می‌شود.
+  /// پنل‌های ایموجی و پیوست بسته می‌شوند.
   void _onFocusChanged() {
     if (!mounted) return;
-    if (_inputFocusNode.hasFocus && _isEmojiPanelOpen) {
-      setState(() => _isEmojiPanelOpen = false);
+    if (_inputFocusNode.hasFocus &&
+        (_isEmojiPanelOpen || _isAttachmentPanelOpen)) {
+      setState(() {
+        _isEmojiPanelOpen = false;
+        _isAttachmentPanelOpen = false;
+      });
     }
   }
 
   void _submit() {
     final text = widget.controller.text.trim();
     if (text.isNotEmpty) {
+      _closePanels();
       widget.onSend(text);
       widget.controller.clear();
+    }
+  }
+
+  void _closePanels() {
+    if (!_isEmojiPanelOpen && !_isAttachmentPanelOpen) return;
+    setState(() {
+      _isEmojiPanelOpen = false;
+      _isAttachmentPanelOpen = false;
+    });
+  }
+
+  /// باز/بسته کردن نوار پیوست.
+  ///
+  /// همیشه با پنل ایموجی انحصار متقابل دارد و در حالت باز، کیبورد
+  /// بسته می‌شود تا فضای کافی برای نوار فراهم شود.
+  void _toggleAttachmentPanel() {
+    if (_isAttachmentPanelOpen) {
+      setState(() => _isAttachmentPanelOpen = false);
+      return;
+    }
+
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _isEmojiPanelOpen = false;
+      _isAttachmentPanelOpen = true;
+    });
+  }
+
+  void _closeAttachmentPanel() {
+    if (_isAttachmentPanelOpen) {
+      setState(() => _isAttachmentPanelOpen = false);
     }
   }
 
@@ -80,13 +119,10 @@ class _ChatInputBarState extends State<ChatInputBar> {
       _inputFocusNode.requestFocus();
     } else {
       FocusScope.of(context).unfocus();
-      setState(() => _isEmojiPanelOpen = true);
-    }
-  }
-
-  void _closeEmojiPanel() {
-    if (_isEmojiPanelOpen) {
-      setState(() => _isEmojiPanelOpen = false);
+      setState(() {
+        _isAttachmentPanelOpen = false;
+        _isEmojiPanelOpen = true;
+      });
     }
   }
 
@@ -96,9 +132,8 @@ class _ChatInputBarState extends State<ChatInputBar> {
     final text = controller.text;
     final selection = controller.selection;
 
-    final cursorPos = selection.isValid
-        ? selection.start.clamp(0, text.length)
-        : text.length;
+    final cursorPos =
+        selection.isValid ? selection.start.clamp(0, text.length) : text.length;
 
     final newText =
         text.substring(0, cursorPos) + emoji + text.substring(cursorPos);
@@ -144,6 +179,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
                 _buildRecordingBar(theme),
               ] else ...[
                 _buildInputRow(theme),
+                _buildAttachmentPanel(theme),
                 _buildEmojiPanel(theme),
               ],
             ],
@@ -212,16 +248,18 @@ class _ChatInputBarState extends State<ChatInputBar> {
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
       child: Row(
         children: [
-          // دکمهٔ attachment
+          // دکمهٔ پیوست — باز/بسته کردن نوار پیوست
           IconButton(
             icon: Icon(
-              Icons.attach_file_rounded,
-              color: theme.colorScheme.onSurfaceVariant,
+              _isAttachmentPanelOpen
+                  ? Icons.close_rounded
+                  : Icons.attach_file_rounded,
+              color: _isAttachmentPanelOpen
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.onSurfaceVariant,
             ),
-            onPressed: () {
-              _closeEmojiPanel();
-              widget.onAttachment?.call();
-            },
+            tooltip: _isAttachmentPanelOpen ? 'بستن پیوست' : 'پیوست',
+            onPressed: _toggleAttachmentPanel,
           ),
           // دکمهٔ ایموجی — کنار attachment
           IconButton(
@@ -282,7 +320,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
                   onPressed: hasText
                       ? _submit
                       : () {
-                          _closeEmojiPanel();
+                          _closePanels();
                           widget.onStartRecordVoice();
                         },
                 ),
@@ -291,6 +329,20 @@ class _ChatInputBarState extends State<ChatInputBar> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAttachmentPanel(ThemeData theme) {
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      alignment: Alignment.bottomCenter,
+      child: _isAttachmentPanelOpen
+          ? AttachmentPanel(
+              actions: widget.attachmentActions,
+              onActionSelected: _closeAttachmentPanel,
+            )
+          : const SizedBox.shrink(),
     );
   }
 

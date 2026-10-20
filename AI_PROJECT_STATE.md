@@ -1,6 +1,6 @@
 # AI_PROJECT_STATE.md
 
-آخرین به‌روزرسانی: 1405/07/20 (2026-10-12)
+آخرین به‌روزرسانی: 1405/07/28 (2026-10-20)
 
 ---
 
@@ -8,9 +8,9 @@
 
 - نام: **Guysgram**
 - پکیج اندروید: `com.yasinshahabadi.guysgram`
-- نسخهٔ فعلی در کد: **1.0.11+11**
-- نسخهٔ منتشرشده روی GitHub: **v1.0.10** (v1.0.11 در حال انتشار)
-- نسخهٔ بعدی برنامه‌ریزی‌شده: **1.0.12+12**
+- نسخهٔ فعلی در کد: **1.0.12+12**
+- نسخهٔ منتشرشده روی GitHub: **v1.0.10**
+- نسخهٔ در حال آماده‌سازی: **1.0.12+12**
 - پلتفرم هدف: **فقط اندروید**
 - شاخهٔ جاری: **upgrade-v3**
 - ریپوی GitHub: `yasinshahabadi/telegram-chat`
@@ -32,6 +32,7 @@
 ### Reaction Emoji Settings (Stage 19) — ✅ کامل روی staging
 ### Input Bar Emoji Picker (Stage 20-A) — ✅ کامل روی staging
 ### Clipboard Image Paste (Stage 20-B) — ❌ کنسل و پاکسازی شد
+### Attachment Picker (Stage 21) — ✅ کامل + تست دستگاه واقعی
 
 ### فازهای کامل‌شده
 | Stage | محتوا |
@@ -48,6 +49,7 @@
 | 18 | رفع قطع ارتباط پس از ارتقای گروه به سوپرگروه |
 | 19 | تنظیم ایموجی‌های ری‌اکشن (Drawer + صفحه + سرویس محلی) |
 | 20-A | انتخابگر ایموجی در کادر تایپ چت |
+| 21 | نوار پیوست شناور + گالری اختصاصی + پیش‌نمایش/کپشن/ارسال |
 
 ### فازهای کنسل‌شده
 | Stage | محتوا | دلیل |
@@ -69,7 +71,9 @@ presentation/
 │ ├── forward_header.dart
 │ ├── linkified_text.dart (fallback)
 │ ├── formatted_message_text.dart
-│ ├── chat_input_bar.dart (Stage 20-A: StatefulWidget + emoji panel)
+│ ├── chat_input_bar.dart (Stage 20-A/21: پنل ایموجی + نوار پیوست)
+│ ├── attachment_action.dart (Stage 21: مدل اکشن قابل‌گسترش)
+│ ├── attachment_panel.dart (Stage 21: نوار پیوست شناور)
 │ ├── reaction_bar.dart
 │ ├── reply_thumbnail.dart
 │ ├── swipe_to_reply.dart
@@ -85,6 +89,24 @@ presentation/
 features/settings/presentation/
 ├── widgets/app_drawer.dart
 └── screens/reaction_emojis_screen.dart
+
+### Presentation — media (Stage 21)
+features/media/presentation/
+├── screens/
+│ ├── media_picker_screen.dart (گالری اختصاصی، مجوز، انتخاب شماره‌دار)
+│ └── media_composer_screen.dart (پیش‌نمایش + کپشن + ارسال)
+└── widgets/gallery_media_tile.dart (بندانگشتی کش‌شده + نشان انتخاب)
+
+### Data — media (Stage 21)
+features/media/data/
+└── gallery_media_service.dart (photo_manager: مجوز + صفحه‌بندی ۷۲تایی)
+
+### Domain — media (Stage 21)
+features/media/domain/
+├── media_upload_limits.dart (۱۰ فایل / ۲۰MB + تشخیص نوع)
+└── models/
+    ├── picked_media.dart (مدل یکپارچهٔ گالری/فایل)
+    └── media_send_payload.dart (خروجی composer به چت)
 
 ### Data — chat
 data/
@@ -103,6 +125,12 @@ core/settings/
 domain/models/
 ├── chat_message_model.dart
 └── message_entity.dart
+
+### Domain Models — media (Stage 21)
+features/media/domain/models/
+├── picked_media.dart
+├── media_send_payload.dart
+└── media_attachment_model.dart (existing)
 
 ### DB Schema
 - **سرور D1:**
@@ -186,6 +214,33 @@ domain/models/
 - **متد `_insertEmoji`:** درج در محل `controller.selection`.
 - **رفع باگ دکمهٔ keyboard:** `setState(false)` سپس `requestFocus()`.
 
+### انتخابگر پیوست و گالری اختصاصی (Stage 21)
+- **دلیل:** جایگزینی bottom sheet ساده با تجربهٔ تلگرام: نوار شناور،
+  گالری داخلی، پیش‌نمایش و کپشن پیش از ارسال.
+- **روش:** `AttachmentPanel` شناور + `AttachmentAction` قابل‌گسترش
+  (افزودن اکشن جدید = یک آیتم در لیست اکشن‌ها).
+  اکشن‌ها: گالری، فایل، موزیک.
+- **گالری:** `photo_manager` 3.12 + `photo_manager_image_provider` 2.2؛
+  فقط عکس/ویدیو (`RequestType.common`)، گرید ۳ ستونه، انتخاب شماره‌دار،
+  سقف ۱۰، بارگذاری صفحه‌بندی‌شده ۷۲تایی.
+- **Composer مشترک:** گالری/فایل/موسیقی همه به یک صفحهٔ پیش‌نمایش
+  (PageView + نوار بندانگشتی + کپشن + ارسال) می‌روند.
+- **مجوزها:** `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` /
+  `READ_MEDIA_VISUAL_USER_SELECTED` (Android 13+) و
+  `READ_EXTERNAL_STORAGE` (maxSdk 32). حالت «دسترسی محدود» هم مدیریت می‌شود.
+- **موسیقی/فایل:** از picker سیستم (SAF) با `FileType.audio` / `any`؛
+  نیازی به مجوز صوتی نیست.
+- **بدون HD badge:** سرور فایل اصلی را می‌فرستد؛ HD گمراه‌کننده بود.
+- **پیش‌بررسی:** سقف ۱۰ فایل و ۲۰MB *قبل* از ساخت پیام خوش‌بینانه
+  (هم در composer و هم در coordinator).
+- **کپشن:** از composer → coordinator → repository → upload lifecycle
+  → `sendMedia` سرور (سرور از قبل caption را به تلگرام می‌فرستاد).
+- **حافظه:** بندانگشتی‌ها ۳۲۰px با `FilterQuality.low` و `RepaintBoundary`؛
+  کش تصویر در `dispose` گالری پاک می‌شود (خروج: ~۱۳۰MB کاهش PSS).
+- **پیشرفت آپلود:** برای عکس، همان تصویر محلی با حلقهٔ درصد و برای
+  چند فایل برچسب «در حال ارسال N فایل…» نمایش داده می‌شود.
+- **جایگزین رد شده:** bottom sheet سیستمی، کپشن در صفحهٔ جدا، HD toggle.
+
 ### ویژگی‌های رد شده (برای مرجع آینده)
 - **پشتیبانی از GIF:** کنسل شد.
 - **پیست متن از کلیپ‌بورد:** انجام نشد چون long-press سیستم اندروید
@@ -199,6 +254,10 @@ domain/models/
 - سقف حجم آپلود: ۲۰ MB.
 - حداکثر پیوست در پیام: ۱۰.
 - Bot API آلبوم: فقط photo/video، حداکثر ۱۰ آیتم.
+- گالری اختصاصی فقط عکس/ویدیو؛ فایل و موسیقی از picker سیستم.
+- FLAC به‌عنوان document ارسال می‌شود (sendAudio تلگرام فقط mp3/m4a
+  را تضمین می‌کند)؛ سایر فرمت‌های صوتی طبق لیست سرور.
+- گالری فعلاً انتخابگر آلبوم/فیلتر (عکس، ویدیو، آلبوم‌ها) ندارد.
 - Android فقط. RTL.
 - **Flutter `TextField` از `commitContent` پشتیبانی نمی‌کند**
   (بخش ۱۷).
@@ -217,15 +276,17 @@ domain/models/
 
 ## ۹. حالت فعلی
 
-- **Last verified build:** ✅ staging + دستگاه واقعی
+- **Last verified build:** ✅ release روی دستگاه واقعی SM-A528B (Android 14)
 - **Known blocking bug:** ندارد.
-- **Stage 18، 19، 20-A کامل روی staging.**
+- **Stage 18، 19، 20-A و 21 کامل؛ Stage 21 روی دستگاه تست شد.**
 - **Stage 20-B کنسل و کاملاً پاک‌سازی شده.**
-- **در حال انتشار `v1.0.11+11`.**
+- **در حال آماده‌سازی `v1.0.12+12`.**
 
 ## ۱۰. مرحلهٔ بعد
 
-- **انتشار `v1.0.11+11`** (این جلسه، در حال انجام).
+- **انتشار `v1.0.12+12`** (این جلسه، در حال انجام).
+- تست دستی بیشتر Stage 21 روی دستگاه‌های دیگر (حالت دسترسی محدود،
+  ویدیوهای بزرگ، RTL شدید).
 - **🔴 چرخش توکن ربات** (اولویت P0 — امنیتی؛ طبق تصمیم کاربر:
   بعد از انتشار انجام می‌شود).
 - **Deploy production Worker** با تغییرات Stage 18 (اگر در آینده
@@ -380,3 +441,47 @@ Stage 18 (روی staging از قبل deploy شده)
 رفع قطع ارتباط با گروه تلگرام
 
 نمایش بهتر پیام‌های ارسالی از گروه
+
+## ۱۹. نقشهٔ Stage 21 (Attachment Picker)
+
+**هدف:** جایگزینی bottom sheet پیوست با نوار شناور قابل‌گسترش + گالری
+داخلی + پیش‌نمایش/کپشن، مشابه تلگرام.
+
+**فایل‌های جدید:**
+- `mobile/lib/features/chat/presentation/widgets/attachment_action.dart`
+- `mobile/lib/features/chat/presentation/widgets/attachment_panel.dart`
+- `mobile/lib/features/media/data/gallery_media_service.dart`
+- `mobile/lib/features/media/domain/media_upload_limits.dart`
+- `mobile/lib/features/media/domain/models/picked_media.dart`
+- `mobile/lib/features/media/domain/models/media_send_payload.dart`
+- `mobile/lib/features/media/presentation/screens/media_picker_screen.dart`
+- `mobile/lib/features/media/presentation/screens/media_composer_screen.dart`
+- `mobile/lib/features/media/presentation/widgets/gallery_media_tile.dart`
+
+**فایل‌های اصلاح‌شده:**
+- `chat_input_bar.dart`: `attachmentActions` + پنل پیوست + انحصار با ایموجی
+- `chat_screen.dart`: ساخت اکشن‌ها و بازکردن picker/composer
+- `chat_upload_coordinator.dart`: `pickFiles`، `sendPickedMedia`، اعتبارسنجی، caption
+- `chat_repository.dart`: انتقال caption
+- `upload_lifecycle.dart`: caption در پیام خوش‌بینانه
+- `message_bubble.dart`: نمایش پیشرفت با بندانگشتی محلی
+- `pubspec.yaml` / `pubspec.lock`: photo_manager
+- `AndroidManifest.xml`: مجوزهای گالری
+- `android/gradle.properties`: کامنت‌کردن پروکسی مردهٔ `192.168.100.5:4865`
+
+**تست انجام‌شده روی SM-A528B (Android 14):**
+- باز/بسته شدن نوار و انحصار متقابل با پنل ایموجی ✅
+- مجوز گالری (Allow all)، بارگذاری ۲۸۰۰+ آیتم، اسکرول/صفحه‌بندی ✅
+- انتخاب شماره‌دار ۱..۱۰ و بلاک مورد یازدهم با SnackBar ✅
+- composer: پیش‌نمایش، حذف، افزودن، کپشن، ارسال ✅
+- ارسال عکس تکی و دو عکس با کپشن + تیک تحویل ✅
+- فایل از SAF → composer → بلاک ۲۱MB با پیام سقف ۲۰MB ✅
+- باز شدن picker موسیقی (SAF audio) ✅
+- حافظه: خروج از گالری ۴۴۴MB → ۳۱۱MB (پس از پاک‌سازی کش تصویر) ✅
+- `flutter analyze`: No issues found ✅
+- release APK: 63.5MB ✅
+
+**نکات:**
+- دو پیام تست روی گروه واقعی ارسال شد: «Test» (تک‌عکس) و «Two» (دوعکس).
+- خطای قبلی Gradle مربوط به پروکسی قدیمی در `gradle.properties` بود.
+- اسکرین‌شات‌های تست از `/sdcard` پاک شدند.

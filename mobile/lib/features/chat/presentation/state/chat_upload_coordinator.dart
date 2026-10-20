@@ -11,6 +11,8 @@ import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_mo
 import 'package:telegram_chat_mobile/features/media/data/media_download_manager.dart';
 import 'package:telegram_chat_mobile/features/media/data/media_remote_service.dart';
 import 'package:telegram_chat_mobile/features/media/data/voice_record_service.dart';
+import 'package:telegram_chat_mobile/features/media/domain/media_upload_limits.dart';
+import 'package:telegram_chat_mobile/features/media/domain/models/picked_media.dart';
 
 /// هماهنگ‌کنندهٔ منطق ارسال فایل (انتخاب، ضبط صدا، آپلود، retry).
 ///
@@ -79,61 +81,101 @@ class ChatUploadCoordinator {
   //  Pick & send
   // ═════════════════════════════════════════════
 
-  Future<void> pickAndSendFiles(FileType type) async {
+  /// انتخاب فایل/موزیک از پیکر سیستم و برگرداندن آن‌ها برای مرحلهٔ
+  /// پیش‌نمایش و کپشن. آپلود در این مرحله شروع نمی‌شود.
+  Future<List<PickedMedia>?> pickFiles(FileType type) async {
     try {
       final result = await FilePicker.platform.pickFiles(
         type: type,
         allowMultiple: true,
       );
-      if (result == null || result.files.isEmpty) return;
+      if (result == null || result.files.isEmpty) return null;
 
-      final validFiles = <File>[];
-      final mediaTypes = <String>[];
-      final originalNames = <String>[];
-
+      final picked = <PickedMedia>[];
       for (final pf in result.files) {
         if (pf.path == null) continue;
         final file = File(pf.path!);
         if (!await file.exists()) continue;
 
-        final name = pf.name;
-        final ext = name.split('.').last.toLowerCase();
-        String mediaType = 'document';
-        if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic', 'heif']
-            .contains(ext)) {
-          mediaType = 'photo';
-        } else if (['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']
-            .contains(ext)) {
-          mediaType = 'video';
-        } else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'opus'].contains(ext)) {
-          mediaType = 'audio';
-        }
-
-        validFiles.add(file);
-        mediaTypes.add(mediaType);
-        originalNames.add(name);
+        picked.add(
+          PickedMedia.fromFile(
+            file,
+            mediaType: MediaUploadLimits.mediaTypeForFileName(pf.name),
+            fileName: pf.name,
+          ),
+        );
       }
 
-      if (validFiles.isEmpty) return;
-
-      final user = authRepository.currentUser;
-      final token = authRepository.sessionToken;
-      if (user == null || token == null) {
-        onError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
-        return;
-      }
-
-      await _uploadFilesWithOptimisticUI(
-        files: validFiles,
-        mediaTypes: mediaTypes,
-        originalNames: originalNames,
-        token: token,
-        user: user,
-        replyTarget: getReplyTarget(),
-      );
+      return picked.isEmpty ? null : picked;
     } catch (e) {
       onError('خطا در انتخاب فایل: $e');
+      return null;
     }
+  }
+
+  /// ارسال نهایی رسانه‌های انتخاب‌شده (گالری، فایل یا موزیک).
+  ///
+  /// اعتبارسنجی تعداد و حجم پیش از ساخت پیام optimistic انجام می‌شود تا
+  /// در صورت خطا، پیام ناموفق در چت ایجاد نشود.
+  Future<void> sendPickedMedia(
+    List<PickedMedia> picked, {
+    String caption = '',
+  }) async {
+    if (picked.isEmpty) return;
+
+    if (picked.length > MediaUploadLimits.maxFiles) {
+      onError(
+        'حداکثر ${MediaUploadLimits.maxFiles} فایل در هر پیام مجاز است.',
+      );
+      return;
+    }
+
+    final user = authRepository.currentUser;
+    final token = authRepository.sessionToken;
+    if (user == null || token == null) {
+      onError('جلسه منقضی شده است. لطفاً مجدداً وارد شوید.');
+      return;
+    }
+
+    if (!NetworkMonitor.instance.isOnline) {
+      onError('اتصال اینترنت برقرار نیست.');
+      return;
+    }
+
+    final files = <File>[];
+    final mediaTypes = <String>[];
+    final originalNames = <String>[];
+    var totalBytes = 0;
+
+    for (final item in picked) {
+      final file = await item.resolveFile();
+      if (file == null || !await file.exists()) {
+        onError('فایل «${item.fileName}» در دسترس نیست. دوباره تلاش کنید.');
+        return;
+      }
+      totalBytes += await file.length();
+      files.add(file);
+      mediaTypes.add(item.mediaType);
+      originalNames.add(await item.resolveFileName());
+    }
+
+    if (totalBytes > MediaUploadLimits.maxTotalBytes) {
+      onError(
+        'مجموع حجم فایل‌ها ${MediaUploadLimits.formatBytes(totalBytes)} است؛ '
+        'حداکثر مجاز ${MediaUploadLimits.formatBytes(MediaUploadLimits.maxTotalBytes)} است.',
+      );
+      return;
+    }
+
+    await _uploadFilesWithOptimisticUI(
+      files: files,
+      mediaTypes: mediaTypes,
+      originalNames: originalNames,
+      token: token,
+      user: user,
+      replyTarget: getReplyTarget(),
+      caption: caption,
+    );
   }
 
   // ═════════════════════════════════════════════
@@ -229,12 +271,14 @@ class ChatUploadCoordinator {
     required String token,
     required AuthUser user,
     required ChatMessageModel? replyTarget,
+    String caption = '',
   }) async {
     final optimistic = await chatRepository.addOptimisticMultiUpload(
       files: files,
       mediaTypes: mediaTypes,
       currentUser: user,
       replyTo: replyTarget,
+      caption: caption,
     );
     final tempId = optimistic.id;
     final clientMessageId = optimistic.clientMessageId;
@@ -256,6 +300,7 @@ class ChatUploadCoordinator {
         mediaTypes: mediaTypes,
         originalNames: originalNames,
         sessionToken: token,
+        caption: caption,
         clientMessageId: clientMessageId,
         replyTo: replyTarget != null
             ? {
@@ -285,9 +330,7 @@ class ChatUploadCoordinator {
         attachments: result.attachments,
       );
 
-      for (int i = 0;
-          i < result.attachments.length && i < files.length;
-          i++) {
+      for (int i = 0; i < result.attachments.length && i < files.length; i++) {
         try {
           final cached = await MediaDownloadManager.instance.cacheUploadedFile(
             attachmentId: result.attachments[i].id,

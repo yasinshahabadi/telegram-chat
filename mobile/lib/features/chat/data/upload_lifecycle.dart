@@ -147,6 +147,7 @@ class UploadLifecycle {
     required List<String> mediaTypes,
     required AuthUser currentUser,
     ChatMessageModel? replyTo,
+    String caption = '',
   }) async {
     final tempId = 'temp_upload_${const Uuid().v4()}';
     final clientMessageId = const Uuid().v4();
@@ -187,7 +188,7 @@ class UploadLifecycle {
       clientMessageId: clientMessageId,
       senderId: currentUser.id,
       senderName: currentUser.fullName,
-      text: '',
+      text: caption,
       isFromTelegram: false,
       replyToMessageId: rp?.messageId,
       replyToName: rp?.name,

@@ -1,4 +1,6 @@
-﻿import 'package:flutter/material.dart';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/config.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/formatted_message_text.dart';
@@ -129,8 +131,8 @@ class MessageBubble extends StatelessWidget {
                     ForwardHeader(
                       message: message,
                       isMe: isMe,
-                      nameColor: _colorFromName(
-                          message.forwardFromChatTitle ?? ''),
+                      nameColor:
+                          _colorFromName(message.forwardFromChatTitle ?? ''),
                     ),
                     const SizedBox(height: 4),
                   ] else if (!isMe) ...[
@@ -200,8 +202,8 @@ class MessageBubble extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 10,
                             fontStyle: FontStyle.italic,
-                            color:
-                                theme.colorScheme.onSurfaceVariant.withAlpha(160),
+                            color: theme.colorScheme.onSurfaceVariant
+                                .withAlpha(160),
                           ),
                         ),
                       ],
@@ -349,7 +351,8 @@ class MessageBubble extends StatelessWidget {
             ),
             const SizedBox(width: 8),
           ] else ...[
-            Icon(Icons.reply_rounded, size: 14, color: theme.colorScheme.primary),
+            Icon(Icons.reply_rounded,
+                size: 14, color: theme.colorScheme.primary),
             const SizedBox(width: 6),
           ],
           Flexible(
@@ -439,6 +442,95 @@ class MessageBubble extends StatelessWidget {
     final count = message.attachments.length;
     final firstAtt = message.attachments.first;
     final label = count > 1 ? 'در حال ارسال $count فایل…' : firstAtt.fileName;
+    final localPath = firstAtt.localPath;
+    final percent = (message.uploadProgress * 100).toInt();
+
+    // عکس در حال ارسال: همان تصویر محلی با لایهٔ پیشرفت، شبیه تلگرام.
+    if (firstAtt.isPhoto && localPath != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox(
+          width: 220,
+          height: 220,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.file(
+                File(localPath),
+                fit: BoxFit.cover,
+                cacheWidth: 480,
+                errorBuilder: (_, __, ___) => Container(
+                  color: theme.colorScheme.surfaceContainerHigh,
+                  alignment: Alignment.center,
+                  child: Icon(
+                    Icons.image_rounded,
+                    size: 42,
+                    color: theme.colorScheme.onSurfaceVariant.withAlpha(120),
+                  ),
+                ),
+              ),
+              Container(color: Colors.black.withAlpha(96)),
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 46,
+                      height: 46,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          SizedBox(
+                            width: 46,
+                            height: 46,
+                            child: CircularProgressIndicator(
+                              value: message.uploadProgress > 0
+                                  ? message.uploadProgress
+                                  : null,
+                              strokeWidth: 3,
+                              color: Colors.white,
+                              backgroundColor: Colors.white24,
+                            ),
+                          ),
+                          Text(
+                            '$percent%',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (count > 1) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withAlpha(120),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          'در حال ارسال $count فایل…',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Container(
       width: 220,
@@ -476,7 +568,7 @@ class MessageBubble extends StatelessWidget {
                 ),
               ),
               Text(
-                '${(message.uploadProgress * 100).toInt()}%',
+                '$percent%',
                 style: TextStyle(
                   fontSize: 11,
                   color: theme.colorScheme.onSurfaceVariant,
@@ -562,8 +654,8 @@ class MessageBubble extends StatelessWidget {
               ),
               if (message.isFailed && onRetry != null)
                 ListTile(
-                  leading: const Icon(Icons.refresh_rounded,
-                      color: Colors.orange),
+                  leading:
+                      const Icon(Icons.refresh_rounded, color: Colors.orange),
                   title: const Text('تلاش دوباره برای ارسال',
                       style: TextStyle(color: Colors.orange)),
                   onTap: () {

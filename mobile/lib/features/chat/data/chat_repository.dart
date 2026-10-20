@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -346,12 +346,14 @@ class ChatRepository extends ChangeNotifier {
     required List<String> mediaTypes,
     required AuthUser currentUser,
     ChatMessageModel? replyTo,
+    String caption = '',
   }) {
     return _uploadLifecycle.addOptimisticMultiUpload(
       files: files,
       mediaTypes: mediaTypes,
       currentUser: currentUser,
       replyTo: replyTo,
+      caption: caption,
     );
   }
 
