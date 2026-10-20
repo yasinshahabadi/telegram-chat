@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 
+import 'package:telegram_chat_mobile/core/storage/app_cache_manager.dart';
 import 'package:telegram_chat_mobile/features/media/data/gallery_media_service.dart';
 import 'package:telegram_chat_mobile/features/media/domain/media_upload_limits.dart';
 import 'package:telegram_chat_mobile/features/media/domain/models/media_send_payload.dart';
@@ -64,6 +65,7 @@ class _MediaPickerScreenState extends State<MediaPickerScreen>
   @override
   void initState() {
     super.initState();
+    AppCacheManager.instance.galleryVisible = true;
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
     _initialize();
@@ -71,6 +73,7 @@ class _MediaPickerScreenState extends State<MediaPickerScreen>
 
   @override
   void dispose() {
+    AppCacheManager.instance.galleryVisible = false;
     WidgetsBinding.instance.removeObserver(this);
     _scrollController
       ..removeListener(_onScroll)

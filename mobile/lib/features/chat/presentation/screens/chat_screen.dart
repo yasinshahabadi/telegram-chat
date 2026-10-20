@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import 'package:telegram_chat_mobile/core/storage/app_cache_manager.dart';
 import 'package:telegram_chat_mobile/features/auth/data/auth_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
@@ -219,30 +220,53 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _handleGalleryPick() async {
-    final payload = await MediaPickerScreen.show(context);
-    if (!mounted || payload == null) return;
+    try {
+      final payload = await MediaPickerScreen.show(context);
+      if (!mounted || payload == null) return;
 
-    await _uploadCoordinator.sendPickedMedia(
-      payload.media,
-      caption: payload.caption,
-    );
+      await _uploadCoordinator.sendPickedMedia(
+        payload.media,
+        caption: payload.caption,
+      );
+    } finally {
+      // فایل‌های اصلی گالری پس از پایان ارسال (یا انصراف) دیگر لازم نیستند.
+      // کمی تأخیر می‌دهیم تا انیمیشن بسته‌شدن گالری تمام شود و در صورت
+      // پاک‌شدن کش بندانگشتی، تصاویر در حال محو‌شدن خالی نشوند.
+      unawaited(
+        Future<void>.delayed(
+          const Duration(milliseconds: 400),
+          AppCacheManager.instance.trimGalleryCache,
+        ),
+      );
+    }
   }
 
   Future<void> _handleFilePick(FileType type) async {
     final picked = await _uploadCoordinator.pickFiles(type);
     if (!mounted || picked == null) return;
 
-    final payload = await MediaComposerScreen.show(
-      context,
-      media: picked,
-      allowAddMore: false,
-    );
-    if (!mounted || payload == null) return;
+    try {
+      final payload = await MediaComposerScreen.show(
+        context,
+        media: picked,
+        allowAddMore: false,
+      );
+      if (!mounted || payload == null) return;
 
-    await _uploadCoordinator.sendPickedMedia(
-      payload.media,
-      caption: payload.caption,
-    );
+      await _uploadCoordinator.sendPickedMedia(
+        payload.media,
+        caption: payload.caption,
+      );
+    } finally {
+      // file_picker هر فایل را در cache کپی می‌کند. نسخهٔ دائمی پیش از
+      // آپلود در UploadLifecycle ساخته می‌شود، بنابراین کپی‌های کش را
+      // بعد از ارسال یا انصراف حذف می‌کنیم.
+      await AppCacheManager.instance.releasePickedFiles(
+        picked
+            .map((item) => item.sourceFile?.path)
+            .whereType<String>(),
+      );
+    }
   }
 
   /// اکشن‌های نوار پیوست.

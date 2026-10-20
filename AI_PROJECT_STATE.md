@@ -33,6 +33,7 @@
 ### Input Bar Emoji Picker (Stage 20-A) — ✅ کامل روی staging
 ### Clipboard Image Paste (Stage 20-B) — ❌ کنسل و پاکسازی شد
 ### Attachment Picker (Stage 21) — ✅ کامل + تست دستگاه واقعی
+### Cache Hygiene (Stage 21.1) — ✅ کامل + تست دستگاه واقعی
 
 ### فازهای کامل‌شده
 | Stage | محتوا |
@@ -50,6 +51,7 @@
 | 19 | تنظیم ایموجی‌های ری‌اکشن (Drawer + صفحه + سرویس محلی) |
 | 20-A | انتخابگر ایموجی در کادر تایپ چت |
 | 21 | نوار پیوست شناور + گالری اختصاصی + پیش‌نمایش/کپشن/ارسال |
+| 21.1 | پاک‌سازی خودکار کش دیسک + سقف ۴۸MB برای بندانگشتی‌های گالری |
 
 ### فازهای کنسل‌شده
 | Stage | محتوا | دلیل |
@@ -116,6 +118,11 @@ data/
 ├── pending_action_queue.dart
 ├── chat_websocket_client.dart
 └── sync_engine.dart
+
+### Core — storage (Stage 21.1)
+core/storage/
+└── app_cache_manager.dart (پاک‌سازی file_picker + فایل‌های اصلی گالری
+    + سقف ۴۸MB برای کش بندانگشتی Glide)
 
 ### Core — settings
 core/settings/
@@ -259,6 +266,9 @@ features/media/domain/models/
   را تضمین می‌کند)؛ سایر فرمت‌های صوتی طبق لیست سرور.
 - گالری فعلاً انتخابگر آلبوم/فیلتر (عکس، ویدیو، آلبوم‌ها) ندارد.
 - Android فقط. RTL.
+- کش دیسک: `file_picker` بعد از هر انتخاب/انصراف پاک می‌شود؛ کش
+  بندانگشتی گالری (Glide) سقف ۴۸MB دارد و در صورت عبور، در پایان کار با
+  گالری ریست می‌شود.
 - **Flutter `TextField` از `commitContent` پشتیبانی نمی‌کند**
   (بخش ۱۷).
 
@@ -278,13 +288,14 @@ features/media/domain/models/
 
 - **Last verified build:** ✅ release روی دستگاه واقعی SM-A528B (Android 14)
 - **Known blocking bug:** ندارد.
-- **Stage 18، 19، 20-A و 21 کامل؛ Stage 21 روی دستگاه تست شد.**
+- **Stage 18، 19، 20-A، 21 و 21.1 کامل؛ Stage 21 و 21.1 روی دستگاه تست شد.**
 - **Stage 20-B کنسل و کاملاً پاک‌سازی شده.**
-- **در حال آماده‌سازی `v1.0.12+12`.**
+- **در حال آماده‌سازی `v1.0.12+12` (شامل Stage 21 + Cache Hygiene).**
 
 ## ۱۰. مرحلهٔ بعد
 
-- **انتشار `v1.0.12+12`** (این جلسه، در حال انجام).
+- **انتشار `v1.0.12+12`** (این جلسه، در حال انجام؛ شامل Stage 21 و
+  پاک‌سازی کش Stage 21.1).
 - تست دستی بیشتر Stage 21 روی دستگاه‌های دیگر (حالت دسترسی محدود،
   ویدیوهای بزرگ، RTL شدید).
 - **🔴 چرخش توکن ربات** (اولویت P0 — امنیتی؛ طبق تصمیم کاربر:
@@ -485,3 +496,52 @@ Stage 18 (روی staging از قبل deploy شده)
 - دو پیام تست روی گروه واقعی ارسال شد: «Test» (تک‌عکس) و «Two» (دوعکس).
 - خطای قبلی Gradle مربوط به پروکسی قدیمی در `gradle.properties` بود.
 - اسکرین‌شات‌های تست از `/sdcard` پاک شدند.
+
+## ۲۰. نقشهٔ Stage 21.1 (Cache Hygiene)
+
+**مشکل:** پس از استفادهٔ عادی، Android Settings حجم Cache را ۵۴۴MB نشان می‌داد.
+
+**ریشه‌یابی روی دستگاه (debug APK + `run-as`):**
+- `cache` = ۵۱۸MB؛ از این مقدار `cache/file_picker` = ۴۹۸MB.
+- دو کپی ۲۱۴MB از یک ویدیوی ۲۲۴MB (توسط سقف ۲۰MB رد شده بود، ولی
+  `file_picker` قبل از آن فایل را کپی کرده بود)، یک PDF تست ۲۱MB و چند
+  عکس/موزیک.
+- `cache/image_manager_disk_cache` (بندانگشتی Glide از `photo_manager`) =
+  ۱۷MB.
+- `cache/libCachedImageData` (`cached_network_image`) = ۲.۹MB.
+
+**علت:** `file_picker` هر فایل انتخاب‌شده را در cache کپی می‌کند و هیچ‌وقت
+پاک نمی‌کند؛ نه بعد از ارسال، نه بعد از انصراف/رد شدن به‌خاطر حجم. Glide هم
+به‌طور پیش‌فرض تا ۲۵۰MB کش دیسک دارد.
+
+**راه‌حل:**
+- فایل جدید `mobile/lib/core/storage/app_cache_manager.dart`.
+- در شروع برنامه: پاک‌سازی کل `cache/file_picker`، حذف کپی‌های `pm_*`، و
+  اگر کش Glide از ۴۸MB بیشتر باشد `PhotoManager.clearFileCache()`.
+- بعد از بستن composer فایل/موسیقی (چه ارسال، چه انصراف): حذف همان
+  فایل‌های `cache/file_picker/<timestamp>/` و پوشهٔ خالی.
+- بعد از بستن گالری (ارسال/انصراف): با ۴۰۰ms تأخیر، حذف `pm_*` و در صورت
+  عبور از ۴۸MB پاک‌سازی کش Glide.
+- کش مدیای دائمی (`app_flutter/telegram_media`، سقف ۲۰۰MB) دست‌نخورده
+  است؛ پاک‌سازی فقط روی `cache` انجام می‌شود.
+- آپلود همچنان از فایل اصلی انجام می‌شود و کپی دائمی برای retry قبل از
+  آپلود در `UploadLifecycle` ساخته می‌شود.
+
+**تست روی SM-A528B (Android 14):**
+- پس از نصب build جدید و باز شدن برنامه: `cache` از ۵۱۸MB به ۲۱MB رسید ✅
+- انتخاب ویدیوی ۲۲۴MB → composer → انصراف: `cache` ۲۳۵MB → ۲۱MB
+  (پاک‌سازی فوری) ✅
+- ساخت مصنوعی ۶۰MB در کش Glide و ری‌استارت: کش از ۸۱MB به ۳.۲MB رسید
+  (سقف ۴۸MB) ✅
+- باز شدن گالری ۲۸۵۶ آیتم و بازسازی بندانگشتی‌ها بدون خطا ✅
+- `flutter analyze`: No issues found ✅
+- release APK (63.5MB) نصب و اجرا شد؛ در Android Settings:
+  **Cache = ۵.۰۴MB** (قبلاً ۵۴۴MB)، Data = ۱۰۲MB (کش مدیای دائمی با
+  سقف ۲۰۰MB)، Total = ۱۷۸MB ✅
+
+**فایل‌های اصلاح‌شده:**
+- `mobile/lib/core/storage/app_cache_manager.dart` (جدید)
+- `mobile/lib/features/chat/presentation/screens/chat_screen.dart`
+- `mobile/lib/features/media/presentation/screens/media_picker_screen.dart`
+  (فلگ باز بودن گالری تا پاک‌سازی کش در حین نمایش انجام نشود)
+- `mobile/lib/main.dart`

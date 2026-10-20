@@ -8,6 +8,7 @@ import 'core/database/app_database.dart';
 import 'core/database/local_chat_dao.dart';
 import 'core/network/network_monitor.dart';
 import 'core/settings/reaction_emoji_settings.dart';
+import 'core/storage/app_cache_manager.dart';
 import 'core/update/update_dialog.dart';
 import 'core/update/update_service.dart';
 import 'features/auth/data/auth_local_storage.dart';
@@ -118,6 +119,9 @@ void main() async {
     notifService: notifService,
     syncEngine: syncEngine,
   ));
+
+  // پاک‌سازی کش در پس‌زمینه تا اولین فریم به‌خاطر اسکن فایل‌ها معطل نماند.
+  unawaited(AppCacheManager.instance.cleanupOnStartup());
 
   _checkForUpdate();
 }
