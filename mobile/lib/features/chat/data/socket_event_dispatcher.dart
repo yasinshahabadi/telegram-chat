@@ -18,6 +18,10 @@ class SocketEventDispatcher {
   final void Function(String? fullName) setTypingUserName;
   final void Function(Map<String, Map<String, dynamic>> users) setOnlineUsers;
 
+  /// وقتی شناسهٔ یک پیام از optimistic به شناسهٔ واقعی تغییر می‌کند، برای
+  /// به‌روزرسانی ارجاع‌های reply (در حافظه و DB) صدا زده می‌شود.
+  final Future<void> Function(String oldId, String newId)? onMessageIdChanged;
+
   SocketEventDispatcher({
     required this.localDao,
     required this.getMessages,
@@ -27,6 +31,7 @@ class SocketEventDispatcher {
     required this.setPinnedMessage,
     required this.setTypingUserName,
     required this.setOnlineUsers,
+    this.onMessageIdChanged,
   });
 
   // ═════════════════════════════════════════════
@@ -176,6 +181,9 @@ class SocketEventDispatcher {
         await localDao.removePendingAction(existing.id);
         messages[idx] = merged;
         notifyChanged();
+        if (existing.id != merged.id) {
+          await onMessageIdChanged?.call(existing.id, merged.id);
+        }
         return;
       }
     }
@@ -247,6 +255,9 @@ class SocketEventDispatcher {
     }
 
     notifyChanged();
+    if (old.id != updated.id) {
+      await onMessageIdChanged?.call(old.id, updated.id);
+    }
   }
 
   Future<void> _handleMessageEdited(Map<String, dynamic> event) async {

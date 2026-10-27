@@ -1,4 +1,5 @@
 ﻿import 'dart:convert';
+import 'dart:math' as math;
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 import 'app_database.dart';
@@ -194,6 +195,71 @@ class LocalChatDao {
     return rows.isEmpty ? null : rows.first;
   }
 
+  /// پیام‌هایی که از یک زمان به بعد ساخته شده‌اند (جدیدترین اول).
+  ///
+  /// برای پرش به یک پیام قدیمی که هنوز در حافظه نیست استفاده می‌شود؛ با یک
+  /// بازهٔ پیوسته از آن پیام تا امروز، لیست بدون «شکاف» نمایش داده می‌شود.
+  Future<List<Map<String, dynamic>>> getMessagesSince({
+    required int sinceCreatedAt,
+    required int limit,
+  }) async {
+    final db = await _db;
+    return db.query(
+      'messages',
+      where: 'created_at >= ?',
+      whereArgs: [sinceCreatedAt],
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
+  }
+
+  /// پیوست‌های چند پیام با یک کوئری (به‌جای N کوئری).
+  Future<Map<String, List<Map<String, dynamic>>>> getAttachmentsForMessages(
+    List<String> messageIds,
+  ) async {
+    return _groupByMessageId('attachments', messageIds);
+  }
+
+  /// واکنش‌های چند پیام با یک کوئری.
+  Future<Map<String, List<Map<String, dynamic>>>> getReactionsForMessages(
+    List<String> messageIds,
+  ) async {
+    return _groupByMessageId('reactions', messageIds);
+  }
+
+  /// خواندن ردیف‌های یک جدول برای مجموعه‌ای از message_idها.
+  ///
+  /// SQLite قدیمی سقف ۹۹۹ پارامتر دارد؛ پس شناسه‌ها را تکه‌تکه می‌کنیم.
+  Future<Map<String, List<Map<String, dynamic>>>> _groupByMessageId(
+    String table,
+    List<String> messageIds,
+  ) async {
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    if (messageIds.isEmpty) return grouped;
+
+    final db = await _db;
+    const chunkSize = 400;
+    for (int start = 0; start < messageIds.length; start += chunkSize) {
+      final end = math.min(start + chunkSize, messageIds.length);
+      final chunk = messageIds.sublist(start, end);
+      final placeholders = List.filled(chunk.length, '?').join(',');
+
+      final rows = await db.query(
+        table,
+        where: 'message_id IN ($placeholders)',
+        whereArgs: chunk,
+      );
+
+      for (final row in rows) {
+        final messageId = row['message_id'] as String?;
+        if (messageId == null) continue;
+        (grouped[messageId] ??= <Map<String, dynamic>>[]).add(row);
+      }
+    }
+
+    return grouped;
+  }
+
   Future<void> updateMessageStatus(String messageId, String newStatus) async {
     final db = await _db;
     await db.update(
@@ -218,6 +284,27 @@ class LocalChatDao {
       },
       where: 'id = ?',
       whereArgs: [messageId],
+    );
+  }
+
+  /// همهٔ ارجاع‌های reply به پیام [oldMessageId] را به [newMessageId] منتقل
+  /// می‌کند (زمانی که شناسهٔ optimistic با شناسهٔ سرور جایگزین می‌شود).
+  Future<void> updateReplyTargetId(
+    String oldMessageId,
+    String newMessageId,
+  ) async {
+    if (oldMessageId.isEmpty ||
+        newMessageId.isEmpty ||
+        oldMessageId == newMessageId) {
+      return;
+    }
+
+    final db = await _db;
+    await db.update(
+      'messages',
+      {'reply_to_message_id': newMessageId},
+      where: 'reply_to_message_id = ?',
+      whereArgs: [oldMessageId],
     );
   }
 

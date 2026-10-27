@@ -12,6 +12,18 @@ import 'pending_action_queue.dart';
 import 'socket_event_dispatcher.dart';
 import 'upload_lifecycle.dart';
 
+/// نتیجهٔ آماده‌سازی پیامِ ریپلای‌شده برای پرش.
+enum ReplyTargetLoadResult {
+  /// پیام در حافظه/DB موجود و آمادهٔ نمایش است.
+  loaded,
+
+  /// پیام نه در حافظه است و نه در DB (حذف شده است).
+  notFound,
+
+  /// پیام در DB هست ولی بازهٔ تاریخی آن برای بارگذاری بیش از حد بزرگ است.
+  tooOld,
+}
+
 class ChatRepository extends ChangeNotifier {
   final LocalChatDao _localDao;
   final ChatWebSocketClient _socketClient;
@@ -70,12 +82,14 @@ class ChatRepository extends ChangeNotifier {
         _onlineUsers.addAll(users);
         notifyListeners();
       },
+      onMessageIdChanged: _repointReplyReferences,
     );
 
     _uploadLifecycle = UploadLifecycle(
       localDao: _localDao,
       getMessages: () => _messages,
       notify: () => notifyListeners(),
+      onMessageIdChanged: _repointReplyReferences,
     );
 
     _pendingQueue = PendingActionQueue(
@@ -211,6 +225,137 @@ class ChatRepository extends ChangeNotifier {
     } finally {
       notifyListeners();
     }
+  }
+
+  // ═════════════════════════════════════════════
+  //  Reply target availability
+  // ═════════════════════════════════════════════
+
+  /// حداکثر تعداد پیامی که برای پرش به یک پیام قدیمی از DB بارگذاری می‌شود.
+  ///
+  /// اگر پیام مقصد قدیمی‌تر از این بازه باشد، به‌جای بارگذاری هزاران پیام
+  /// (و مصرف حافظه) [ReplyTargetLoadResult.tooOld] برگردانده می‌شود تا UI
+  /// پیام مناسب نشان دهد.
+  static const int _replyHistoryLimit = 1000;
+
+  /// اطمینان از این‌که پیام [messageId] برای نمایش/پرش در حافظه موجود است.
+  ///
+  /// - اگر در حافظه باشد: [ReplyTargetLoadResult.loaded].
+  /// - اگر در DB باشد ولی جزو ۵۰ پیام آخر نباشد: بازهٔ پیوستهٔ آن پیام تا
+  ///   جدیدترین پیام بارگذاری و با لیست فعلی ادغام می‌شود.
+  /// - اگر در DB هم نباشد (حذف‌شده): [ReplyTargetLoadResult.notFound].
+  /// - اگر بازهٔ بارگذاری بیش از حد بزرگ باشد: [ReplyTargetLoadResult.tooOld].
+  Future<ReplyTargetLoadResult> ensureMessageLoaded(String messageId) async {
+    if (messageId.isEmpty) return ReplyTargetLoadResult.notFound;
+    if (_messages.any((m) => m.id == messageId)) {
+      return ReplyTargetLoadResult.loaded;
+    }
+
+    try {
+      final targetRow = await _localDao.getMessageById(messageId);
+      if (targetRow == null) return ReplyTargetLoadResult.notFound;
+
+      final createdAt = targetRow['created_at'] as int? ?? 0;
+      final rows = await _localDao.getMessagesSince(
+        sinceCreatedAt: createdAt,
+        limit: _replyHistoryLimit + 1,
+      );
+
+      if (rows.isEmpty) return ReplyTargetLoadResult.notFound;
+      if (rows.length > _replyHistoryLimit) {
+        debugPrint(
+          '[ChatRepo] reply target $messageId is older than the load window',
+        );
+        return ReplyTargetLoadResult.tooOld;
+      }
+
+      final ids = rows
+          .map((row) => row['id'] as String?)
+          .whereType<String>()
+          .toList(growable: false);
+
+      // دو کوئری برای همهٔ پیام‌ها به‌جای دو کوئری برای هر پیام.
+      final attachmentsByMessage =
+          await _localDao.getAttachmentsForMessages(ids);
+      final reactionsByMessage = await _localDao.getReactionsForMessages(ids);
+
+      final loaded = <ChatMessageModel>[];
+      for (final raw in rows) {
+        final id = raw['id'] as String?;
+        if (id == null) continue;
+
+        final attachments =
+            (attachmentsByMessage[id] ?? const <Map<String, dynamic>>[])
+                .map(MediaAttachmentModel.fromDbMap)
+                .toList(growable: false);
+
+        final reactions = <String, int>{};
+        final myReactions = <String>{};
+        for (final reaction
+            in reactionsByMessage[id] ?? const <Map<String, dynamic>>[]) {
+          final emoji = reaction['emoji'] as String?;
+          if (emoji == null || emoji.isEmpty) continue;
+          reactions[emoji] = (reactions[emoji] ?? 0) + 1;
+          if (_currentUserId != null &&
+              reaction['user_id'] == _currentUserId) {
+            myReactions.add(emoji);
+          }
+        }
+
+        loaded.add(ChatMessageModel.fromDbMap(
+          raw,
+          attachments: attachments,
+          reactions: reactions,
+          myReactions: myReactions,
+        ));
+      }
+
+      // پیام‌های داخل حافظه ممکن است وضعیت تازه‌تری (در حال آپلود/خوانده‌شده)
+      // داشته باشند؛ بنابراین نسخهٔ حافظه اولویت دارد.
+      final mergedById = <String, ChatMessageModel>{
+        for (final message in loaded) message.id: message,
+      };
+      for (final message in _messages) {
+        mergedById[message.id] = message;
+      }
+
+      final merged = mergedById.values.toList(growable: false)
+        ..sort((a, b) {
+          final byTime = b.createdAt.compareTo(a.createdAt);
+          return byTime != 0 ? byTime : b.id.compareTo(a.id);
+        });
+
+      _messages = merged;
+      notifyListeners();
+
+      return _messages.any((m) => m.id == messageId)
+          ? ReplyTargetLoadResult.loaded
+          : ReplyTargetLoadResult.notFound;
+    } catch (e) {
+      debugPrint('[ChatRepo] ensureMessageLoaded failed: $e');
+      return ReplyTargetLoadResult.notFound;
+    }
+  }
+
+  /// وقتی یک پیام optimistic شناسهٔ واقعی می‌گیرد، ارجاع‌های reply به شناسهٔ
+  /// قبلی باید به‌روز شوند؛ وگرنه کلیک روی همان پیش‌نمایش reply بعداً
+  /// «پیام موجود نیست» نشان می‌دهد.
+  Future<void> _repointReplyReferences(String oldId, String newId) async {
+    if (oldId.isEmpty || newId.isEmpty || oldId == newId) return;
+
+    var changed = false;
+    for (int i = 0; i < _messages.length; i++) {
+      final message = _messages[i];
+      if (message.replyToMessageId == oldId) {
+        _messages[i] = message.copyWith(replyToMessageId: newId);
+        changed = true;
+      }
+    }
+    if (changed) notifyListeners();
+
+    try {
+      await _localDao.updateReplyTargetId(oldId, newId);
+    } catch (_) {}
   }
 
   // ═════════════════════════════════════════════

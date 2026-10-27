@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:telegram_chat_mobile/features/auth/domain/models/auth_user.dart';
 import 'package:telegram_chat_mobile/features/chat/data/chat_repository.dart';
 import 'package:telegram_chat_mobile/features/chat/domain/models/chat_message_model.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/state/message_scroll_controller.dart'
+    show MessageScrollController;
 import 'package:telegram_chat_mobile/features/chat/presentation/state/unread_flow_controller.dart'
     show DividerPhase;
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/message_bubble.dart';
@@ -16,6 +18,9 @@ class ChatMessageList extends StatelessWidget {
   final AuthUser? currentUser;
   final ScrollController? scrollController;
   final bool chatReady;
+
+  /// مالک GlobalKey هر پیام؛ برای پرش دقیق به پیام ریپلای‌شده.
+  final MessageScrollController messageScrollController;
 
   // ── Unread divider context ──
   final DividerPhase dividerPhase;
@@ -41,6 +46,7 @@ class ChatMessageList extends StatelessWidget {
     required this.currentUser,
     required this.scrollController,
     required this.chatReady,
+    required this.messageScrollController,
     required this.dividerPhase,
     required this.snapshotFirstUnreadId,
     required this.snapshotUnreadCount,
@@ -93,9 +99,14 @@ class ChatMessageList extends StatelessWidget {
       itemCount: messages.length,
       itemBuilder: (context, index) {
         final message = messages[index];
-        return RepaintBoundary(
-          key: ValueKey(message.id),
-          child: _buildMessageItem(context, message),
+        // GlobalKey پایدار برای پرش دقیق به این پیام (reply tap). کلید
+        // ValueKey برای هویت آیتم در لیست حفظ می‌شود.
+        return KeyedSubtree(
+          key: messageScrollController.anchorFor(message.id),
+          child: RepaintBoundary(
+            key: ValueKey(message.id),
+            child: _buildMessageItem(context, message),
+          ),
         );
       },
     );

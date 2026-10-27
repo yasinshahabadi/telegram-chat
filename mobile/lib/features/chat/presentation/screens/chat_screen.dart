@@ -13,6 +13,7 @@ import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/logout_c
 import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/notification_debug_sheet.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/dialogs/retry_upload_dialog.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/state/chat_upload_coordinator.dart';
+import 'package:telegram_chat_mobile/features/chat/presentation/state/message_scroll_controller.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/state/unread_flow_controller.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/attachment_action.dart';
 import 'package:telegram_chat_mobile/features/chat/presentation/widgets/chat_app_bar.dart';
@@ -47,11 +48,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   late final ChatUploadCoordinator _uploadCoordinator;
   late final UnreadFlowController _unreadFlow;
+  final MessageScrollController _messageScroll = MessageScrollController();
 
   ChatMessageModel? _replyingMessage;
 
   String? _highlightedMessageId;
   Timer? _highlightClearTimer;
+
+  /// شمارهٔ درخواست پرش فعلی؛ برای بی‌اثر شدن پرش‌های قدیمی وقتی کاربر
+  /// پشت‌سرهم روی چند reply می‌زند.
+  int _replyJumpSequence = 0;
 
   @override
   void initState() {
@@ -99,6 +105,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.chatRepository.removeListener(_onChatUpdate);
+    _messageScroll.cancel();
     _highlightClearTimer?.cancel();
     _inputController.dispose();
     _unreadFlow.dispose();
@@ -117,6 +124,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _onChatUpdate() {
+    // کلیدهای پیام‌های حذف‌شده را نگه نداریم (جلوگیری از رشد حافظه).
+    _messageScroll.pruneTo(
+      widget.chatRepository.messages.map((message) => message.id),
+    );
     _unreadFlow.onChatUpdate();
   }
 
@@ -124,26 +135,136 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   //  Reply tap
   // ═════════════════════════════════════════════
 
+  /// پرش به پیامِ ریپلای‌شده.
+  ///
+  /// مراحل:
+  ///   1. اگر پیام در حافظه نیست، از DB (بازهٔ پیوسته) بارگذاری می‌شود؛
+  ///      پیام‌های قدیمی‌تر از ۵۰ پیام آخر هم قابل نمایش می‌شوند.
+  ///   2. اگر پیام واقعاً حذف شده باشد، پیام روشن به کاربر نشان داده می‌شود
+  ///      و هیچ اسکرول/هایلایتی انجام نمی‌شود (بدون خطا).
+  ///   3. موقعیت پیام با اندازه‌گیری واقعی ارتفاع آیتم‌ها محاسبه می‌شود؛
+  ///      پس برای پیام‌های کوتاه/بلند و پیام‌های بسیار قدیمی درست کار می‌کند.
   Future<void> _handleTapReplyMessage(String parentMessageId) async {
-    final messages = widget.chatRepository.messages;
-    final index = messages.indexWhere((m) => m.id == parentMessageId);
-    if (index == -1) {
-      _showError('پیام اصلی در دسترس نیست.');
+    final sequence = ++_replyJumpSequence;
+    _highlightClearTimer?.cancel();
+
+    var status = widget.chatRepository.messages
+            .any((message) => message.id == parentMessageId)
+        ? ReplyTargetLoadResult.loaded
+        : await widget.chatRepository.ensureMessageLoaded(parentMessageId);
+
+    if (!mounted || sequence != _replyJumpSequence) return;
+
+    if (status == ReplyTargetLoadResult.tooOld) {
+      _clearHighlight();
+      _showInfo('این پیام بسیار قدیمی است و امکان نمایش آن وجود ندارد.');
+      return;
+    }
+
+    if (status != ReplyTargetLoadResult.loaded) {
+      _clearHighlight();
+      _showReplyUnavailable('این پیام دیگر موجود نیست (حذف شده است).');
       return;
     }
 
     setState(() => _highlightedMessageId = parentMessageId);
     _unreadFlow.setHighlightPresent(true);
 
-    _highlightClearTimer?.cancel();
-    _highlightClearTimer = Timer(const Duration(milliseconds: 1600), () {
+    final scrollController = await _waitForScrollController();
+    if (!mounted || sequence != _replyJumpSequence) return;
+
+    final result = await _messageScroll.scrollToMessage(
+      messageId: parentMessageId,
+      readMessages: () => widget.chatRepository.messages,
+      scrollController: scrollController,
+    );
+
+    if (!mounted || sequence != _replyJumpSequence) return;
+
+    if (result != MessageScrollResult.reached) {
+      _clearHighlight();
+      if (result == MessageScrollResult.notInList) {
+        _showReplyUnavailable('این پیام دیگر موجود نیست (حذف شده است).');
+      } else if (result != MessageScrollResult.cancelled) {
+        _showInfo('انتقال به پیام ممکن نشد. دوباره تلاش کنید.');
+      }
+      return;
+    }
+
+    // تایمر را بعد از رسیدن به مقصد شروع می‌کنیم تا هایلایت در طول اسکرول
+    // محو نشود و کاربر حتماً پیام را ببیند.
+    _highlightClearTimer = Timer(const Duration(milliseconds: 2200), () {
       if (mounted && _highlightedMessageId == parentMessageId) {
-        setState(() => _highlightedMessageId = null);
-        _unreadFlow.setHighlightPresent(false);
+        _clearHighlight();
       }
     });
+  }
 
-    await _unreadFlow.animateToApproximateIndex(index);
+  /// در لحظات اول باز شدن چت، لیست هنوز `ScrollController` متصل ندارد.
+  /// کمی صبر می‌کنیم تا پرش به‌جای شکست خوردن، انجام شود.
+  Future<ScrollController?> _waitForScrollController() async {
+    for (int attempt = 0; attempt < 20; attempt++) {
+      final controller = _unreadFlow.scrollController;
+      if (controller != null && controller.hasClients) return controller;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      if (!mounted) return null;
+    }
+    return _unreadFlow.scrollController;
+  }
+
+  void _clearHighlight() {
+    if (!mounted) return;
+    _highlightClearTimer?.cancel();
+    _highlightClearTimer = null;
+    if (_highlightedMessageId == null) {
+      _unreadFlow.setHighlightPresent(false);
+      return;
+    }
+    setState(() => _highlightedMessageId = null);
+    _unreadFlow.setHighlightPresent(false);
+  }
+
+  void _showReplyUnavailable(String message) {
+    if (!mounted) return;
+    final theme = Theme.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        content: Row(
+          textDirection: TextDirection.rtl,
+          children: [
+            const Icon(
+              Icons.info_outline_rounded,
+              size: 20,
+              color: Colors.amber,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                message,
+                style: TextStyle(color: theme.colorScheme.onInverseSurface),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showInfo(String message) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+        content: Text(message, textDirection: TextDirection.rtl),
+      ),
+    );
   }
 
   // ═════════════════════════════════════════════
@@ -338,6 +459,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 currentUser: currentUser,
                 scrollController: _unreadFlow.scrollController,
                 chatReady: _unreadFlow.chatReady,
+                messageScrollController: _messageScroll,
                 dividerPhase: _unreadFlow.dividerPhase,
                 snapshotFirstUnreadId: _unreadFlow.snapshotFirstUnreadId,
                 snapshotUnreadCount: _unreadFlow.snapshotUnreadCount,

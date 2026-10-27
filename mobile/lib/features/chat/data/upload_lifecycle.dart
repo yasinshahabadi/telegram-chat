@@ -79,11 +79,15 @@ class UploadLifecycle {
   final List<ChatMessageModel> Function() getMessages;
   final void Function() notify;
 
+  /// وقتی شناسهٔ پیام از temp/optimistic به شناسهٔ واقعی تغییر می‌کند.
+  final Future<void> Function(String oldId, String newId)? onMessageIdChanged;
+
   UploadLifecycle({
     required this.localDao,
     MediaLocalStorage? mediaStorage,
     required this.getMessages,
     required this.notify,
+    this.onMessageIdChanged,
   }) : mediaStorage = mediaStorage ?? MediaLocalStorage();
 
   // ═════════════════════════════════════════════
@@ -277,6 +281,12 @@ class UploadLifecycle {
         localDao.saveAttachment(a.toDbMap()).catchError((_) {});
       }
     }).catchError((_) {});
+
+    // ارجاع‌های reply که به tempId اشاره می‌کردند به شناسهٔ واقعی منتقل شوند.
+    final repoint = onMessageIdChanged;
+    if (repoint != null && old.id != realMessageId) {
+      repoint(old.id, realMessageId).catchError((_) {});
+    }
   }
 
   /// تغییر وضعیت به «ناموفق» + ذخیره در DB.

@@ -1,6 +1,6 @@
 # AI_PROJECT_STATE.md
 
-آخرین به‌روزرسانی: 1405/07/28 (2026-10-20)
+آخرین به‌روزرسانی: 1405/08/05 (2026-10-27)
 
 ---
 
@@ -34,6 +34,7 @@
 ### Clipboard Image Paste (Stage 20-B) — ❌ کنسل و پاکسازی شد
 ### Attachment Picker (Stage 21) — ✅ کامل + تست دستگاه واقعی
 ### Cache Hygiene (Stage 21.1) — ✅ کامل + تست دستگاه واقعی
+### Reply Jump Fix (Stage 21.2) — ✅ کامل + تست خودکار و دستگاه واقعی
 
 ### فازهای کامل‌شده
 | Stage | محتوا |
@@ -52,6 +53,7 @@
 | 20-A | انتخابگر ایموجی در کادر تایپ چت |
 | 21 | نوار پیوست شناور + گالری اختصاصی + پیش‌نمایش/کپشن/ارسال |
 | 21.1 | پاک‌سازی خودکار کش دیسک + سقف ۴۸MB برای بندانگشتی‌های گالری |
+| 21.2 | پرش دقیق به ابتدای پیام reply + مدیریت پیام حذف‌شده/بسیار قدیمی |
 
 ### فازهای کنسل‌شده
 | Stage | محتوا | دلیل |
@@ -84,8 +86,9 @@ presentation/
 │ └── media_bubble_content.dart
 ├── dialogs/ (5 فایل)
 └── state/
-├── chat_upload_coordinator.dart
-└── unread_flow_controller.dart
+    ├── chat_upload_coordinator.dart
+    ├── message_scroll_controller.dart (Stage 21.2 — پرش دقیق به پیام reply)
+    └── unread_flow_controller.dart
 
 ### Presentation — settings (Stage 19)
 features/settings/presentation/
@@ -271,10 +274,13 @@ features/media/domain/models/
   گالری ریست می‌شود.
 - **Flutter `TextField` از `commitContent` پشتیبانی نمی‌کند**
   (بخش ۱۷).
+- **پرش به پیام reply** حداکثر بازهٔ ۱۰۰۰ پیام را از DB بارگذاری می‌کند؛
+  پیام‌های قدیمی‌تر با پیام «بسیار قدیمی» و بدون خطا رد می‌شوند (Stage 21.2).
 
 ## ۸. بدهی فنی باقی‌مانده
 
-- **بدون تست خودکار**.
+- **بدون تست خودکار** (به‌جز ۶ تست `message_scroll_controller_test.dart`
+  برای Stage 21.2)؛ بقیهٔ بخش‌ها هنوز تست ندارند.
 - `_ensureConnectedAndSynced()` در `build()`.
 - `/api/test-push` بدون احراز هویت.
 - debug menu در production build.
@@ -288,14 +294,18 @@ features/media/domain/models/
 
 - **Last verified build:** ✅ release روی دستگاه واقعی SM-A528B (Android 14)
 - **Known blocking bug:** ندارد.
-- **Stage 18، 19، 20-A، 21 و 21.1 کامل؛ Stage 21 و 21.1 روی دستگاه تست شد.**
+- **Stage 18، 19، 20-A، 21، 21.1 و 21.2 کامل؛ Stage 21، 21.1 و 21.2 روی دستگاه تست شد.**
+- **Stage 21.2 (Reply Jump) با ۶ تست خودکار و تست دستی روی دستگاه واقعی پوشش داده شده.**
 - **Stage 20-B کنسل و کاملاً پاک‌سازی شده.**
-- **در حال آماده‌سازی `v1.0.12+12` (شامل Stage 21 + Cache Hygiene).**
+- **در حال آماده‌سازی `v1.0.12+12` (شامل Stage 21 + Cache Hygiene + Reply Jump).**
 
 ## ۱۰. مرحلهٔ بعد
 
-- **انتشار `v1.0.12+12`** (این جلسه، در حال انجام؛ شامل Stage 21 و
-  پاک‌سازی کش Stage 21.1).
+- **انتشار `v1.0.12+12`** (این جلسه، در حال انجام؛ شامل Stage 21،
+  پاک‌سازی کش Stage 21.1 و Stage 21.2). APK ریلیز arm64 ساخته و روی دستگاه
+  نصب شد (۲۳.۸MB).
+- تست دستی تکمیلی Stage 21.2: کلیک پشت‌سرهم روی چند reply (لغو درخواست قبلی)
+  و مقصدی که دقیقاً مرز بازهٔ ۱۰۰۰ پیامی است.
 - تست دستی بیشتر Stage 21 روی دستگاه‌های دیگر (حالت دسترسی محدود،
   ویدیوهای بزرگ، RTL شدید).
 - **🔴 چرخش توکن ربات** (اولویت P0 — امنیتی؛ طبق تصمیم کاربر:
@@ -545,3 +555,81 @@ Stage 18 (روی staging از قبل deploy شده)
 - `mobile/lib/features/media/presentation/screens/media_picker_screen.dart`
   (فلگ باز بودن گالری تا پاک‌سازی کش در حین نمایش انجام نشود)
 - `mobile/lib/main.dart`
+
+## ۲۱. نقشهٔ Stage 21.2 (Reply Jump Fix)
+
+**مشکل گزارش‌شده:** با کلیک روی پیش‌نمایش «پاسخ» (reply)، اسکرول به ابتدای
+پیام ریپلای‌شده انجام نمی‌شد، هایلایت درست کار نمی‌کرد و برای پیام‌های خیلی
+قدیمی، لیست به سمت پیام‌های جدید (جهت اشتباه) می‌رفت.
+
+**ریشه‌یابی:**
+- روش قبلی `animateToApproximateIndex(index)` با تخمین ثابت **۹۰ پیکسل برای
+  هر پیام** اسکرول می‌کرد؛ اما ارتفاع پیام‌ها در این چت متغیر و گاه تا ~۹۰۰
+  پیکسل است. برای پیام‌های قدیمی خطا جمع می‌شد و گاهی حتی offset در جهت
+  اشتباه محاسبه می‌شد.
+- مسیر `GlobalKey`/`ensureVisible` عملاً هرگز اجرا نمی‌شد، چون
+  `ListView.builder` آیتم مقصد را (که خارج از viewport بود) نمی‌ساخت.
+- فقط ۵۰ پیام آخر در حافظه بارگذاری می‌شد؛ پیام‌های قدیمی‌تر اصلاً در لیست
+  نبودند و پرش به آن‌ها ممکن نبود.
+- تایمر پاک‌سازی هایلایت (۱.۶ ثانیه) **قبل** از شروع اسکرول فعال می‌شد و
+  می‌توانست قبل از رسیدن به مقصد منقضی شود.
+
+**راه‌حل:**
+- فایل جدید `mobile/lib/features/chat/presentation/state/message_scroll_controller.dart`:
+  - `GlobalKey` پایدار برای هر پیام + اندازه‌گیری ارتفاع واقعی آیتم‌های ساخته‌شده.
+  - تخمین offset با نزدیک‌ترین لنگر ساخته‌شده و
+    `RenderAbstractViewport.getOffsetToReveal`.
+  - پرش تقریبی + تصحیح تکراری در چند فریم تا ساخته‌شدن آیتم مقصد.
+  - برای مقاصد چند صفحه‌ای، پرش فوری (`jumpTo`) به‌جای انیمیشن طولانی؛
+    انیمیشن از میان صدها آیتم میانی، هم کند است و هم فشار زیادی به رندر
+    متن/ایموجی می‌آورد.
+  - در پایان `Scrollable.ensureVisible(alignment: 1.0)` که در لیست
+    `reverse: true` ابتدای پیام را دقیقاً بالای viewport می‌گذارد.
+  - لغو خودکار درخواست قبلی هنگام کلیک پشت‌سرهم روی چند reply.
+- هایلایت: بلافاصله روی پیام فعال می‌شود، اما تایمر پاک‌سازی (۲.۲ ثانیه)
+  فقط **بعد از رسیدن** به مقصد شروع می‌شود و در صورت شکست پاک می‌شود.
+- پیام حذف‌شده: بررسی حافظه ← بارگذاری بازهٔ پیوسته از DB (حداکثر ۱۰۰۰ پیام،
+  با کوئری گروهی برای پیوست/واکنش) ← در غیر این صورت SnackBar فارسی
+  «این پیام دیگر موجود نیست» و بدون اسکرول/خطا. برای پیام قدیمی‌تر از بازهٔ
+  ۱۰۰۰تایی، پیام جداگانهٔ «بسیار قدیمی» نمایش داده می‌شود.
+- اصلاح ارجاع‌های کهنهٔ reply وقتی شناسهٔ optimistic با شناسهٔ واقعی سرور
+  جایگزین می‌شود (`_repointReplyReferences` + `updateReplyTargetId`).
+- حذف کد مردهٔ `ensureVisibleOnKey` و `animateToApproximateIndex` از
+  `UnreadFlowController`.
+
+**تست روی دستگاه واقعی (SM-A528B — Android 14، debug build):**
+- پرش به پیام ریپلای‌شدهٔ روی صفحه: ابتدای پیام دقیقاً بالای viewport + هایلایت ✅
+- پاک‌شدن خودکار هایلایت ۲.۲ ثانیه بعد از رسیدن (نه از لحظهٔ کلیک) ✅
+- پرش به پیامی که در حافظه نبود (پیام ۵۱اُم، خارج از پنجرهٔ ۵۰تایی):
+  بارگذاری از DB و پرش دقیق + هایلایت ✅
+- پرش به پیامی ~۲۰۰ پیام قدیمی‌تر: بارگذاری ۷۴۶ رکورد از DB در ۳۱۲ms و
+  رسیدن به ابتدای پیام مقصد + هایلایت ✅
+- پیام حذف‌شده: SnackBar «این پیام دیگر موجود نیست (حذف شده است).»
+  بدون اسکرول و بدون خطا ✅
+- بدون هیچ Exception در `logcat` ✅
+- نکتهٔ مهم (مشکل دستگاه، نه کد): پس از اسکرول‌های بسیار سریع و مصنوعی،
+  رندر متن روی گوشی به‌هم ریخت؛ بررسی نشان داد این باگ در سطح سیستم است،
+  چون صفحهٔ «تنظیمات» اندروید هم به‌جای متن خودش، گلیف‌های خراب چت را نشان
+  می‌داد. با `purge-persistent-cache` موقتاً خوب شد ولی با تعامل بعدی برگشت.
+  رفع قطعی نیاز به ری‌استارت گوشی دارد (کاربر خودش انجام می‌دهد). این مورد
+  به تغییرات Stage 21.2 مربوط نیست و در استفادهٔ عادی رخ نداد.
+
+**تست خودکار:** `mobile/test/message_scroll_controller_test.dart` (۶ تست):
+پرش به پیام خیلی قدیمی و قرارگرفتن ابتدای آن بالای صفحه، پیام میانی با
+همسایه‌های بلند، بازگشت به پیام جدیدتر از حالت اسکرول‌شده، لیست ۲۰۰تایی با
+ارتفاع‌های بزرگ ساخته‌نشده، پیام حذف‌شده بدون خطا/اسکرول، و لغو پرش قبلی.
+
+**نتیجه:** `flutter analyze` → No issues found؛ `flutter test` → همهٔ
+تست‌ها سبز. `flutter build apk --release --target-platform android-arm64` →
+۲۳.۸MB و نصب موفق روی دستگاه.
+
+**فایل‌ها:**
+- `mobile/lib/features/chat/presentation/state/message_scroll_controller.dart` (جدید)
+- `mobile/lib/features/chat/presentation/screens/chat_screen.dart`
+- `mobile/lib/features/chat/presentation/widgets/chat_message_list.dart`
+- `mobile/lib/features/chat/data/chat_repository.dart`
+- `mobile/lib/core/database/local_chat_dao.dart`
+- `mobile/lib/features/chat/data/socket_event_dispatcher.dart`
+- `mobile/lib/features/chat/data/upload_lifecycle.dart`
+- `mobile/lib/features/chat/presentation/state/unread_flow_controller.dart`
+- `mobile/test/message_scroll_controller_test.dart` (جدید)

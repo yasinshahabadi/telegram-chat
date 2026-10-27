@@ -201,45 +201,6 @@ class UnreadFlowController {
     }
   }
 
-  /// برای سناریوی tap روی reply — Scrollable.ensureVisible با key پیام.
-  Future<void> ensureVisibleOnKey(
-    GlobalKey key, {
-    double alignment = 0.5,
-    Duration duration = const Duration(milliseconds: 350),
-  }) async {
-    final ctx = key.currentContext;
-    if (ctx == null || !ctx.mounted) return;
-
-    _autoScrollInProgress = true;
-    try {
-      await Scrollable.ensureVisible(
-        ctx,
-        duration: duration,
-        curve: Curves.easeInOut,
-        alignment: alignment,
-      );
-    } catch (_) {
-    } finally {
-      _autoScrollInProgress = false;
-    }
-  }
-
-  /// برای سناریوی tap روی reply — fallback با محاسبهٔ تخمینی offset.
-  Future<void> animateToApproximateIndex(int index) async {
-    final c = _scrollController;
-    if (c == null || !c.hasClients) return;
-
-    final approx = (index * _messageEstimate).clamp(
-      0.0,
-      c.position.maxScrollExtent,
-    );
-    await c.animateTo(
-      approx,
-      duration: const Duration(milliseconds: 350),
-      curve: Curves.easeInOut,
-    );
-  }
-
   // ═════════════════════════════════════════════
   //  Unread flow — initial load
   // ═════════════════════════════════════════════
